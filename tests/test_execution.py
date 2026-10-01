@@ -85,7 +85,9 @@ async def test_clarification_then_real_engine_execution_and_recording(tmp_path):
         config=EngineConfig(runs_dir=tmp_path), models=ModelBindings(executor, executor)
     )
     agent = Karen(intent=IntentRecognizer(intent_model), engine=engine)
-    turn = await agent.advance(IntentSession(request_id="mail-1"), "写邮件")
+    turn = await agent.advance(
+        IntentSession(request_id="mail-1", timezone="America/New_York"), "写邮件"
+    )
     assert turn.result is None and executor.requests == []
     turn = await agent.advance(turn.session, "给客户", policy=ExecutionPolicy())
     assert turn.result.execution_status == "COMPLETED"
@@ -99,6 +101,7 @@ async def test_clarification_then_real_engine_execution_and_recording(tmp_path):
         {"id": "criterion_1", "description": "输出中文邮件草稿"}
     ]
     assert saved_goal["context"]["conversation"][-1]["content"] == "给客户"
+    assert saved_goal["context"]["timezone"] == "America/New_York"
 
 
 async def test_engine_failure_is_exposed_without_claiming_task_success(tmp_path):

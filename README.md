@@ -38,6 +38,10 @@ flowchart TD
 - 模型输出失败时抛出异常，输入会话保持原样，调用方决定是否重试。
 - `GoalSpec` 直接使用引擎契约；request_id 和成功标准 ID 由本地生成。
 - 约束、对话来源与调用方上下文放入 `GoalSpec.context`；数据放入 `inputs`。
+- 用户时区写入 `GoalSpec.context["timezone"]`，也传给意图模型。`IntentSession` 默认通过
+  `tzlocal` 获取本机 IANA 时区（如 `Asia/Shanghai`），并校验其有效性。
+  调用方可通过 `IntentSession(timezone="America/New_York")` 显式指定用户时区；
+  在远程服务器运行时应传入用户端提供的时区，不能将服务器时区视为用户时区。
 - 输出默认使用引擎的 answer/evidence/limitations 格式，也支持用户明确要求的结构化结果。
 - 未显式传入 `ExecutionPolicy` 时，Karen 授权当前引擎中全部已注册工具、评估器和 reducer。
   对标记为 `read_only=False` 的工具，同时填入 `allowed_side_effect_tools`，满足引擎的双重授权规则。
@@ -55,6 +59,13 @@ export DEEPSEEK_API_KEY='你的密钥'
 uv run karen
 ```
 
+终端默认直接展示 `answer`、来源和限制说明，不再打印整份执行记录。
+执行失败、取消或结果不完整时明确提示状态，并展示诊断；自定义输出字段也会显示。
+调试时使用 `uv run karen --json` 查看完整结果 JSON。完整执行记录仍由引擎保存在 `runs/`。
+
+CLI 可通过 `uv run karen --timezone Asia/Shanghai` 指定用户时区。
+无法检测时区或传入无效时区时会提示并退出，不会继续生成缺少时区的目标。
+
 也可以在根目录 `.env` 中设置 `DEEPSEEK_API_KEY` 和 `TAVILY_API_KEY`，然后运行
 `uv run --env-file .env karen`。`.env` 已被 Git 忽略。
 
@@ -71,13 +82,12 @@ CLI 默认注册并授权 DynamicAgentGraph 提供的以下工具（版本均为
 | `file.read_text` | 读取 `/tmp` 下的 UTF-8 文本 |
 | `file.write_text` | 写入 `/tmp` 下的 UTF-8 文本；覆盖已有文件需要 `overwrite=true` |
 | `browser.open_local_page` | 请求默认浏览器打开 `/tmp` 下已有的 HTML 页面 |
-| `web.fetch` | 获取 HTTP/HTTPS 网页文本 |
-| `github.trending` | 获取当前 GitHub Trending 日榜 |
+| `web.fetch` | 获取 HTTP/HTTPS 网页文本；任务中的 LLM 节点按要求提取信息 |
 | `tavily.search` | Tavily 网络搜索，需要配置 `TAVILY_API_KEY` |
 
 未配置 Tavily 密钥时仅该搜索工具不可用，其他工具仍会注册与授权。
 本地工具沿用库的 `/tmp` 目录边界，文本与网页大小限制沿用默认的 1 MiB。
-GitHub Trending 返回当前抓取时的榜单，不支持任意历史日期。
+网页抓取返回当前页面内容，不提供任意历史日期的快照。
 3 个内置 reducer 同样默认授权。EOF 或 Ctrl+C 退出。
 
 ## 独立调用意图模块

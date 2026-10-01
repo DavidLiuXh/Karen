@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "karen-agent"
+version = "0.1.0"
+description = "Personal agent intent clarification and goal execution"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "dynamic-agent-graph>=0.1.0,<0.2",
+  "langgraph>=1.0,<2",
+  "langchain-deepseek>=1.0,<2",
+  "pydantic>=2.11,<3",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1"]
+
+[tool.uv.sources]
+dynamic-agent-graph = { path = "../DynamicAgentGraph", editable = true }
+
+[project.scripts]
+karen = "karen.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/karen"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

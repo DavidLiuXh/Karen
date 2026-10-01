@@ -5,13 +5,15 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated, Literal, TypedDict
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dynamic_graph import GoalSpec, ModelRequest
 from dynamic_graph.contracts import default_output_schema
 from dynamic_graph.graph.schemas import SchemaSpec
 from dynamic_graph.models.client import ModelClient
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, field_validator
+from tzlocal import get_localzone_name
 
 from .prompts import INTENT_SYSTEM_INSTRUCTION, INTENT_TASK_INSTRUCTION
 
@@ -57,8 +59,18 @@ class IntentSession(IntentContract):
     request_id: str = Field(default_factory=lambda: uuid4().hex, min_length=1, max_length=128)
     messages: tuple[Message, ...] = ()
     user_context: dict[str, JsonValue] = Field(default_factory=dict)
+    timezone: Text = Field(default_factory=get_localzone_name, validate_default=True)
     questions: tuple[str, ...] = ()
     goal: GoalSpec | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError:
+            raise ValueError("timezone must be a valid IANA timezone name") from None
+        return value
 
 
 class IntentState(TypedDict):
@@ -99,6 +111,7 @@ class IntentRecognizer:
             input_data={
                 "messages": [m.model_dump(mode="json") for m in session.messages],
                 "user_context": session.model_dump(mode="json")["user_context"],
+                "timezone": session.timezone,
             },
             output_schema=Assessment.model_json_schema(),
         )
@@ -138,6 +151,7 @@ class IntentRecognizer:
             inputs=draft.inputs,
             output_schema=draft.output_schema,
             context={
+                "timezone": session.timezone,
                 "constraints": draft.constraints,
                 "user_context": session.user_context,
                 "conversation": [m.model_dump(mode="json") for m in session.messages],

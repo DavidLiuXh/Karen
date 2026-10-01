@@ -3,6 +3,7 @@ import asyncio
 import pytest
 from dynamic_graph import FakeModelClient, GoalSpec, ModelCallError
 from pydantic import ValidationError
+from tzlocal import get_localzone_name
 
 from karen import IntentRecognizer, IntentSession
 
@@ -40,9 +41,32 @@ async def test_clear_request_produces_engine_goal_without_clarification():
     assert updated.goal.inputs == {"recipient": "客户", "progress": "设计已完成"}
     assert updated.goal.context["constraints"] == ["不发送邮件，仅输出草稿"]
     assert updated.goal.context["user_context"] == {"language": "zh-CN"}
+    assert updated.goal.context["timezone"] == session.timezone
     assert updated.questions == ()
     assert session.messages == () and session.goal is None
     assert len(model.requests) == 1
+
+
+def test_default_timezone_uses_local_machine_configuration():
+    assert IntentSession().timezone == get_localzone_name()
+
+
+@pytest.mark.parametrize("timezone", ["Asia/Shanghai", "America/New_York", "UTC"])
+async def test_explicit_user_timezone_reaches_model_clarification_and_goal(timezone):
+    model = FakeModelClient([clarify(), ready()])
+    recognizer = IntentRecognizer(model)
+    session = await recognizer.advance(IntentSession(timezone=timezone), "帮我写邮件")
+    assert session.timezone == timezone
+    assert model.requests[0].input_data["timezone"] == timezone
+    final = await recognizer.advance(session, "给客户写中文进度邮件，设计已完成")
+    assert model.requests[1].input_data["timezone"] == timezone
+    assert final.goal.context["timezone"] == timezone
+
+
+@pytest.mark.parametrize("timezone", ["", "Not/A_Timezone", "UTC+08:00"])
+def test_invalid_timezone_is_rejected(timezone):
+    with pytest.raises(ValidationError):
+        IntentSession(timezone=timezone)
 
 
 async def test_multiple_clarifications_keep_full_conversation_until_ready():

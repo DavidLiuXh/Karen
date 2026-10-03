@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from typing import Annotated, Literal, TypedDict
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -57,6 +58,7 @@ class IntentSession(IntentContract):
     """Caller-owned conversation; no service-level mutable session storage."""
 
     request_id: str = Field(default_factory=lambda: uuid4().hex, min_length=1, max_length=128)
+    conversation_id: str = Field(default_factory=lambda: uuid4().hex, min_length=1, max_length=128)
     messages: tuple[Message, ...] = ()
     user_context: dict[str, JsonValue] = Field(default_factory=dict)
     timezone: Text = Field(default_factory=get_localzone_name, validate_default=True)
@@ -76,6 +78,7 @@ class IntentSession(IntentContract):
 class IntentState(TypedDict):
     session: IntentSession
     decision: Clarification | Ready
+    memory_context: dict | None
 
 
 class IntentRecognizer:
@@ -91,7 +94,9 @@ class IntentRecognizer:
         graph.add_edge("build_goal", END)
         self.graph = graph.compile()
 
-    async def advance(self, session: IntentSession, user_input: str) -> IntentSession:
+    async def advance(
+        self, session: IntentSession, user_input: str, *, memory_context: dict | None = None
+    ) -> IntentSession:
         if session.goal is not None:
             raise ValueError("This session already has a goal; start a new session")
         message = Message(role="user", content=user_input)
@@ -99,20 +104,49 @@ class IntentRecognizer:
         session = session.model_copy(deep=True)
         messages = (*session.messages, message)
         session = session.model_copy(update={"messages": messages})
-        state = await self.graph.ainvoke({"session": session})
+        state = await self.graph.ainvoke(
+            {"session": session, "memory_context": deepcopy(memory_context)}
+        )
         return state["session"]
 
     async def _assess(self, state: IntentState) -> dict:
         session = state["session"]
+        memory = state.get("memory_context")
+        if (
+            memory
+            and (
+                memory.get("coverage", {}).get("requires_history")
+                or memory.get("history", {}).get("status") in {"ambiguous", "unavailable"}
+            )
+            and memory.get("history", {}).get("status") != "selected"
+        ):
+            from .prompts import HISTORY_CLARIFICATION
+
+            return {
+                "decision": Clarification(
+                    outcome="needs_clarification", questions=[HISTORY_CLARIFICATION]
+                )
+            }
+        if memory and (memory.get("collection") or {}).get("reason") == "needs_time_range":
+            from .prompts import TIME_RANGE_CLARIFICATION
+
+            return {
+                "decision": Clarification(
+                    outcome="needs_clarification", questions=[TIME_RANGE_CLARIFICATION]
+                )
+            }
+        inputs = {
+            "messages": [m.model_dump(mode="json") for m in session.messages],
+            "user_context": session.model_dump(mode="json")["user_context"],
+            "timezone": session.timezone,
+        }
+        if memory is not None:
+            inputs["memory"] = memory
         request = ModelRequest(
             role="intent",
             system_instruction=INTENT_SYSTEM_INSTRUCTION,
             task_instruction=INTENT_TASK_INSTRUCTION,
-            input_data={
-                "messages": [m.model_dump(mode="json") for m in session.messages],
-                "user_context": session.model_dump(mode="json")["user_context"],
-                "timezone": session.timezone,
-            },
+            input_data=inputs,
             output_schema=Assessment.model_json_schema(),
         )
         async with asyncio.timeout(request.timeout_seconds):
@@ -141,6 +175,14 @@ class IntentRecognizer:
         session = state["session"]
         decision = state["decision"]
         draft = decision.goal
+        context = {
+            "timezone": session.timezone,
+            "constraints": draft.constraints,
+            "user_context": session.user_context,
+            "conversation": [m.model_dump(mode="json") for m in session.messages],
+        }
+        if state.get("memory_context") is not None:
+            context["memory"] = state["memory_context"]
         goal = GoalSpec(
             request_id=session.request_id,
             objective=draft.objective,
@@ -150,11 +192,6 @@ class IntentRecognizer:
             ],
             inputs=draft.inputs,
             output_schema=draft.output_schema,
-            context={
-                "timezone": session.timezone,
-                "constraints": draft.constraints,
-                "user_context": session.user_context,
-                "conversation": [m.model_dump(mode="json") for m in session.messages],
-            },
+            context=context,
         )
         return {"session": session.model_copy(update={"questions": (), "goal": goal})}

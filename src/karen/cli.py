@@ -4,6 +4,8 @@ import argparse
 import asyncio
 import json
 import os
+import threading
+from pathlib import Path
 from zoneinfo import ZoneInfoNotFoundError
 
 from dynamic_graph import DynamicGraphEngine, ModelBindings, RunResult
@@ -18,8 +20,10 @@ from dynamic_graph.tools import (
 from pydantic import ValidationError
 
 from .agent import Karen
+from .context import ContextMemory
+from .context.contracts import PersistenceError
 from .intent import IntentRecognizer, IntentSession
-from .models import deepseek_client
+from .models import deepseek_client, memory_embeddings
 
 
 def format_result(result: RunResult) -> str:
@@ -70,6 +74,40 @@ def format_result(result: RunResult) -> str:
     return "\n\n".join(lines)
 
 
+def create_memory(model) -> ContextMemory:
+    return ContextMemory(
+        root_dir=Path.home() / ".Karne" / "context", model=model, embeddings=memory_embeddings()
+    )
+
+
+async def read_input() -> str:
+    """A cancelled console read must not hold asyncio's executor shutdown open."""
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def complete(value, error):
+        if future.done():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(value)
+
+    def read():
+        value, error = None, None
+        try:
+            value = input("你：")
+        except BaseException as exc:
+            error = exc
+        try:
+            loop.call_soon_threadsafe(complete, value, error)
+        except RuntimeError:
+            pass  # The process may finish while its daemon console reader is blocked.
+
+    threading.Thread(target=read, name="karen-console-input", daemon=True).start()
+    return await future
+
+
 async def converse(*, json_output: bool = False, timezone: str | None = None) -> int:
     try:
         session = IntentSession(timezone=timezone) if timezone is not None else IntentSession()
@@ -89,35 +127,59 @@ async def converse(*, json_output: bool = False, timezone: str | None = None) ->
         engine.register_tool(tavily_search_tool())
     else:
         print("Karen：未配置 TAVILY_API_KEY，Tavily 网络搜索暂不可用。")
+    memory = create_memory(model)
+    try:
+        await memory.start()
+    except (OSError, PersistenceError, RuntimeError):
+        print("Karen：记忆目录无法安全打开，可能已有进程使用或文件损坏。本次未启动对话。")
+        return 1
     agent = Karen(
         intent=IntentRecognizer(model),
         engine=engine,
+        memory=memory,
     )
-    while True:
+    try:
+        exit_code = 0
+        while True:
+            try:
+                user_input = await read_input()
+            except EOFError:
+                return exit_code
+            if user_input.strip() == "/exit":
+                return exit_code
+            try:
+                turn = await agent.advance(session, user_input)
+            except (ModelCallError, ValidationError, ValueError, TimeoutError) as exc:
+                # Leave the conversation unchanged on a failed assessment.
+                code = exc.code if isinstance(exc, ModelCallError) else type(exc).__name__
+                print(f"Karen：本轮未完成（{code}），请重新输入。")
+                continue
+            session = turn.session
+            if turn.result is None:
+                for warning in turn.memory_warnings:
+                    print(f"Karen：记忆写入未完成（{warning}）。")
+                print("Karen：" + "\n".join(session.questions))
+                continue
+            response_text = (
+                json.dumps(turn.result.model_dump(mode="json"), ensure_ascii=False, indent=2)
+                if json_output
+                else format_result(turn.result)
+            )
+            warnings = (*turn.memory_warnings, *agent.record_response(session, response_text))
+            print(response_text if json_output else "Karen：" + response_text)
+            for warning in dict.fromkeys(warnings):
+                print(f"Karen：记忆写入未完成（{warning}）。")
+            exit_code = (
+                0
+                if (turn.result.execution_status == "COMPLETED" and turn.result.output_complete)
+                else 1
+            )
+    finally:
         try:
-            user_input = await asyncio.to_thread(input, "你：")
-        except EOFError:
-            return 0
-        try:
-            turn = await agent.advance(session, user_input)
-        except (ModelCallError, ValidationError, ValueError, TimeoutError) as exc:
-            # Leave the conversation unchanged on a failed assessment.
-            code = exc.code if isinstance(exc, ModelCallError) else type(exc).__name__
-            print(f"Karen：本轮未完成（{code}），请重新输入。")
-            continue
-        session = turn.session
-        if turn.result is None:
-            print("Karen：" + "\n".join(session.questions))
-            continue
-        if json_output:
-            print(json.dumps(turn.result.model_dump(mode="json"), ensure_ascii=False, indent=2))
-        else:
-            print("Karen：" + format_result(turn.result))
-        return (
-            0
-            if (turn.result.execution_status == "COMPLETED" and turn.result.output_complete)
-            else 1
-        )
+            await memory.close()
+        except PersistenceError:
+            print("Karen：部分对话未能持久化，退出失败。")
+            raise
 
 
 def main() -> None:
@@ -129,6 +191,8 @@ def main() -> None:
         raise SystemExit(asyncio.run(converse(json_output=args.json, timezone=args.timezone)))
     except KeyboardInterrupt:
         raise SystemExit(130) from None
+    except PersistenceError:
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

@@ -8,10 +8,12 @@ import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from uuid import uuid4
 
 from dynamic_graph.models.client import ModelCallError, ModelClient
 from langchain_core.embeddings import Embeddings
 
+from ..observability import Observer
 from .contracts import (
     ContextEvent,
     DetailHit,
@@ -32,10 +34,18 @@ from .storage import Storage, digest, encode, pointer_value, redact, terms, text
 
 
 class ContextMemory:
-    def __init__(self, *, root_dir: Path, model: ModelClient, embeddings: Embeddings):
+    def __init__(
+        self,
+        *,
+        root_dir: Path,
+        model: ModelClient,
+        embeddings: Embeddings,
+        observer: Observer | None = None,
+    ):
         self.root_dir = Path(root_dir).expanduser().absolute()
         self.model = model
         self.embeddings = embeddings
+        self.observer = observer or Observer()
         self.storage = Storage(self.root_dir)
         self._queue = asyncio.Queue(maxsize=256)
         self._pending = {}
@@ -43,6 +53,7 @@ class ContextMemory:
         self._sequence = 0
         self._pending_bytes = 0
         self._raw_failures = {}
+        self._trace_links = {}
         self._io_tasks = set()
         self._foreground_count = 0
         self._background_allowed = asyncio.Event()
@@ -55,7 +66,7 @@ class ContextMemory:
         self._embedding_lock = asyncio.Lock()
         self._model_tag = None
         self._extractor = Extractor(
-            self.storage, model, self._background_allowed.wait, self._io, self.embed
+            self.storage, model, self._background_allowed.wait, self._io, self.embed, self.observer
         )
 
     async def _io(self, function, *args, **kwargs):
@@ -126,6 +137,16 @@ class ContextMemory:
         self._pending[event.event_id] = (event, receipt, utcnow(), size)
         self._pending_bytes += size
         self._queue.put_nowait(event.event_id)
+        self._trace_links[event.event_id] = self.observer.context()
+        self.observer.emit(
+            "memory.submitted",
+            data={
+                "event_id": event.event_id,
+                "event_type": event.event_type,
+                "sequence": receipt.sequence,
+                "queue_depth": self._queue.qsize(),
+            },
+        )
         return receipt
 
     @asynccontextmanager
@@ -146,12 +167,29 @@ class ContextMemory:
             event_id = await self._queue.get()
             try:
                 event, receipt, submitted, _ = self._pending[event_id]
-                await self._io(self.storage.append, event, receipt.sequence, submitted)
+                link = self._trace_links.get(event_id, {})
+                with self.observer.span(
+                    "memory.persist",
+                    trace_id=uuid4().hex,
+                    source_event_id=event_id,
+                    conversation_id=event.conversation_id,
+                    request_id=event.request_id,
+                    source_trace_id=link.get("trace_id"),
+                    source_span_id=link.get("span_id"),
+                ):
+                    await self._io(self.storage.append, event, receipt.sequence, submitted)
+                    self.observer.emit(
+                        "memory.persisted", data={"sequence": receipt.sequence, "raw": "persisted"}
+                    )
                 _, _, _, size = self._pending.pop(event_id)
                 self._pending_bytes -= size
                 self._wake.set()
             except Exception:
                 self._raw_failures[event_id] = "MEMORY_PERSISTENCE_FAILED"
+                self.observer.emit(
+                    "memory.persistence_failed", status="failed", data={"event_id": event_id}
+                )
+                self._trace_links.pop(event_id, None)
             finally:
                 self._queue.task_done()
 
@@ -167,26 +205,22 @@ class ContextMemory:
                     pass
                 continue
             event_id = job["event_id"]
+            event = None
+            link = self._trace_links.get(event_id, {})
             try:
-                if job["derived"] in {"pending", "extracting"}:
-                    await self._extractor.graph.ainvoke({"event_id": event_id})
-                job = await self._io(self.storage.job, event_id)
-                if job["derived"] == "committed":
-                    await self._background_allowed.wait()
-                    items = await self._io(self.storage.index_items, event_id)
-                    if items:
-                        vectors, tag = await self.embed(
-                            [item.text for item in items], background=True
-                        )
-                        await self._io(self.storage.save_vectors, items, vectors, tag)
-                    await self._io(
-                        self.storage.update_job,
-                        event_id,
-                        index_state="indexed",
-                        attempts=0,
-                        next_attempt_at=0,
-                        error_code=None,
-                    )
+                event = await self._io(self.storage.load_event, event_id)
+                with self.observer.span(
+                    "memory.derive",
+                    trace_id=uuid4().hex,
+                    source_event_id=event_id,
+                    conversation_id=event.conversation_id,
+                    request_id=event.request_id,
+                    source_trace_id=link.get("trace_id"),
+                    source_span_id=link.get("span_id"),
+                    attempt=job["attempts"] + 1,
+                ):
+                    await self._derive_job(job)
+                self._trace_links.pop(event_id, None)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -205,6 +239,52 @@ class ContextMemory:
                 else:
                     values["derived"] = "failed" if terminal else "pending"
                 await self._io(self.storage.update_job, event_id, **values)
+                with self.observer.span(
+                    "memory.retry",
+                    trace_id=uuid4().hex,
+                    source_event_id=event_id,
+                    request_id=event.request_id if event else link.get("request_id"),
+                    conversation_id=event.conversation_id if event else link.get("conversation_id"),
+                    source_trace_id=link.get("trace_id"),
+                    source_span_id=link.get("span_id"),
+                ):
+                    self.observer.emit(
+                        "memory.retry",
+                        status="failed" if terminal else "degraded",
+                        data={
+                            "event_id": event_id,
+                            "attempt": attempts,
+                            "terminal": terminal,
+                            **values,
+                        },
+                    )
+                if terminal:
+                    self._trace_links.pop(event_id, None)
+
+    async def _derive_job(self, job):
+        event_id = job["event_id"]
+        if job["derived"] in {"pending", "extracting"}:
+            await self._extractor.graph.ainvoke({"event_id": event_id})
+        job = await self._io(self.storage.job, event_id)
+        if job["derived"] == "committed":
+            await self._background_allowed.wait()
+            items = await self._io(self.storage.index_items, event_id)
+            with self.observer.span("memory.index"):
+                if items:
+                    vectors, tag = await self.embed([item.text for item in items], background=True)
+                    await self._io(self.storage.save_vectors, items, vectors, tag)
+                await self._io(
+                    self.storage.update_job,
+                    event_id,
+                    index_state="indexed",
+                    attempts=0,
+                    next_attempt_at=0,
+                    error_code=None,
+                )
+                self.observer.emit(
+                    "memory.indexed",
+                    data={"memory_ids": [m.memory_id for m in items], "index": "indexed"},
+                )
 
     async def _embedding_identity(self):
         model = getattr(self.embeddings, "model", None)
@@ -227,6 +307,22 @@ class ContextMemory:
         return f"{type(self.embeddings).__module__}.{type(self.embeddings).__name__}:{model}"
 
     async def embed(self, texts, *, background=False):
+        with self.observer.span("memory.embedding") as outcome:
+            self.observer.emit(
+                "embedding.request",
+                data={
+                    "model": getattr(self.embeddings, "model", None),
+                    "texts": texts,
+                    "background": background,
+                },
+            )
+            vectors, tag = await self._embed(texts, background=background)
+            outcome.update(
+                model_tag=tag, dimensions=len(vectors[0]) if vectors else 0, count=len(vectors)
+            )
+            return vectors, tag
+
+    async def _embed(self, texts, *, background=False):
         if background:
             await self._background_allowed.wait()
         async with self._embedding_lock:
@@ -288,7 +384,14 @@ class ContextMemory:
 
     async def recall(self, query: RecallQuery) -> RecallResult:
         async with self.foreground():
-            return await self._retriever.recall(query)
+            with self.observer.span("memory.recall"):
+                result = await self._retriever.recall(query)
+                self.observer.emit(
+                    "memory.recalled",
+                    status="degraded" if result.degradations else "ok",
+                    data=result,
+                )
+                return result
 
     async def load_event(self, event_id, *, max_bytes=None):
         if event_id in self._pending:
@@ -338,6 +441,17 @@ class ContextMemory:
         return selected
 
     async def search_details(self, query: DetailQuery) -> DetailSearchResult:
+        with self.observer.span("memory.details"):
+            self.observer.emit("memory.details_query", data=query)
+            result = await self._search_details(query)
+            self.observer.emit(
+                "memory.details_result",
+                status="degraded" if result.status != "complete" else "ok",
+                data=result,
+            )
+            return result
+
+    async def _search_details(self, query: DetailQuery) -> DetailSearchResult:
         self._require_started()
         scope = query.model_dump(mode="json", exclude={"sources", "text"})
         if not query.sources and not any(

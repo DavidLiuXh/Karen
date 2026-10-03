@@ -17,11 +17,12 @@ class MemoryStub:
 
 @pytest.fixture(autouse=True)
 def local_memory_only(monkeypatch):
-    monkeypatch.setattr(cli, "create_memory", lambda model: MemoryStub())
+    monkeypatch.setattr(cli, "create_memory", lambda model, **kwargs: MemoryStub())
+    monkeypatch.setattr(cli, "create_observer", lambda: cli.Observer())
 
 
 class DisplayAgent:
-    def record_response(self, session, text):
+    def record_response(self, session, text, **kwargs):
         return ()
 
 

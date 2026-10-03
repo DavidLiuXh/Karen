@@ -27,6 +27,7 @@ dynamic-agent-graph = { path = "../DynamicAgentGraph", editable = true }
 
 [project.scripts]
 karen = "karen.cli:main"
+karen-observe = "karen.observability.viewer:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/karen"]

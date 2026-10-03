@@ -17,6 +17,9 @@ Schema 仅支持 type/properties/required/additionalProperties/items/enum、数�
 使用用户的语言。严格按照响应 schema 返回。"""
 
 INTENT_TASK_INSTRUCTION = "判断请求是否清晰；需要时提出澄清问题，否则提取执行目标。"
+INTENT_TASK_INSTRUCTION += (
+    "在 reason 中简短说明目标已足够明确，或具体缺少什么信息；只提供判断依据，不提供推理过程。"
+)
 
 HISTORY_CLARIFICATION = "我还不能确定你指的是哪一次任务或对话，请补充任务内容、文件名或大致时间。"
 TIME_RANGE_CLARIFICATION = "你希望查询哪个时间范围的任务？请说明起止日期或例如‘今天’、‘上周’。"

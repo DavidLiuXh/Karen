@@ -24,16 +24,35 @@ class ExtractionState(TypedDict, total=False):
 
 
 class Extractor:
-    def __init__(self, storage: Storage, model: ModelClient, background_ready, io, embed):
+    def __init__(self, storage: Storage, model: ModelClient, background_ready, io, embed, observer):
         self.storage = storage
         self.model = model
         self.background_ready = background_ready
         self.io = io
         self.embed = embed
+        self.observer = observer
         graph = StateGraph(ExtractionState)
-        graph.add_node("extract", self.extract)
-        graph.add_node("verify", self.verify)
-        graph.add_node("commit", self.commit)
+        graph.add_node(
+            "extract",
+            observer.node(
+                "memory.extract",
+                self.extract,
+                lambda r: {"extraction": r["extraction"], "model_info": r["model_info"]},
+            ),
+        )
+        graph.add_node(
+            "verify",
+            observer.node(
+                "memory.verify",
+                self.verify,
+                lambda r: {
+                    "verification": r["verification"],
+                    "revision": r["revision"],
+                    "model_info": r["model_info"],
+                },
+            ),
+        )
+        graph.add_node("commit", observer.node("memory.commit", self.commit, lambda r: r))
         graph.add_edge(START, "extract")
         graph.add_edge("extract", "verify")
         graph.add_edge("verify", "commit")
@@ -174,7 +193,7 @@ class Extractor:
     async def commit(self, state):
         changed = await self.io(self.build_changes, state)
         await self.io(self.storage.commit_memories, state["event_id"], changed, state["revision"])
-        return {}
+        return {"committed_memory_ids": [m.memory_id for m in changed]}
 
     def build_changes(self, state):
         event = state["allowed_events"][state["event_id"]]

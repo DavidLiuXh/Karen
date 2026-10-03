@@ -184,8 +184,31 @@ class Retriever:
         self.service = service
         self.storage = service.storage
         graph = StateGraph(RecallState)
+        summaries = {
+            "analyze": lambda r: r,
+            "retrieve": lambda r: {
+                "revision": r["revision"],
+                "fusion_order": r["primary"],
+                "scores": r["scores"],
+                "bundles": r["bundles"],
+                "candidates": {
+                    mid: r["memories"][mid]
+                    for mid in set(m for group in r["bundles"].values() for m in group)
+                },
+                "index_coverage": r["index_coverage"],
+                "degraded": r["degraded"],
+                "history_candidate_ids": [e.event_id for e in r["anchors"]],
+            },
+            "rank": lambda r: r,
+            "assemble": lambda r: r,
+        }
         for name in ("analyze", "retrieve", "rank", "assemble"):
-            graph.add_node(name, getattr(self, name))
+            graph.add_node(
+                name,
+                service.observer.node(
+                    "memory.recall." + name, getattr(self, name), summaries[name]
+                ),
+            )
         graph.add_edge(START, "analyze")
         graph.add_edge("analyze", "retrieve")
         graph.add_edge("retrieve", "rank")

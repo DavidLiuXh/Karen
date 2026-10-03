@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from zoneinfo import ZoneInfoNotFoundError
 
-from dynamic_graph import DynamicGraphEngine, ModelBindings, RunResult
+from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings, RunResult
 from dynamic_graph.models.client import ModelCallError
 from dynamic_graph.tools import (
     browser_open_local_page_tool,
@@ -24,6 +24,7 @@ from .context import ContextMemory
 from .context.contracts import PersistenceError
 from .intent import IntentRecognizer, IntentSession
 from .models import deepseek_client, memory_embeddings
+from .observability import ObservedModel, Observer
 
 
 def format_result(result: RunResult) -> str:
@@ -74,9 +75,19 @@ def format_result(result: RunResult) -> str:
     return "\n\n".join(lines)
 
 
-def create_memory(model) -> ContextMemory:
+def create_memory(model, *, observer=None) -> ContextMemory:
     return ContextMemory(
-        root_dir=Path.home() / ".Karne" / "context", model=model, embeddings=memory_embeddings()
+        root_dir=Path.home() / ".Karne" / "context",
+        model=model,
+        embeddings=memory_embeddings(),
+        observer=observer,
+    )
+
+
+def create_observer() -> Observer:
+    return Observer(
+        Path.home() / ".Karne" / "observability",
+        sensitive_values=(os.environ.get("DEEPSEEK_API_KEY"), os.environ.get("TAVILY_API_KEY")),
     )
 
 
@@ -114,8 +125,17 @@ async def converse(*, json_output: bool = False, timezone: str | None = None) ->
     except (ValueError, ZoneInfoNotFoundError, OSError):
         print("Karen：无法确定有效的用户时区，请使用 --timezone 指定 IANA 时区，如 Asia/Shanghai。")
         return 1
-    model = deepseek_client()
-    engine = DynamicGraphEngine(models=ModelBindings(planner=model, worker=model))
+    backend = deepseek_client()
+    observer = create_observer()
+    await observer.start()
+    model = ObservedModel(backend, observer)
+    engine = DynamicGraphEngine(
+        config=EngineConfig(
+            runs_dir=Path.home() / ".Karne" / "runs" if observer.root_dir else Path("runs"),
+            sensitive_values=observer.sensitive_values,
+        ),
+        models=ModelBindings(planner=model, worker=model),
+    )
     for tool_factory in (
         file_read_text_tool,
         file_write_text_tool,
@@ -127,16 +147,18 @@ async def converse(*, json_output: bool = False, timezone: str | None = None) ->
         engine.register_tool(tavily_search_tool())
     else:
         print("Karen：未配置 TAVILY_API_KEY，Tavily 网络搜索暂不可用。")
-    memory = create_memory(model)
+    memory = create_memory(model, observer=observer)
     try:
         await memory.start()
     except (OSError, PersistenceError, RuntimeError):
         print("Karen：记忆目录无法安全打开，可能已有进程使用或文件损坏。本次未启动对话。")
+        await observer.close()
         return 1
     agent = Karen(
-        intent=IntentRecognizer(model),
+        intent=IntentRecognizer(model, observer=observer),
         engine=engine,
         memory=memory,
+        observer=observer,
     )
     try:
         exit_code = 0
@@ -165,8 +187,11 @@ async def converse(*, json_output: bool = False, timezone: str | None = None) ->
                 if json_output
                 else format_result(turn.result)
             )
-            warnings = (*turn.memory_warnings, *agent.record_response(session, response_text))
             print(response_text if json_output else "Karen：" + response_text)
+            warnings = (
+                *turn.memory_warnings,
+                *agent.record_response(session, response_text, trace_id=turn.trace_id),
+            )
             for warning in dict.fromkeys(warnings):
                 print(f"Karen：记忆写入未完成（{warning}）。")
             exit_code = (
@@ -180,6 +205,8 @@ async def converse(*, json_output: bool = False, timezone: str | None = None) ->
         except PersistenceError:
             print("Karen：部分对话未能持久化，退出失败。")
             raise
+        finally:
+            await observer.close()
 
 
 def main() -> None:

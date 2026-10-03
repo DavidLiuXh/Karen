@@ -2,6 +2,7 @@
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from uuid import uuid4
 
 from dynamic_graph import CancellationToken, DynamicGraphEngine, ExecutionPolicy, RunResult
 
@@ -9,6 +10,7 @@ from .capabilities import all_capabilities_policy
 from .context import ContextEvent, ContextMemory, RecallQuery, RecallResult
 from .context.contracts import MemoryError
 from .intent import IntentRecognizer, IntentSession
+from .observability import Observer
 
 
 @dataclass(frozen=True)
@@ -17,6 +19,7 @@ class TaskTurn:
     result: RunResult | None = None
     memory_result: RecallResult | None = None
     memory_warnings: tuple[str, ...] = ()
+    trace_id: str | None = None
 
 
 class Karen:
@@ -26,10 +29,12 @@ class Karen:
         intent: IntentRecognizer,
         engine: DynamicGraphEngine,
         memory: ContextMemory | None = None,
+        observer: Observer | None = None,
     ):
         self.intent = intent
         self.engine = engine
         self.memory = memory
+        self.observer = observer or Observer()
 
     @asynccontextmanager
     async def _foreground(self):
@@ -57,10 +62,19 @@ class Karen:
             warnings.append(str(exc))
             return None
 
-    def record_response(self, session: IntentSession, text: str) -> tuple[str, ...]:
+    def record_response(
+        self, session: IntentSession, text: str, *, trace_id: str | None = None
+    ) -> tuple[str, ...]:
         """Capture the response actually displayed by a UI, without coupling formatters."""
         warnings = []
-        self._capture(session, "assistant_message", {"content": text}, warnings)
+        with self.observer.span(
+            "response.displayed",
+            trace_id=trace_id,
+            conversation_id=session.conversation_id,
+            request_id=session.request_id,
+        ):
+            self.observer.emit("response", data={"text": text})
+            self._capture(session, "assistant_message", {"content": text}, warnings)
         return tuple(warnings)
 
     async def advance(
@@ -81,6 +95,37 @@ class Karen:
         from .intent.recognizer import Message
 
         Message(role="user", content=user_input)
+        trace_id = uuid4().hex
+        with self.observer.span(
+            "turn",
+            trace_id=trace_id,
+            turn_id=uuid4().hex,
+            conversation_id=session.conversation_id,
+            request_id=session.request_id,
+        ) as outcome:
+            self.observer.emit(
+                "turn.input",
+                data={
+                    "text": user_input,
+                    "timezone": session.timezone,
+                    "clarification_round": sum(m.role == "assistant" for m in session.messages),
+                },
+            )
+            turn = await self._advance_turn(
+                session, user_input, policy, cancellation_token, trace_id
+            )
+            outcome["outcome"] = (
+                turn.result.execution_status if turn.result else "needs_clarification"
+            )
+            if (
+                turn.result
+                and turn.result.execution_status == "COMPLETED"
+                and not turn.result.output_complete
+            ):
+                outcome["outcome"] = "INCOMPLETE"
+            return turn
+
+    async def _advance_turn(self, session, user_input, policy, cancellation_token, trace_id):
         warnings, recalled = [], None
         async with self._foreground():
             receipt = self._capture(session, "user_message", {"content": user_input}, warnings)
@@ -105,13 +150,44 @@ class Karen:
                     {"content": "\n".join(session.questions)},
                     warnings,
                 )
-                return TaskTurn(session, memory_result=recalled, memory_warnings=tuple(warnings))
+                return TaskTurn(
+                    session,
+                    memory_result=recalled,
+                    memory_warnings=tuple(warnings),
+                    trace_id=trace_id,
+                )
             self._capture(session, "goal_created", session.goal.model_dump(mode="json"), warnings)
             if policy is None:
                 policy = all_capabilities_policy(self.engine)
-            result = await self.engine.run(
-                goal=session.goal, policy=policy, cancellation_token=cancellation_token
-            )
+            with self.observer.span("execution"):
+                self.observer.emit(
+                    "execution.started",
+                    data={
+                        "goal": session.goal,
+                        "policy": policy,
+                        "runs_dir": str(self.engine.config.runs_dir),
+                    },
+                )
+                result = await self.engine.run(
+                    goal=session.goal, policy=policy, cancellation_token=cancellation_token
+                )
+                self.observer.emit(
+                    "execution.result",
+                    status="ok"
+                    if result.execution_status == "COMPLETED" and result.output_complete
+                    else "failed",
+                    data={
+                        "run_id": result.run_id,
+                        "execution_status": result.execution_status,
+                        "output_complete": result.output_complete,
+                        "outputs": result.outputs,
+                        "diagnostics": result.diagnostics,
+                        "node_records": result.node_records,
+                        "recording": result.recording,
+                        "usage": result.usage,
+                        "business_acceptance": "not_evaluated",
+                    },
+                )
             public_result = result.model_dump(
                 mode="json",
                 include={
@@ -128,4 +204,4 @@ class Karen:
                 },
             )
             self._capture(session, "task_result", public_result, warnings)
-            return TaskTurn(session, result, recalled, tuple(warnings))
+            return TaskTurn(session, result, recalled, tuple(warnings), trace_id)

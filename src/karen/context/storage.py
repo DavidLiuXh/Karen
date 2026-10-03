@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import jieba
 import numpy as np
 
+from ..privacy import redact as redact
 from .contracts import (
     ContextEvent,
     Evidence,
@@ -47,39 +48,6 @@ def terms(text: str) -> list[str]:
     """The same Chinese/identifier token rules apply to indexing and querying."""
     words = jieba.lcut(text.casefold(), cut_all=False)
     return list(dict.fromkeys(w for w in words if re.search(r"\w", w)))
-
-
-def redact(value, *, paths=None, prefix=""):
-    if isinstance(value, dict):
-        result = {}
-        for key, item in value.items():
-            path = prefix + "/" + key.replace("~", "~0").replace("/", "~1")
-            if re.search(
-                r"(?i)(?:^|_)(api[_-]?key|authorization|password|access[_-]?token|secret|private[_-]?key)$",
-                key,
-            ):
-                result[key] = "[REDACTED]"
-                if paths is not None:
-                    paths.append(path)
-            else:
-                result[key] = redact(item, paths=paths, prefix=path)
-        return result
-    if isinstance(value, list):
-        return [
-            redact(item, paths=paths, prefix=f"{prefix}/{index}")
-            for index, item in enumerate(value)
-        ]
-    if isinstance(value, str):
-        redacted = re.sub(r"\bsk-[A-Za-z0-9_-]{16,}\b", "[REDACTED]", value)
-        redacted = re.sub(
-            r"(?i)(\b(?:[a-z0-9]+_)?(?:api[_-]?key|password|access[_-]?token|authorization)\s*[:=]\s*)(?:Bearer\s+)?\S+",
-            r"\1[REDACTED]",
-            redacted,
-        )
-        if redacted != value and paths is not None:
-            paths.append(prefix)
-        return redacted
-    return value
 
 
 def pointer_value(value, pointer: str):

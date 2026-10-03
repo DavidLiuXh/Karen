@@ -16,6 +16,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, field_validator
 from tzlocal import get_localzone_name
 
+from ..observability import Observer
 from .prompts import INTENT_SYSTEM_INSTRUCTION, INTENT_TASK_INSTRUCTION
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -43,11 +44,13 @@ class GoalDraft(IntentContract):
 class Clarification(IntentContract):
     outcome: Literal["needs_clarification"]
     questions: list[Text] = Field(min_length=1)
+    reason: str = Field(default="", max_length=1000)
 
 
 class Ready(IntentContract):
     outcome: Literal["ready"]
     goal: GoalDraft
+    reason: str = Field(default="", max_length=1000)
 
 
 class Assessment(IntentContract):
@@ -82,12 +85,23 @@ class IntentState(TypedDict):
 
 
 class IntentRecognizer:
-    def __init__(self, model: ModelClient):
+    def __init__(self, model: ModelClient, *, observer: Observer | None = None):
         self.model = model
+        self.observer = observer or Observer()
         graph = StateGraph(IntentState)
-        graph.add_node("assess", self._assess)
-        graph.add_node("clarify", self._clarify)
-        graph.add_node("build_goal", self._build_goal)
+        graph.add_node("assess", self.observer.node("intent.assess", self._assess, lambda r: r))
+        graph.add_node(
+            "clarify",
+            self.observer.node(
+                "intent.clarify", self._clarify, lambda r: {"questions": r["session"].questions}
+            ),
+        )
+        graph.add_node(
+            "build_goal",
+            self.observer.node(
+                "intent.build_goal", self._build_goal, lambda r: {"goal": r["session"].goal}
+            ),
+        )
         graph.add_edge(START, "assess")
         graph.add_conditional_edges("assess", self._route)
         graph.add_edge("clarify", END)
@@ -124,7 +138,9 @@ class IntentRecognizer:
 
             return {
                 "decision": Clarification(
-                    outcome="needs_clarification", questions=[HISTORY_CLARIFICATION]
+                    outcome="needs_clarification",
+                    questions=[HISTORY_CLARIFICATION],
+                    reason="Required history was unavailable or ambiguous.",
                 )
             }
         if memory and (memory.get("collection") or {}).get("reason") == "needs_time_range":
@@ -132,7 +148,9 @@ class IntentRecognizer:
 
             return {
                 "decision": Clarification(
-                    outcome="needs_clarification", questions=[TIME_RANGE_CLARIFICATION]
+                    outcome="needs_clarification",
+                    questions=[TIME_RANGE_CLARIFICATION],
+                    reason="Task collection needs an explicit time range.",
                 )
             }
         inputs = {

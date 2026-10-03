@@ -300,3 +300,119 @@ async def test_next_task_has_no_previous_conversation_or_results(tmp_path, first
     assert "第一项任务" not in json.dumps(planner_goal, ensure_ascii=False)
     assert first.session.messages[0].content == "第一项任务：写中文邮件"
     assert final.session.goal.objective == "写一封新的中文邮件"
+
+
+async def test_observation_links_clarification_live_nodes_and_displayed_response(tmp_path):
+    import asyncio
+
+    from karen.observability import ObservedModel, Observer
+    from karen.observability.viewer import TraceStore
+
+    observer = Observer(tmp_path / "observability")
+    await observer.start()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Executor(FakeModelClient):
+        async def generate(self, request):
+            if request.role == "worker":
+                entered.set()
+                await release.wait()
+            return await super().generate(request)
+
+    intent = ObservedModel(
+        FakeModelClient(
+            [
+                {
+                    "decision": {
+                        "outcome": "needs_clarification",
+                        "questions": ["给谁写？"],
+                        "reason": "缺少收件人",
+                    }
+                },
+                ready(),
+            ]
+        ),
+        observer,
+    )
+    executor = ObservedModel(Executor([graph_response(), {"draft": "中文邮件草稿"}]), observer)
+    agent = Karen(
+        intent=IntentRecognizer(intent, observer=observer),
+        engine=DynamicGraphEngine(
+            config=EngineConfig(runs_dir=tmp_path / "runs"),
+            models=ModelBindings(executor, executor),
+        ),
+        observer=observer,
+    )
+    first = await agent.advance(IntentSession(timezone="UTC"), "写邮件")
+    running = asyncio.create_task(agent.advance(first.session, "给客户"))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        await observer._queue.join()
+        store = TraceStore(observer.root_dir)
+        tasks = store.tasks()["tasks"]
+        current = next(t for t in tasks if t["status"] == "nonterminal")
+        detail = store.trace(current["trace_id"])
+        assert len(detail["runs"]) == 1
+        assert not detail["runs"][0]["manifest"]["terminal"]
+        assert detail["runs"][0]["result"] is None
+        assert any(e["event_type"] == "node_started" for e in detail["events"])
+        assert any(
+            e["event_type"] == "decision"
+            and e["data"].get("decision", {}).get("reason") == "缺少收件人"
+            for e in detail["events"]
+        )
+        release.set()
+        final = await running
+        agent.record_response(final.session, "用户实际看到的邮件", trace_id=final.trace_id)
+    finally:
+        release.set()
+        if not running.done():
+            await running
+        await observer.close()
+    detail = TraceStore(observer.root_dir).trace(final.trace_id)
+    assert detail["runs"][0]["result"]["output_complete"]
+    assert (
+        detail["runs"][0]["artifacts"]["artifacts/write-1.json"]["output"]["draft"]
+        == "中文邮件草稿"
+    )
+    assert any(
+        e["event_type"] == "response" and e["data"]["text"] == "用户实际看到的邮件"
+        for e in detail["events"]
+    )
+    assert detail["checks"][0]["status"] == "pass"
+    assert {t["outcome"] for t in TraceStore(observer.root_dir).tasks()["tasks"]} == {
+        "needs_clarification",
+        "COMPLETED",
+    }
+
+
+async def test_failed_observation_does_not_fail_real_engine_task(tmp_path, monkeypatch):
+    from karen.observability import ObservedModel, Observer
+
+    observer = Observer(tmp_path / "observability")
+    await observer.start()
+
+    def disk_failed(*args):
+        raise OSError("observation disk offline")
+
+    monkeypatch.setattr(observer, "_append", disk_failed)
+    intent = ObservedModel(FakeModelClient([ready()]), observer)
+    executor = ObservedModel(
+        FakeModelClient([graph_response(), {"draft": "仍然正常完成"}]), observer
+    )
+    agent = Karen(
+        intent=IntentRecognizer(intent, observer=observer),
+        engine=DynamicGraphEngine(
+            config=EngineConfig(runs_dir=tmp_path / "runs"),
+            models=ModelBindings(executor, executor),
+        ),
+        observer=observer,
+    )
+    try:
+        turn = await agent.advance(IntentSession(timezone="UTC"), "写中文邮件")
+        assert turn.result.execution_status == "COMPLETED"
+        assert turn.result.outputs == {"draft": "仍然正常完成"}
+        assert list((tmp_path / "runs").glob("*/result.json"))
+    finally:
+        await observer.close()
+    assert observer.write_failures > 0

@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="zh-CN">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Karen · 运行观测</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172c35;
+      --muted: #607580;
+      --line: #dce5e7;
+      --accent: #14695b;
+      --bg: #f3f6f5;
+      --warn: #985719;
+      --error: #ad3535;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font:
+        14px/1.6 system-ui,
+        -apple-system,
+        sans-serif;
+    }
+    header {
+      background: #142f31;
+      color: #fff;
+      padding: 22px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    h1 {
+      font-size: 21px;
+      margin: 0;
+      font-weight: 600;
+    }
+    header p {
+      margin: 3px 0;
+      color: #bed3d0;
+      font-size: 12px;
+    }
+    .live {
+      font-size: 12px;
+      color: #cee8da;
+    }
+    .live:before {
+      content: "●";
+      color: #8de1ad;
+      margin-right: 8px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 310px minmax(0, 1fr);
+      min-height: calc(100vh - 98px);
+    }
+    aside {
+      padding: 20px 14px;
+      border-right: 1px solid var(--line);
+      background: #fff;
+    }
+    aside h2 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      padding: 0 10px;
+      margin: 0 0 12px;
+    }
+    .task {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      text-align: left;
+      background: #fff;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      color: var(--ink);
+      margin-bottom: 7px;
+      cursor: pointer;
+    }
+    .task:hover {
+      background: #f5f8f7;
+    }
+    .task.selected {
+      border-color: #b7d1ca;
+      background: #edf5f1;
+    }
+    .task strong {
+      font-size: 14px;
+      display: block;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      margin-bottom: 7px;
+    }
+    .meta {
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .pill {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: #e6efea;
+      color: var(--accent);
+    }
+    .pill.failed {
+      color: var(--error);
+      background: #fcecec;
+    }
+    .pill.degraded,
+    .pill.nonterminal,
+    .pill.cancelled {
+      color: var(--warn);
+      background: #fff1dd;
+    }
+    main {
+      padding: 28px;
+      max-width: 1250px;
+      width: 100%;
+    }
+    main h2 {
+      margin: 0 0 6px;
+      font-size: 23px;
+      overflow-wrap: anywhere;
+    }
+    .empty {
+      padding: 50px 10px;
+      color: var(--muted);
+    }
+    .notice {
+      padding: 11px 14px;
+      border: 1px solid #e8cc9e;
+      background: #fff7e9;
+      color: #775023;
+      border-radius: 6px;
+      margin-bottom: 16px;
+      font-size: 12px;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+      margin: 22px 0;
+    }
+    .card {
+      padding: 16px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .card small {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .card b {
+      display: block;
+      font-size: 17px;
+      margin-top: 5px;
+      overflow-wrap: anywhere;
+    }
+    .section {
+      background: white;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 18px;
+    }
+    .section h3 {
+      font-size: 15px;
+      margin: 0 0 14px;
+    }
+    .filters {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    input,
+    select {
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      font: inherit;
+      color: var(--ink);
+      background: #fff;
+    }
+    input {
+      flex: 1;
+      min-width: 170px;
+    }
+    .event {
+      border-left: 2px solid #dbe7e2;
+      padding: 0 0 9px 18px;
+      margin-left: 5px;
+      position: relative;
+    }
+    .event:before {
+      content: "";
+      position: absolute;
+      left: -5px;
+      top: 11px;
+      width: 8px;
+      height: 8px;
+      background: #5a9b83;
+      border-radius: 50%;
+    }
+    .event.failed:before {
+      background: var(--error);
+    }
+    .event.degraded:before {
+      background: #c68b31;
+    }
+    .event summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      padding: 5px 0;
+    }
+    .event summary:before {
+      content: "›";
+      color: var(--muted);
+    }
+    .event[open] summary:before {
+      content: "⌄";
+    }
+    .event time {
+      font-size: 11px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .event strong {
+      font-size: 12px;
+    }
+    .event .meta {
+      margin-left: auto;
+    }
+    pre {
+      background: #f5f7f6;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 13px;
+      overflow: auto;
+      max-height: 420px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font:
+        12px/1.65 ui-monospace,
+        monospace;
+      margin: 8px 0 4px;
+    }
+    .graph {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 12px 0;
+    }
+    .node {
+      background: #f3f8f5;
+      border: 1px solid #cfdfd7;
+      border-radius: 5px;
+      padding: 10px 12px;
+      min-width: 145px;
+    }
+    .node b {
+      display: block;
+      font-size: 12px;
+    }
+    .node small {
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .checks {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    details.record {
+      margin: 10px 0;
+    }
+    details.record summary {
+      cursor: pointer;
+      color: var(--accent);
+      font-size: 12px;
+    }
+    footer {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 16px;
+    }
+    a {
+      color: var(--accent);
+    }
+    @media (max-width: 800px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+      aside {
+        border-right: none;
+        border-bottom: 1px solid var(--line);
+        max-height: 250px;
+        overflow: auto;
+      }
+      main {
+        padding: 18px;
+      }
+      .cards {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      header {
+        padding: 18px;
+      }
+      .event .meta {
+        margin-left: 0;
+      }
+    }
+  </style>
+  <header>
+    <div>
+      <h1>
+        Karen <span style="font-weight: 400; color: #b7d0c8">/ 运行观测</span>
+      </h1>
+      <p>从输入、决策到执行与后台记忆的可核对记录</p>
+    </div>
+    <div class="live" id="connection">每 2 秒刷新 · 本地只读</div>
+  </header>
+  <div class="layout">
+    <aside>
+      <h2>最近交互</h2>
+      <div id="tasks"></div>
+      <footer id="listCoverage"></footer>
+    </aside>
+    <main>
+      <div id="detail" class="empty">
+        尚无运行记录。启动 Karen 并输入一个任务后，记录会出现在这里。
+      </div>
+    </main>
+  </div>
+  <script>
+    const labels = {
+      "span.started": "开始",
+      "span.finished": "结束",
+      decision: "决策证据",
+      "turn.input": "用户输入",
+      "model.request": "模型请求",
+      "model.response": "模型返回",
+      "model.error": "模型错误",
+      "memory.submitted": "记忆入队",
+      "memory.persisted": "原文已持久化",
+      "memory.persistence_failed": "原文持久化失败",
+      "memory.retry": "记忆重试／终止",
+      "memory.indexed": "索引完成",
+      "embedding.request": "向量请求",
+      "memory.details_query": "原文补查范围",
+      "memory.details_result": "原文补查结果",
+      "memory.recalled": "最终召回",
+      "execution.started": "执行目标与权限",
+      "execution.result": "执行结果",
+      response: "实际展示回复",
+      node_started: "节点开始",
+      node_returned: "节点返回",
+      node_failed: "节点失败",
+      state_committed: "状态提交",
+      graph_saved: "执行图已保存",
+      run_started: "引擎启动",
+      run_finished: "引擎结束",
+      compiled: "执行图已编译",
+    };
+    const outcomes = {
+      COMPLETED: "执行完成",
+      FAILED: "执行失败",
+      CANCELLED: "已取消",
+      INCOMPLETE: "结果不完整",
+      needs_clarification: "等待澄清",
+    };
+    let selected = null,
+      snapshot = null,
+      filter = "key",
+      search = "",
+      busy = false;
+    function el(tag, text, cls) {
+      const n = document.createElement(tag);
+      if (text !== undefined) n.textContent = text;
+      if (cls) n.className = cls;
+      return n;
+    }
+    function string(value) {
+      return typeof value === "string" ? value : JSON.stringify(value);
+    }
+    function pill(text, status = "ok") {
+      return el("span", text, "pill " + status);
+    }
+    function stamp(v) {
+      return v ? new Date(v).toLocaleString() : "";
+    }
+    function payload(parent, title, value, key) {
+      const d = el("details", undefined, "record");
+      d.dataset.key = key;
+      d.append(el("summary", title), el("pre", JSON.stringify(value, null, 2)));
+      parent.append(d);
+    }
+    async function get(path) {
+      const response = await fetch(path, { cache: "no-store" });
+      if (!response.ok) throw Error("HTTP " + response.status);
+      return response.json();
+    }
+    function tasks(data) {
+      const holder = document.querySelector("#tasks");
+      holder.replaceChildren();
+      for (const t of data.tasks) {
+        const button = el(
+          "button",
+          undefined,
+          "task" + (t.trace_id === selected ? " selected" : ""),
+        );
+        button.append(el("strong", string(t.input) || "未捕获输入"));
+        const meta = el("div", undefined, "meta");
+        meta.append(
+          pill(
+            outcomes[t.outcome] ||
+              (t.status === "nonterminal" ? "未结束" : t.status),
+            t.outcome === "FAILED"
+              ? "failed"
+              : t.outcome === "INCOMPLETE"
+                ? "degraded"
+                : t.status,
+          ),
+          el("span", stamp(t.timestamp_utc)),
+        );
+        if (t.degraded) meta.append(pill("有降级", "degraded"));
+        button.append(meta);
+        button.onclick = () => {
+          selected = t.trace_id;
+          snapshot = null;
+          refresh();
+        };
+        holder.append(button);
+      }
+      if (!data.tasks.length) holder.append(el("p", "暂无记录", "empty"));
+      document.querySelector("#listCoverage").textContent =
+        (data.coverage.partial ? "列表扫描达到上限，仅展示部分记录。 " : "") +
+        (data.coverage.gaps.length
+          ? "有观测记录丢失；任务执行可能仍已完成。"
+          : "");
+    }
+    function render(data) {
+      const target = document.querySelector("#detail");
+      const open = new Set(
+        [...target.querySelectorAll("details[open]")].map((n) => n.dataset.key),
+      );
+      target.className = "";
+      target.replaceChildren();
+      const input = data.events.find(
+        (e) => e.trace_id === selected && e.event_type === "turn.input",
+      );
+      target.append(
+        el("h2", input ? string(input.data.text) : "任务详情"),
+        el(
+          "div",
+          "任务 " + data.request_id + " · 多轮澄清与后台工作按同一任务关联",
+          "meta",
+        ),
+      );
+      const unhealthy =
+        data.coverage.partial ||
+        data.coverage.invalid_lines ||
+        data.coverage.dropped ||
+        data.coverage.write_failures ||
+        (data.coverage.process_health || []).some(
+          (h) => h.dropped || h.write_failures,
+        );
+      if (data.coverage.engine?.partial)
+        target.append(
+          el(
+            "div",
+            "引擎目录扫描达到上限，可能有更早的执行记录未显示。",
+            "notice",
+          ),
+        );
+      if (
+        !data.runs.length &&
+        data.events.some((e) => e.event_type === "execution.started")
+      )
+        target.append(
+          el(
+            "div",
+            "已观察到执行启动，但同级 runs 目录没有匹配记录；可能尚未写入、目录不同或超出扫描范围。",
+            "notice",
+          ),
+        );
+      if (unhealthy)
+        target.append(
+          el(
+            "div",
+            "记录存在裁剪、丢失或坏行，不能将缺少事件解释为步骤未发生。展开覆盖信息查看具体缺口。",
+            "notice",
+          ),
+        );
+      const rootFinish = data.events.find(
+        (e) =>
+          e.trace_id === selected &&
+          e.stage === "turn" &&
+          e.event_type === "span.finished",
+      );
+      const result = [...data.events]
+        .reverse()
+        .find((e) => e.event_type === "execution.result");
+      const requests = data.events.filter(
+        (e) => e.event_type === "model.request",
+      );
+      const modelEnd = data.events.filter(
+        (e) => e.stage === "model.call" && e.event_type === "span.finished",
+      );
+      const active = new Map();
+      const background = new Map();
+      for (const e of data.events) {
+        if (e.source_event_id) {
+          if (e.event_type === "span.started") background.set(e.span_id, e);
+          if (e.event_type === "span.finished") background.delete(e.span_id);
+        }
+        if (e.trace_id !== selected) continue;
+        if (e.event_type === "span.started") active.set(e.span_id, e);
+        if (e.event_type === "span.finished") active.delete(e.span_id);
+      }
+      const phase = [...active.values()].pop();
+      const backgroundPhase = [...background.values()].pop();
+      const failures = data.events.filter(
+        (e) => e.status === "failed" || e.event_type === "node_failed",
+      );
+      const cards = el("div", undefined, "cards");
+      for (const [label, value] of [
+        [
+          "本轮状态",
+          rootFinish
+            ? outcomes[rootFinish.data.outcome] || rootFinish.status
+            : "未结束／可能中断",
+        ],
+        [
+          "本轮耗时",
+          rootFinish
+            ? ((rootFinish.duration_ms || 0) / 1000).toFixed(2) + " 秒"
+            : "尚未结束",
+        ],
+        [
+          "当前／最后阶段",
+          phase
+            ? phase.stage + (phase.model_role ? " · " + phase.model_role : "")
+            : backgroundPhase
+              ? "后台 · " + backgroundPhase.stage
+              : rootFinish
+                ? "交互已结束"
+                : "记录未终结",
+        ],
+        ["任务模型调用", requests.length + " 次"],
+        ["失败事件", failures.length + " 条"],
+      ]) {
+        const c = el("div", undefined, "card");
+        c.append(el("small", label), el("b", value));
+        cards.append(c);
+      }
+      target.append(cards);
+      const acceptance = el("div", undefined, "section");
+      acceptance.append(el("h3", "结果与流程检查"));
+      acceptance.append(
+        el(
+          "p",
+          "业务成功标准尚未独立验收。模型给出的判断依据是待核对的证据，不能代替验收。",
+          "meta",
+        ),
+      );
+      const checks = el("div", undefined, "checks");
+      for (const c of data.checks || [])
+        checks.append(
+          pill(
+            c.label +
+              "：" +
+              ({
+                pass: "通过",
+                fail: "不符合",
+                unknown: "证据不足",
+                not_applicable: "不适用",
+              }[c.status] || c.status),
+            c.status === "fail"
+              ? "failed"
+              : c.status === "unknown"
+                ? "degraded"
+                : "ok",
+          ),
+        );
+      acceptance.append(checks);
+      if (result)
+        payload(
+          acceptance,
+          "查看执行结果、完整性与诊断",
+          result.data,
+          "result",
+        );
+      payload(acceptance, "查看记录覆盖范围", data.coverage, "coverage");
+      const usage = { input_tokens: 0, output_tokens: 0, unknown_calls: 0 };
+      for (const e of modelEnd) {
+        const u = e.data.usage || {};
+        if (u.input_tokens == null || u.output_tokens == null)
+          usage.unknown_calls++;
+        usage.input_tokens += u.input_tokens || 0;
+        usage.output_tokens += u.output_tokens || 0;
+      }
+      payload(acceptance, "查看模型用量（仅累计实际返回值）", usage, "usage");
+      target.append(acceptance);
+      for (const run of data.runs) {
+        const box = el("div", undefined, "section");
+        box.append(el("h3", "执行图 · " + run.run_id.slice(0, 12)));
+        if (!run.manifest.terminal)
+          box.append(
+            el("p", "引擎记录尚未终结，可能仍在执行或已中断。", "meta"),
+          );
+        const graph = el("div", undefined, "graph");
+        for (const node of run.graph.nodes || []) {
+          const n = el("div", undefined, "node");
+          const state = [...data.events]
+            .reverse()
+            .find(
+              (e) =>
+                e.origin === "engine" &&
+                e.run_id === run.run_id &&
+                e.node_id === node.id,
+            );
+          if (state)
+            n.append(
+              pill(
+                labels[state.event_type] || state.event_type,
+                state.event_type === "node_failed" ? "failed" : "ok",
+              ),
+            );
+          n.append(
+            el("b", node.id + " · " + node.kind),
+            el(
+              "small",
+              (node.capability
+                ? node.capability.name + "@" + node.capability.version
+                : node.model_role || "") +
+                " ← " +
+                ((node.depends_on || []).join(", ") || "起点"),
+            ),
+          );
+          graph.append(n);
+        }
+        box.append(graph);
+        payload(
+          box,
+          "展开 GoalSpec（含实际上下文）",
+          run.goal,
+          "goal-" + run.run_id,
+        );
+        payload(
+          box,
+          "展开执行图与权限",
+          { graph: run.graph, policy: run.policy },
+          "graph-" + run.run_id,
+        );
+        payload(box, "展开节点产物", run.artifacts, "artifacts-" + run.run_id);
+        if (run.coverage.partial)
+          box.append(
+            el("p", "执行记录扫描达到上限，显示内容可能不完整。", "notice"),
+          );
+        target.append(box);
+      }
+      const timeline = el("div", undefined, "section");
+      timeline.append(el("h3", "任务时间线"));
+      const controls = el("div", undefined, "filters");
+      const select = el("select");
+      for (const [value, label] of [
+        ["key", "关键决策与节点"],
+        ["all", "全部事件"],
+        ["errors", "失败与降级"],
+      ]) {
+        const option = el("option", label);
+        option.value = value;
+        select.append(option);
+      }
+      select.value = filter;
+      select.onchange = () => {
+        filter = select.value;
+        render(data);
+      };
+      const field = el("input");
+      field.placeholder = "筛选阶段、事件、记忆 ID…";
+      field.value = search;
+      field.oninput = () => {
+        search = field.value;
+        renderEvents(data, timeline);
+      };
+      controls.append(select, field);
+      timeline.append(controls, el("div", undefined, "entries"));
+      target.append(timeline);
+      renderEvents(data, timeline);
+      for (const d of target.querySelectorAll("details"))
+        d.open = open.has(d.dataset.key);
+    }
+    function renderEvents(data, timeline) {
+      const entries = timeline.querySelector(".entries");
+      entries.replaceChildren();
+      for (const e of data.events) {
+        if (
+          filter === "key" &&
+          [
+            "span.started",
+            "span.finished",
+            "model.request",
+            "model.response",
+          ].includes(e.event_type)
+        )
+          continue;
+        if (
+          filter === "errors" &&
+          !["failed", "degraded", "cancelled"].includes(e.status) &&
+          e.event_type !== "node_failed"
+        )
+          continue;
+        if (
+          search &&
+          !JSON.stringify(e).toLowerCase().includes(search.toLowerCase())
+        )
+          continue;
+        const d = el(
+          "details",
+          undefined,
+          "event " +
+            (e.event_type === "node_failed" ? "failed" : e.status || ""),
+        );
+        d.dataset.key = e.event_id || "engine-" + e.run_id + "-" + e.seq;
+        const summary = el("summary");
+        summary.append(
+          el("time", new Date(e.timestamp_utc).toLocaleTimeString()),
+          el("strong", e.stage || e.phase || ""),
+          el("span", labels[e.event_type] || e.event_type),
+        );
+        const meta = el("span", undefined, "meta");
+        if (e.origin === "engine") meta.append(el("span", "引擎"));
+        if (e.duration_ms != null)
+          meta.append(el("span", e.duration_ms.toFixed(1) + " ms"));
+        summary.append(meta);
+        d.append(summary, el("pre", JSON.stringify(e, null, 2)));
+        entries.append(d);
+      }
+      if (!entries.children.length)
+        entries.append(el("p", "没有匹配的记录", "meta"));
+    }
+    async function refresh() {
+      if (busy) return;
+      busy = true;
+      try {
+        const list = await get("/api/tasks");
+        if (!selected && list.tasks.length) selected = list.tasks[0].trace_id;
+        tasks(list);
+        if (selected) {
+          const data = await get(
+            "/api/trace?id=" + encodeURIComponent(selected),
+          );
+          const serialized = JSON.stringify(data);
+          if (serialized !== snapshot) {
+            snapshot = serialized;
+            render(data);
+          }
+        }
+        document.querySelector("#connection").textContent =
+          "每 2 秒刷新 · 本地只读";
+      } catch (error) {
+        document.querySelector("#connection").textContent =
+          "读取失败 · " + error.message;
+      } finally {
+        busy = false;
+      }
+    }
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</html>

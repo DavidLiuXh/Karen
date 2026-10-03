@@ -820,7 +820,8 @@ async def test_normal_cli_exit_waits_for_raw_persistence(tmp_path, monkeypatch):
     from karen import TaskTurn, cli
 
     service = ContextMemory(root_dir=tmp_path, model=MemoryModel(), embeddings=LocalEmbeddings())
-    monkeypatch.setattr(cli, "create_memory", lambda model: service)
+    monkeypatch.setattr(cli, "create_memory", lambda model, **kwargs: service)
+    monkeypatch.setattr(cli, "create_observer", lambda: cli.Observer())
     monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
     captured = []
@@ -838,7 +839,7 @@ async def test_normal_cli_exit_waits_for_raw_persistence(tmp_path, monkeypatch):
                 ),
             )
 
-        def record_response(self, session, text):
+        def record_response(self, session, text, **kwargs):
             captured.append(service.submit(event(text, kind="assistant_message")))
             return ()
 
@@ -858,6 +859,64 @@ async def test_fusion_fallback_keeps_record_order_with_related_versions(memory):
     assert result.m1 and all(hit.relevance == "unverified" for hit in result.m1)
     assert [hit.fusion_rank for hit in result.m1] == sorted(hit.fusion_rank for hit in result.m1)
     assert {hit.memory.state for hit in result.m1} == {"active", "superseded"}
+
+
+async def test_observation_tracks_background_changes_recall_and_degradation(tmp_path):
+    from karen.observability import ObservedModel, Observer
+    from karen.observability.viewer import TraceStore
+
+    observer = Observer(tmp_path / "observability")
+    await observer.start()
+    backend = MemoryModel()
+    service = ContextMemory(
+        root_dir=tmp_path / "context",
+        model=ObservedModel(backend, observer),
+        embeddings=LocalEmbeddings(),
+        observer=observer,
+    )
+    with observer.span("startup", request_id="unrelated-startup"):
+        await service.start()
+    trace_id = __import__("uuid").uuid4().hex
+    try:
+        with observer.span(
+            "turn", trace_id=trace_id, request_id="task-1", conversation_id="conversation"
+        ):
+            receipt = service.submit(event("我住在北京"))
+        await service.flush(receipt)
+        backend.fail_rank = True
+        with observer.span(
+            "turn", trace_id=trace_id, request_id="task-1", conversation_id="conversation"
+        ):
+            result = await service.recall(query("我住在哪里"))
+        assert "RERANK_FAILED_FUSION_ORDER" in result.degradations
+    finally:
+        await service.close()
+        await observer.close()
+    detail = TraceStore(observer.root_dir).trace(trace_id)
+    assert {"memory.persisted", "memory.indexed", "memory.recalled"} <= {
+        e["event_type"] for e in detail["events"]
+    }
+    derived = next(
+        e
+        for e in detail["events"]
+        if e["stage"] == "memory.derive" and e["event_type"] == "span.started"
+    )
+    assert derived["source_trace_id"] == trace_id and derived["source_event_id"] == receipt.event_id
+    assert derived["trace_id"] != trace_id
+    assert derived["parent_span_id"] is None
+    assert any(
+        e["stage"] == "memory.commit"
+        and e["event_type"] == "decision"
+        and e["data"]["committed_memory_ids"]
+        for e in detail["events"]
+    )
+    assert any(
+        e["stage"] == "memory.recall.retrieve"
+        and e["event_type"] == "decision"
+        and e["data"]["fusion_order"]
+        for e in detail["events"]
+    )
+    assert detail["checks"][2]["status"] == "pass"
 
 
 def test_recovery_does_not_follow_links_outside_memory_directory(tmp_path):

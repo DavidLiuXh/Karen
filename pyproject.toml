@@ -12,6 +12,9 @@ dependencies = [
   "dynamic-agent-graph>=0.1.0,<0.2",
   "langgraph>=1.0,<2",
   "langchain-deepseek>=1.0,<2",
+  "langchain-ollama>=1.0,<2",
+  "numpy>=2,<3",
+  "jieba>=0.42,<1",
   "pydantic>=2.11,<3",
   "tzlocal>=5.3,<6",
 ]

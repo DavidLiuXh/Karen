@@ -1,0 +1,636 @@
+"""Current-input analysis, hybrid retrieval, relation bundles and bounded recall."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from datetime import datetime, timedelta, timezone
+from typing import TypedDict
+
+import numpy as np
+from dynamic_graph.models.client import ModelRequest
+from langgraph.graph import END, START, StateGraph
+
+from .contracts import (
+    DetailQuery,
+    History,
+    MemoryHit,
+    QueryAnalysis,
+    Ranking,
+    RecallQuery,
+    RecallResult,
+    TimeRange,
+)
+from .prompts import MEMORY_SYSTEM, QUERY, RERANK
+from .storage import digest, encode, terms
+
+FALLBACK_STOP_WORDS = frozenset(
+    {
+        "我们",
+        "你们",
+        "他们",
+        "这个",
+        "那个",
+        "什么",
+        "需要",
+        "可以",
+        "请问",
+        "一下",
+        "帮我",
+        "现在",
+        "今天",
+        "昨天",
+        "之前",
+        "如何",
+        "是不是",
+        "the",
+        "and",
+        "with",
+        "that",
+        "this",
+        "what",
+        "please",
+        "can",
+        "you",
+        "your",
+    }
+)
+
+
+class RecallState(TypedDict, total=False):
+    query: RecallQuery
+    deadline: float
+    analysis: QueryAnalysis
+    degraded: list[str]
+    revision: int
+    memories: dict
+    primary: list[str]
+    bundles: dict
+    scores: dict
+    index_coverage: dict
+    anchors: list
+    ranking: Ranking
+    result: RecallResult
+
+
+def time_bounds(value):
+    """An imprecise date denotes an interval, never a fabricated exact instant."""
+    return value.bounds() if value is not None else None
+
+
+def evidence_only(memory, analysis, now=None):
+    if memory.layer != "m1":
+        return False
+    if analysis.time_mode == "unspecified":
+        return True
+    if memory.verification_state != "supported" or memory.state in {"corrected", "conflicted"}:
+        return True
+    if analysis.time_mode == "effective_at":
+        if any(
+            value and value.origin == "inferred" for value in (memory.valid_from, memory.valid_to)
+        ):
+            return True
+        start, end = time_bounds(memory.valid_from), time_bounds(memory.valid_to)
+        return (
+            start is None
+            or analysis.at < start[1]
+            or (end is not None and analysis.at >= end[0])
+            or (memory.state == "superseded" and end is None)
+        )
+    if analysis.time_mode == "current" and now is not None:
+        start, end = time_bounds(memory.valid_from), time_bounds(memory.valid_to)
+        if start and now < start[0] or end and now >= end[0]:
+            return True
+    return memory.state != "active"
+
+
+def hybrid(memories, vectors, keyword, query_vector, tag, query):
+    """Cosine top-100 and BM25 top-100 per layer, fused by reciprocal rank."""
+    eligible = {
+        mid: m
+        for mid, m in memories.items()
+        if m.verification_state != "rejected"
+        and (m.scope.kind == "global" or m.scope.project_id == query.project_id)
+        and not all(s.event_id in query.exclude_event_ids for s in m.sources)
+    }
+    cosine = {}
+    if query_vector is not None:
+        vector = np.asarray(query_vector, dtype=np.float32)
+        if (
+            vector.ndim != 1
+            or not vector.size
+            or not np.isfinite(vector).all()
+            or not np.linalg.norm(vector)
+        ):
+            raise ValueError("INVALID_QUERY_EMBEDDING")
+        vector = vector / np.linalg.norm(vector)
+        for mid, row in vectors.items():
+            if mid not in eligible or row["model_tag"] != tag or row["dimension"] != vector.size:
+                continue
+            if row["text_hash"] != digest(eligible[mid].text):
+                continue
+            stored = np.frombuffer(row["vector"], dtype=np.float32)
+            if stored.size == vector.size and np.isfinite(stored).all():
+                cosine[mid] = float(stored @ vector)
+    scores, roots = {}, []
+    for layer in ("m1", "m2"):
+        vector_order = sorted(
+            (mid for mid in cosine if eligible[mid].layer == layer),
+            key=lambda mid: (-cosine[mid], mid),
+        )[:100]
+        keyword_order = [mid for mid in keyword.get(layer, []) if mid in eligible][:100]
+        fused = {}
+        for kind, order in (("vector", vector_order), ("bm25", keyword_order)):
+            for rank, mid in enumerate(order, 1):
+                fused[mid] = fused.get(mid, 0) + 1 / (60 + rank)
+                scores.setdefault(mid, {})[kind] = rank
+        order = sorted(fused, key=lambda mid: (-fused[mid], mid))
+        for rank, mid in enumerate(order, 1):
+            scores[mid].update(fusion_rank=rank, vector_score=cosine.get(mid))
+        roots.extend(order[:20])
+    return eligible, roots, scores
+
+
+def relation_bundle(mid, memories, reverse, *, timeline=False):
+    """Resolve current versions without injecting an unbounded chain of past moves."""
+    found, todo = set(), [mid]
+    while todo:
+        current = todo.pop()
+        if current in found or current not in memories:
+            continue
+        found.add(current)
+        m = memories[current]
+        todo.extend(m.related_memory_ids + m.supersedes + m.corrects + reverse.get(current, []))
+        if m.conflict_group_id:
+            todo.extend(
+                other.memory_id
+                for other in memories.values()
+                if other.conflict_group_id == m.conflict_group_id
+            )
+    if timeline:
+        return sorted(found)
+    root = memories[mid]
+    required = {mid, *root.related_memory_ids}
+    required.update(
+        other
+        for other in found
+        if memories[other].layer == "m1" and memories[other].state in {"active", "conflicted"}
+    )
+    return sorted(found & required)
+
+
+class Retriever:
+    def __init__(self, service):
+        self.service = service
+        self.storage = service.storage
+        graph = StateGraph(RecallState)
+        for name in ("analyze", "retrieve", "rank", "assemble"):
+            graph.add_node(name, getattr(self, name))
+        graph.add_edge(START, "analyze")
+        graph.add_edge("analyze", "retrieve")
+        graph.add_edge("retrieve", "rank")
+        graph.add_edge("rank", "assemble")
+        graph.add_edge("assemble", END)
+        self.graph = graph.compile()
+
+    async def recall(self, query):
+        state = {"query": query, "deadline": time.monotonic() + 20, "degraded": []}
+        try:
+            async with asyncio.timeout(20):
+                async for update in self.graph.astream(state, stream_mode="updates"):
+                    for values in update.values():
+                        state.update(values)
+            return state["result"]
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            analysis = state.get("analysis")
+            dependency = analysis.dialogue_dependency if analysis else "none"
+            return RecallResult(
+                status="unavailable",
+                history=History(
+                    status="unavailable" if dependency != "none" else "none",
+                    reason="本轮记忆读取未能完成。",
+                ),
+                degradations=["MEMORY_RECALL_UNAVAILABLE"],
+                coverage={"complete": False, "requires_history": dependency == "needed"},
+            )
+
+    async def call(self, state, role, instruction, inputs, schema):
+        remaining = min(state["deadline"] - time.monotonic() - 1.5, 8)
+        if remaining <= 0:
+            raise TimeoutError("RECALL_DEADLINE")
+        request = ModelRequest(
+            role=role,
+            system_instruction=MEMORY_SYSTEM,
+            task_instruction=instruction,
+            input_data=inputs,
+            output_schema=schema.model_json_schema(),
+            max_output_tokens=4096,
+            timeout_seconds=remaining,
+        )
+        async with asyncio.timeout(remaining):
+            response = await self.service.model.generate(request)
+        return schema.model_validate(response.payload)
+
+    async def analyze(self, state):
+        query = state["query"]
+        degraded = list(state["degraded"])
+        try:
+            analysis = await self.call(
+                state,
+                "memory_query",
+                QUERY,
+                {
+                    "text": query.text,
+                    "timezone": query.timezone,
+                    "current_time_utc": query.current_time_utc.isoformat(),
+                    "time_constraint": query.time_constraint.model_dump(mode="json")
+                    if query.time_constraint
+                    else None,
+                    "project_id": query.project_id,
+                    "current_task_messages": query.current_task_messages,
+                },
+                QueryAnalysis,
+            )
+        except Exception:
+            analysis = QueryAnalysis(search_text=query.text, time_mode="unspecified")
+            degraded.append("QUERY_ANALYSIS_FAILED")
+        if query.time_constraint:
+            analysis = analysis.model_copy(update={"time_range": query.time_constraint})
+        return {"analysis": analysis, "degraded": degraded}
+
+    async def retrieve(self, state):
+        query, analysis = state["query"], state["analysis"]
+        degraded = list(state["degraded"])
+        vector, tag = None, None
+        remaining = min(state["deadline"] - time.monotonic() - 1.5, 8)
+        try:
+            async with asyncio.timeout(max(0, remaining)):
+                values, tag = await self.service.embed([analysis.search_text])
+                vector = values[0]
+        except Exception:
+            degraded.append("VECTOR_RECALL_UNAVAILABLE")
+        known_at = analysis.at if analysis.time_mode == "known_at" else None
+        revision, memories, vectors, keyword, coverage = await self.service._io(
+            self.storage.retrieval_snapshot, analysis.search_text, known_at
+        )
+        if not coverage["bm25_available"]:
+            degraded.append("BM25_RECALL_UNAVAILABLE")
+            if vector is None:
+                raise RuntimeError("BOTH_RECALL_BRANCHES_UNAVAILABLE")
+        if vector is not None:
+            dimensions = {row["dimension"] for row in vectors.values() if row["model_tag"] == tag}
+            if dimensions and dimensions != {len(vector)}:
+                await self.service._io(self.storage.invalidate_vectors, tag, force=True)
+                degraded.append("EMBEDDING_DIMENSION_CHANGED")
+                vectors = {}
+        try:
+            eligible, roots, scores = await self.service._io(
+                hybrid, memories, vectors, keyword, vector, tag, query
+            )
+        except ValueError:
+            if not coverage["bm25_available"]:
+                raise RuntimeError("BOTH_RECALL_BRANCHES_UNAVAILABLE") from None
+            eligible, roots, scores = await self.service._io(
+                hybrid, memories, vectors, keyword, None, None, query
+            )
+            degraded.append("INVALID_QUERY_EMBEDDING")
+        if vector is not None and any(mid not in vectors for mid in eligible):
+            degraded.append("VECTOR_INDEX_INCOMPLETE")
+        reverse = {}
+        for mid, memory in eligible.items():
+            # m2 links to m1; adding every other event to an m1 would flood context.
+            for old in memory.supersedes + memory.corrects:
+                reverse.setdefault(old, []).append(mid)
+        bundles, primary, unique, size = {}, [], set(), 0
+        for mid in roots:
+            bundle = relation_bundle(
+                mid, eligible, reverse, timeline=analysis.time_mode == "timeline"
+            )
+            extra = set(bundle) - unique
+            added = sum(len(encode(eligible[m].model_dump(mode="json")).encode()) for m in extra)
+            if len(unique | extra) > 80 or size + added > 24 * 1024:
+                degraded.append("CANDIDATE_BUDGET_LIMIT")
+                continue
+            primary.append(mid)
+            bundles[mid] = bundle
+            unique.update(extra)
+            size += added
+        anchors = []
+        if analysis.dialogue_dependency != "none":
+            anchors = await self.service.recent(query, analysis)
+            # Retrieved older tasks can be located even outside the recent window.
+            known_ids = {e.event_id for e in anchors}
+            for mid in primary:
+                for source in eligible[mid].sources:
+                    if len(anchors) >= 24:
+                        break
+                    if (
+                        source.event_id not in known_ids
+                        and source.event_id not in query.exclude_event_ids
+                    ):
+                        try:
+                            anchors.append(await self.service.load_event(source.event_id))
+                            known_ids.add(source.event_id)
+                        except Exception:
+                            degraded.append("HISTORY_SOURCE_UNAVAILABLE")
+        return {
+            "revision": revision,
+            "memories": eligible,
+            "primary": primary,
+            "bundles": bundles,
+            "scores": scores,
+            "index_coverage": coverage,
+            "anchors": anchors,
+            "degraded": list(dict.fromkeys(degraded)),
+        }
+
+    async def rank(self, state):
+        primary, analysis = state["primary"], state["analysis"]
+        degraded = list(state["degraded"])
+        if not primary and analysis.dialogue_dependency == "none":
+            return {"ranking": Ranking(ranking=[])}
+        records = {mid for bundle in state["bundles"].values() for mid in bundle}
+        anchors = [
+            {
+                "event_id": e.event_id,
+                "request_id": e.request_id,
+                "event_type": e.event_type,
+                "occurred_at": e.occurred_at.isoformat(),
+                "payload_preview": encode(e.payload)
+                .encode()[:600]
+                .decode("utf-8", errors="ignore"),
+            }
+            for e in state["anchors"]
+        ]
+        inputs = {
+            "query": state["query"].text,
+            "analysis": analysis.model_dump(mode="json"),
+            "primary_ids": list(primary),
+            "memories": [state["memories"][mid].model_dump(mode="json") for mid in sorted(records)],
+            "history_candidates": anchors,
+        }
+        # Bound the whole request, including raw locating clues, not just memories.
+        primary = list(primary)
+        while len(encode(inputs).encode()) > 24 * 1024 and primary:
+            primary.pop()
+            records = {mid for root in primary for mid in state["bundles"][root]}
+            inputs["primary_ids"] = primary
+            inputs["memories"] = [
+                state["memories"][mid].model_dump(mode="json") for mid in sorted(records)
+            ]
+            degraded.append("RERANK_INPUT_BUDGET_LIMIT")
+        while len(encode(inputs).encode()) > 24 * 1024 and inputs["history_candidates"]:
+            inputs["history_candidates"].pop()
+            degraded.append("HISTORY_CANDIDATE_BUDGET_LIMIT")
+        allowed_event_ids = {item["event_id"] for item in inputs["history_candidates"]}
+        try:
+            if len(encode(inputs).encode()) > 24 * 1024:
+                raise ValueError("RERANK_INPUT_TOO_LARGE")
+            ranking = await self.call(
+                state,
+                "memory_rerank",
+                RERANK,
+                inputs,
+                Ranking,
+            )
+            if sorted(r.memory_id for r in ranking.ranking) != sorted(primary):
+                raise ValueError("INVALID_RERANK_IDS")
+            events = {e.event_id: e for e in state["anchors"] if e.event_id in allowed_event_ids}
+            if len(set(ranking.selected_event_ids)) != len(ranking.selected_event_ids):
+                raise ValueError("DUPLICATE_HISTORY_EVENT")
+            if not set(ranking.selected_event_ids) <= events.keys():
+                raise ValueError("INVALID_HISTORY_EVENT")
+            selected_tasks = {events[eid].request_id for eid in ranking.selected_event_ids}
+            if set(ranking.related_request_ids) != selected_tasks:
+                raise ValueError("INVALID_HISTORY_TASK")
+            if ranking.history_status == "selected" and not selected_tasks:
+                raise ValueError("EMPTY_SELECTED_HISTORY")
+            if ranking.history_status != "selected" and ranking.selected_event_ids:
+                raise ValueError("UNEXPECTED_HISTORY")
+            if analysis.dialogue_dependency == "none" and ranking.history_status != "none":
+                raise ValueError("UNRELATED_HISTORY")
+        except Exception:
+            # Preserve the existing fused order and label it; no invented precision.
+            ranking = Ranking(
+                ranking=[],
+                history_status=(
+                    "unavailable" if analysis.dialogue_dependency == "needed" else "none"
+                ),
+                history_reason="关联核验未完成，不能确定所指任务。",
+            )
+            degraded.append("RERANK_FAILED_FUSION_ORDER")
+        return {"ranking": ranking, "degraded": degraded, "primary": primary}
+
+    async def assemble(self, state):
+        query, analysis, ranking = state["query"], state["analysis"], state["ranking"]
+        memories, scores = state["memories"], state["scores"]
+        degraded = list(state["degraded"])
+        ranked = [
+            (r.memory_id, r.relevance, index)
+            for index, r in enumerate(ranking.ranking, 1)
+            if r.relevance != "irrelevant"
+        ]
+        if "RERANK_FAILED_FUSION_ORDER" in degraded:
+            keywords = set(analysis.needed_fact_keys)
+            # Fallback needs positive lexical/slot evidence, not a cosine cutoff.
+            query_words = {
+                word
+                for word in terms(analysis.search_text)
+                if len(word) >= 2 and word not in FALLBACK_STOP_WORDS
+            }
+            entity_words = {word for entity in analysis.entities for word in terms(entity)}
+            ranked = [
+                (mid, "unverified", None)
+                for mid in state["primary"]
+                if memories[mid].fact_key in keywords
+                or (
+                    any(entity and entity in memories[mid].text for entity in analysis.entities)
+                    and bool((query_words & set(terms(memories[mid].text))) - entity_words)
+                )
+                or len((query_words & set(terms(memories[mid].text))) - entity_words) >= 2
+            ]
+        m1, m2, included, used = [], [], set(), 0
+        root_counts = {"m1": 0, "m2": 0}
+        for mid, relevance, rank in ranked:
+            layer = memories[mid].layer
+            if root_counts[layer] >= (5 if layer == "m1" else 8):
+                continue
+            extra = [related for related in state["bundles"][mid] if related not in included]
+            hits = []
+            for related in extra:
+                score = scores.get(related, scores[mid])
+                hits.append(
+                    MemoryHit(
+                        memory=memories[related],
+                        relevance=relevance,
+                        fusion_rank=score["fusion_rank"],
+                        rerank_rank=rank,
+                        vector_score=score.get("vector_score"),
+                        bm25_rank=score.get("bm25"),
+                        evidence_only=evidence_only(
+                            memories[related], analysis, query.current_time_utc
+                        ),
+                    )
+                )
+            size = len(encode([h.model_dump(mode="json") for h in hits]).encode())
+            if used + size > 10 * 1024:
+                degraded.append("CONTEXT_BUDGET_LIMIT")
+                continue
+            for hit in hits:
+                (m1 if hit.memory.layer == "m1" else m2).append(hit)
+            included.update(extra)
+            used += size
+            root_counts[layer] += 1
+        if "RERANK_FAILED_FUSION_ORDER" in degraded:
+            m1.sort(key=lambda hit: hit.fusion_rank)
+            m2.sort(key=lambda hit: hit.fusion_rank)
+        history_messages = []
+        if ranking.history_status == "selected":
+            events = {e.event_id: e for e in state["anchors"]}
+            selected = sorted(
+                (events[eid] for eid in ranking.selected_event_ids), key=lambda e: e.occurred_at
+            )
+            for event in selected:
+                text = event.payload.get("content") or encode(
+                    {k: v for k, v in event.payload.items() if k != "context"}
+                )
+                message = {
+                    "event_id": event.event_id,
+                    "request_id": event.request_id,
+                    "content": text[:2400],
+                    "truncated": len(text) > 2400,
+                    "occurred_at": event.occurred_at.isoformat(),
+                }
+                source = await self.service.source_ref(
+                    event,
+                    "/payload/content"
+                    if isinstance(event.payload.get("content"), str)
+                    else "/payload",
+                    text[:1000] if isinstance(event.payload.get("content"), str) else "",
+                )
+                message["role"] = source.source_role
+                message["source"] = source.model_dump(mode="json")
+                size = len(encode(message).encode())
+                if used + size > 11 * 1024:
+                    degraded.append("HISTORY_BUDGET_LIMIT")
+                    break
+                history_messages.append(message)
+                used += size
+        history_status = ranking.history_status
+        if history_status == "selected" and len(history_messages) != len(
+            ranking.selected_event_ids
+        ):
+            history_messages = []
+            history_status = "unavailable"
+        history = History(
+            status=history_status, reason=ranking.history_reason, messages=history_messages
+        )
+        details, detail_status = [], None
+        if analysis.kind == "detail" and time.monotonic() < state["deadline"]:
+            refs = [source for hit in (*m1, *m2) for source in hit.memory.sources]
+            scope_task = (
+                ranking.related_request_ids[0] if len(ranking.related_request_ids) == 1 else None
+            )
+            detail_range = analysis.time_range
+            if analysis.time_mode == "known_at":
+                end = analysis.at + timedelta(microseconds=1)
+                detail_range = TimeRange(
+                    start=detail_range.start
+                    if detail_range
+                    else datetime.min.replace(tzinfo=timezone.utc),
+                    end=min(detail_range.end, end) if detail_range else end,
+                )
+            result = await self.service.search_details(
+                DetailQuery(
+                    text=analysis.search_text,
+                    sources=refs[:12],
+                    request_id=scope_task,
+                    time_range=detail_range,
+                    conversation_id=query.conversation_id
+                    if not refs and not scope_task and not analysis.time_range
+                    else None,
+                )
+            )
+            detail_status = result.status
+            for hit in result.hits[:4]:
+                size = len(encode(hit.model_dump(mode="json")).encode())
+                if used + size > 11 * 1024:
+                    degraded.append("DETAIL_BUDGET_LIMIT")
+                    break
+                details.append(hit)
+                used += size
+            if result.status != "complete":
+                degraded.append("DETAIL_SEARCH_" + result.status.upper())
+        collection = None
+        if analysis.kind == "collection":
+            collection = await self.service._io(
+                self.storage.collection, analysis.time_range, analysis.task_status
+            )
+            while collection["items"] and used + len(encode(collection).encode()) > 11 * 1024:
+                collection["items"].pop()
+                collection["returned_count"] = len(collection["items"])
+                collection["display_complete"] = False
+            if any(e[0].event_type == "task_result" for e in self.service._pending.values()):
+                collection["complete"] = False
+                collection["reason"] = "raw_writes_pending"
+        coverage = {
+            "complete": not degraded,
+            "requires_history": analysis.dialogue_dependency == "needed",
+            "detail_status": detail_status,
+            "pending_events": len(self.service._pending),
+            "visibility": "committed_snapshot_plus_selected_raw_events",
+            "relation_mode": "timeline"
+            if analysis.time_mode == "timeline"
+            else "matched_and_current_versions",
+            "index": state["index_coverage"],
+        }
+        result = RecallResult(
+            status="degraded"
+            if degraded
+            else ("ok" if m1 or m2 or details or history_messages or collection else "empty"),
+            m1=m1,
+            m2=m2,
+            details=details,
+            history=history,
+            related_request_ids=ranking.related_request_ids if history_status == "selected" else [],
+            snapshot_revision=state["revision"],
+            query_time_basis={
+                "mode": analysis.time_mode,
+                "at": analysis.at.isoformat() if analysis.at else None,
+                "timezone": query.timezone,
+                "current_time_utc": query.current_time_utc.isoformat(),
+            },
+            degradations=list(dict.fromkeys(degraded)),
+            coverage=coverage,
+            collection=collection,
+        )
+        # The envelope also consumes space. Drop whole groups, never only a successor.
+        if len(encode(result.context()).encode()) > 12 * 1024:
+            result = result.model_copy(
+                update={
+                    "m1": [],
+                    "m2": [],
+                    "details": [],
+                    "status": "degraded",
+                    "degradations": [*result.degradations, "CONTEXT_BUDGET_LIMIT"],
+                }
+            )
+        if len(encode(result.context()).encode()) > 12 * 1024 and result.history.messages:
+            result = result.model_copy(
+                update={
+                    "history": History(status="unavailable", reason="所选历史超出本轮上下文预算。"),
+                    "related_request_ids": [],
+                    "status": "degraded",
+                    "degradations": [*result.degradations, "HISTORY_BUDGET_LIMIT"],
+                }
+            )
+        if result.collection:
+            while len(encode(result.context()).encode()) > 12 * 1024 and result.collection["items"]:
+                result.collection["items"].pop()
+                result.collection["returned_count"] = len(result.collection["items"])
+                result.collection["display_complete"] = False
+        if result.degradations and result.coverage["complete"]:
+            result = result.model_copy(update={"coverage": {**result.coverage, "complete": False}})
+        return {"result": result}

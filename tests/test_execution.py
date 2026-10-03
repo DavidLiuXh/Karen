@@ -2,6 +2,7 @@ import json
 
 import pytest
 from dynamic_graph import (
+    CancellationToken,
     DynamicGraphEngine,
     EngineConfig,
     EvaluatorDefinition,
@@ -241,3 +242,61 @@ async def test_explicit_policy_without_side_effect_permission_prevents_execution
     snapshot = json.loads(next(tmp_path.glob("*/capability_snapshot.json")).read_text())
     assert "demo.write" not in {c["name"] for c in snapshot["capabilities"]}
     assert policy.allowed_side_effect_tools == []
+
+
+@pytest.mark.parametrize("first_status", ["COMPLETED", "FAILED", "CANCELLED"])
+async def test_next_task_has_no_previous_conversation_or_results(tmp_path, first_status):
+    second_goal = ready()
+    second_goal["decision"]["goal"]["objective"] = "写一封新的中文邮件"
+    intent_model = FakeModelClient(
+        [
+            ready(),
+            {"decision": {"outcome": "needs_clarification", "questions": ["新邮件的主题是什么？"]}},
+            second_goal,
+        ]
+    )
+    responses = []
+    if first_status == "COMPLETED":
+        responses.extend([graph_response(), {"draft": "第一项任务的结果，不得带入下一任务"}])
+    responses.extend([graph_response(), {"draft": "第二项任务的结果"}])
+    executor = FakeModelClient(responses)
+    agent = Karen(
+        intent=IntentRecognizer(intent_model),
+        engine=DynamicGraphEngine(
+            config=EngineConfig(runs_dir=tmp_path), models=ModelBindings(executor, executor)
+        ),
+    )
+    token = CancellationToken()
+    if first_status == "CANCELLED":
+        token.cancel()
+    first = await agent.advance(
+        IntentSession(timezone="America/New_York", user_context={"language": "zh-CN"}),
+        "第一项任务：写中文邮件",
+        policy=ExecutionPolicy(max_model_calls=0) if first_status == "FAILED" else None,
+        cancellation_token=token,
+    )
+    assert first.result.execution_status == first_status
+    second = await agent.advance(first.session, "第二项任务：写一封新邮件")
+    assert second.result is None
+    assert second.session.request_id != first.session.request_id
+    assert second.session.timezone == "America/New_York"
+    assert second.session.user_context == {"language": "zh-CN"}
+    assert intent_model.requests[1].input_data["messages"] == [
+        {"role": "user", "content": "第二项任务：写一封新邮件"}
+    ]
+    final = await agent.advance(second.session, "新产品发布通知")
+    assert final.result.execution_status == "COMPLETED"
+    assert final.result.outputs == {"draft": "第二项任务的结果"}
+    assert final.result.request_id == second.session.request_id
+    assert final.result.parent_run_id is None
+    conversation = final.session.goal.context["conversation"]
+    assert [message["content"] for message in conversation] == [
+        "第二项任务：写一封新邮件",
+        "新邮件的主题是什么？",
+        "新产品发布通知",
+    ]
+    planner_goal = executor.requests[-2].input_data["goal"]
+    assert planner_goal["context"]["conversation"] == conversation
+    assert "第一项任务" not in json.dumps(planner_goal, ensure_ascii=False)
+    assert first.session.messages[0].content == "第一项任务：写中文邮件"
+    assert final.session.goal.objective == "写一封新的中文邮件"

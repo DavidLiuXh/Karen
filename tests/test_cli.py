@@ -7,6 +7,24 @@ from dynamic_graph import FakeModelClient, RunResult
 from karen import IntentSession, TaskTurn, cli
 
 
+class MemoryStub:
+    async def start(self):
+        pass
+
+    async def close(self):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def local_memory_only(monkeypatch):
+    monkeypatch.setattr(cli, "create_memory", lambda model: MemoryStub())
+
+
+class DisplayAgent:
+    def record_response(self, session, text):
+        return ()
+
+
 @pytest.mark.parametrize("api_key", [None, "test-key"])
 async def test_cli_registers_and_authorizes_all_available_tools(monkeypatch, capsys, api_key):
     if api_key is None:
@@ -107,7 +125,8 @@ def test_custom_result_fields_are_preserved():
 async def test_conversation_displays_readable_answer_or_full_json(monkeypatch, capsys, json_output):
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
     monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
-    monkeypatch.setattr("builtins.input", lambda prompt: "写邮件")
+    inputs = iter(["写邮件", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     result = RunResult(
         run_id="test-run",
         execution_status="COMPLETED",
@@ -115,7 +134,7 @@ async def test_conversation_displays_readable_answer_or_full_json(monkeypatch, c
         outputs={"answer": "中文邮件草稿", "evidence": [], "limitations": []},
     )
 
-    class CompletedAgent:
+    class CompletedAgent(DisplayAgent):
         async def advance(self, session, user_input):
             assert session.timezone == "America/New_York"
             return TaskTurn(IntentSession(), result)
@@ -141,3 +160,74 @@ async def test_failed_timezone_detection_requires_explicit_user_timezone(monkeyp
     monkeypatch.setattr(cli, "IntentSession", unavailable_timezone)
     assert await cli.converse() == 1
     assert "请使用 --timezone" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("first_status", ["COMPLETED", "FAILED", "CANCELLED"])
+async def test_cli_continues_after_each_task(monkeypatch, capsys, first_status):
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    inputs = iter(["第一项任务", "第二项任务", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+    received = []
+
+    class TwoTaskAgent(DisplayAgent):
+        async def advance(self, session, user_input):
+            received.append(user_input)
+            first = len(received) == 1
+            return TaskTurn(
+                session,
+                RunResult(
+                    run_id="test-run",
+                    execution_status=first_status if first else "COMPLETED",
+                    output_complete=first_status == "COMPLETED" if first else True,
+                    outputs={"answer": "第一项任务结果" if first else "第二项任务结果"},
+                ),
+            )
+
+    monkeypatch.setattr(cli, "Karen", lambda **kwargs: TwoTaskAgent())
+    assert await cli.converse() == 0
+    assert received == ["第一项任务", "第二项任务"]
+    output = capsys.readouterr().out
+    assert "第一项任务结果" in output and "第二项任务结果" in output
+
+
+async def test_cli_returns_last_task_failure_code_on_exit(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    inputs = iter(["执行任务", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    class FailedAgent(DisplayAgent):
+        async def advance(self, session, user_input):
+            return TaskTurn(session, RunResult(run_id="test-run", execution_status="FAILED"))
+
+    monkeypatch.setattr(cli, "Karen", lambda **kwargs: FailedAgent())
+    assert await cli.converse() == 1
+
+
+async def test_cancelled_console_read_does_not_join_blocked_input(monkeypatch):
+    import asyncio
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_input(prompt):
+        started.set()
+        release.wait()
+        return "late input"
+
+    monkeypatch.setattr("builtins.input", blocked_input)
+    reading = asyncio.create_task(cli.read_input())
+    try:
+        for _ in range(100):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert started.is_set()
+        reading.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(reading, 0.2)
+        assert not release.is_set()
+    finally:
+        release.set()

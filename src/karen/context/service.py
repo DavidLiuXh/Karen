@@ -330,7 +330,9 @@ class ContextMemory:
             if self._model_tag != before:
                 await self._io(self.storage.invalidate_vectors, before)
                 self._model_tag = before
-            async with asyncio.timeout(10):
+            # Derivation runs asynchronously; long summaries may need more time on
+            # a local CPU. Foreground recall retains its own short deadline.
+            async with asyncio.timeout(30 if background else 10):
                 vectors = await self.embeddings.aembed_documents(texts)
             after = await self._embedding_identity()
             if before != after:

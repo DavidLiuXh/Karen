@@ -423,6 +423,79 @@ async def test_related_pending_events_are_selected_and_unrelated_history_is_abse
         assert ambiguous.history.status == "ambiguous" and ambiguous.history.messages == []
 
 
+async def test_current_clarification_does_not_reload_its_own_summary_as_history(memory):
+    service, model = memory
+    await service.flush(service.submit(event("整理公园路线清单", request="current-task")))
+    model.dependency = "current_task"
+    result = await service.recall(
+        query("主要是骑行路线").model_copy(
+            update={
+                "request_id": "current-task",
+                "current_task_messages": [
+                    {"role": "user", "content": "整理公园路线清单"},
+                    {"role": "assistant", "content": "哪一类路线？"},
+                ],
+            }
+        )
+    )
+    assert result.status == "empty" and result.history.status == "none"
+    assert not result.m2 and not result.related_request_ids
+    assert result.coverage["dialogue_dependency"] == "current_task"
+    assert not result.coverage["requires_history"]
+    assert not any(r.role == "memory_rerank" for r in model.requests)
+
+
+async def test_external_history_anchors_exclude_sources_from_current_task(memory):
+    service, model = memory
+    await service.flush(service.submit(event("我住在北京", request="current-task")))
+    await service.flush(service.submit(event("我住在北京", request="old-task")))
+    model.dependency, model.history_status = "needed", "selected"
+    result = await service.recall(
+        query("沿用之前北京方案中的参数").model_copy(
+            update={
+                "request_id": "current-task",
+                "current_task_messages": [{"role": "user", "content": "请沿用旧方案"}],
+            }
+        )
+    )
+    assert result.history.status == "selected"
+    assert result.related_request_ids == ["old-task"]
+    assert all(m["request_id"] != "current-task" for m in result.history.messages)
+    rank_request = next(r for r in model.requests if r.role == "memory_rerank")
+    assert all(
+        e["request_id"] != "current-task" for e in rank_request.input_data["history_candidates"]
+    )
+
+
+async def test_missing_external_history_still_clarifies_during_current_task(memory):
+    from dynamic_graph import DynamicGraphEngine, EngineConfig, FakeModelClient, ModelBindings
+    from test_input_routing import clarify, routing
+
+    from karen import IntentRecognizer, IntentSession, Karen
+
+    service, backend = memory
+    intent_model = FakeModelClient(
+        [routing(), clarify("格式有要求吗？"), routing(types=["task_control"], relation="continue")]
+    )
+    executor = FakeModelClient()
+    agent = Karen(
+        intent=IntentRecognizer(intent_model),
+        engine=DynamicGraphEngine(
+            config=EngineConfig(runs_dir=service.root_dir / "runs"),
+            models=ModelBindings(executor, executor),
+        ),
+        memory=service,
+    )
+    async with service.foreground():
+        first = await agent.advance(IntentSession(timezone="Asia/Shanghai"), "帮我整理一份报告")
+        backend.dependency, backend.history_status = "needed", "unavailable"
+        second = await agent.advance(first.session, "沿用上周那份报告的格式")
+    assert second.session.request_id == first.session.request_id
+    assert second.result is None and second.memory_result.coverage["requires_history"]
+    assert "哪一次任务" in second.session.questions[0]
+    assert len(intent_model.requests) == 3 and not executor.requests
+
+
 async def test_details_require_scope_decode_unicode_and_preserve_field_pointer(memory):
     service, _ = memory
     receipt = service.submit(event("参数是中文路径 /tmp/报告.html"))

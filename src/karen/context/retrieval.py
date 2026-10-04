@@ -112,6 +112,7 @@ def hybrid(memories, vectors, keyword, query_vector, tag, query):
         for mid, m in memories.items()
         if m.verification_state != "rejected"
         and (m.scope.kind == "global" or m.scope.project_id == query.project_id)
+        and not (m.layer == "m2" and m.request_id == query.request_id)
         and not all(s.event_id in query.exclude_event_ids for s in m.sources)
     }
     cosine = {}
@@ -277,11 +278,15 @@ class Retriever:
             return RecallResult(
                 status="unavailable",
                 history=History(
-                    status="unavailable" if dependency != "none" else "none",
+                    status="unavailable" if analysis and analysis.uses_external_history else "none",
                     reason="本轮记忆读取未能完成。",
                 ),
                 degradations=["MEMORY_RECALL_UNAVAILABLE"],
-                coverage={"complete": False, "requires_history": dependency == "needed"},
+                coverage={
+                    "complete": False,
+                    "dialogue_dependency": dependency,
+                    "requires_history": dependency == "needed",
+                },
             )
 
     async def call(self, state, role, instruction, inputs, schema):
@@ -321,6 +326,8 @@ class Retriever:
                 },
                 QueryAnalysis,
             )
+            if analysis.dialogue_dependency == "current_task" and not query.current_task_messages:
+                raise ValueError("CURRENT_TASK_CONTEXT_MISSING")
         except Exception as error:
             self.report_degradation("QUERY_ANALYSIS_FAILED", error)
             analysis = QueryAnalysis(search_text=query.text, time_mode="unspecified")
@@ -393,7 +400,7 @@ class Retriever:
             unique.update(extra)
             size += added
         anchors = []
-        if analysis.dialogue_dependency != "none":
+        if analysis.uses_external_history:
             anchors = await self.service.recent(query, analysis)
             # Retrieved older tasks can be located even outside the recent window.
             known_ids = {e.event_id for e in anchors}
@@ -406,8 +413,10 @@ class Retriever:
                         and source.event_id not in query.exclude_event_ids
                     ):
                         try:
-                            anchors.append(await self.service.load_event(source.event_id))
+                            event = await self.service.load_event(source.event_id)
                             known_ids.add(source.event_id)
+                            if event.request_id != query.request_id:
+                                anchors.append(event)
                         except Exception:
                             degraded.append("HISTORY_SOURCE_UNAVAILABLE")
         return {
@@ -424,7 +433,7 @@ class Retriever:
     async def rank(self, state):
         primary, analysis = state["primary"], state["analysis"]
         degraded = list(state["degraded"])
-        if not primary and analysis.dialogue_dependency == "none":
+        if not primary and not analysis.uses_external_history:
             return {"ranking": Ranking(ranking=[])}
         records = {mid for bundle in state["bundles"].values() for mid in bundle}
         anchors = [
@@ -486,7 +495,7 @@ class Retriever:
                 raise ValueError("EMPTY_SELECTED_HISTORY")
             if ranking.history_status != "selected" and ranking.selected_event_ids:
                 raise ValueError("UNEXPECTED_HISTORY")
-            if analysis.dialogue_dependency == "none" and ranking.history_status != "none":
+            if not analysis.uses_external_history and ranking.history_status != "none":
                 raise ValueError("UNRELATED_HISTORY")
         except Exception as error:
             self.report_degradation("RERANK_FAILED_FUSION_ORDER", error)
@@ -659,6 +668,7 @@ class Retriever:
                 collection["reason"] = "raw_writes_pending"
         coverage = {
             "complete": not degraded,
+            "dialogue_dependency": analysis.dialogue_dependency,
             "requires_history": analysis.dialogue_dependency == "needed",
             "detail_status": detail_status,
             "pending_events": len(self.service._pending),

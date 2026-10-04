@@ -176,6 +176,103 @@ async def test_clarification_followup_and_correction_keep_task_identity(tmp_path
     assert model.requests[2].input_data["pending_task"]["questions"] == ["给谁写？"]
 
 
+@pytest.mark.parametrize("rerank_fails", [False, True])
+async def test_resource_clarification_chain_executes_with_pending_writes_and_old_history(
+    tmp_path, rerank_fails
+):
+    from dynamic_graph.models.client import ModelResponse
+
+    class ClarificationMemoryModel(MemoryModel):
+        async def generate(self, request):
+            response = await super().generate(request)
+            if request.role == "memory_query" and request.input_data["current_task_messages"]:
+                return ModelResponse({**response.payload, "dialogue_dependency": "current_task"})
+            return response
+
+    backend = ClarificationMemoryModel()
+    memory = ContextMemory(
+        root_dir=tmp_path / "context", model=backend, embeddings=LocalEmbeddings()
+    )
+    await memory.start()
+    try:
+        await memory.flush(memory.submit(event("我住在北京", request="residence")))
+        await memory.flush(
+            memory.submit(
+                event(
+                    "北京路亚资源旧任务。" + "旧资料说明。" * 800,
+                    request="old-resources",
+                    kind="assistant_message",
+                )
+            )
+        )
+        backend.requests.clear()
+        backend.fail_rank = rerank_fails
+        goal_response = ready()
+        goal_response["decision"]["goal"].update(
+            objective="整理近一个月的北京路亚水域清单，使用文字说明。",
+            inputs={
+                "city": "北京",
+                "period": "近一个月",
+                "scope": "水域清单",
+                "format": "文字说明",
+            },
+        )
+        executor = FakeModelClient([graph_response(), {"draft": "水域资源文字说明"}])
+        agent, intent_model, _ = agent_for(
+            tmp_path,
+            [
+                routing(),
+                clarify("资源类型、时间范围和形式？"),
+                routing(types=["task_control"], relation="continue"),
+                clarify("资源具体是哪一类？"),
+                routing(types=["task_control"], relation="continue"),
+                goal_response,
+            ],
+            memory=memory,
+            executor=executor,
+        )
+        original = IntentSession(
+            timezone="Asia/Shanghai", reference_time_utc=datetime(2026, 10, 4, tzinfo=UTC)
+        )
+        texts = [
+            "帮我整理下最新的北京路亚资源。",
+            "最新指1个月内，文字说明即可。",
+            "主要是水域清单",
+        ]
+        async with memory.foreground():
+            first = await agent.advance(original, texts[0])
+            second = await agent.advance(first.session, texts[1])
+            assert first.result is None and second.result is None and executor.requests == []
+            final = await agent.advance(second.session, texts[2])
+            assert final.result.execution_status == "COMPLETED"
+            assert final.session.request_id == original.request_id
+            assert final.session.reference_time_utc == original.reference_time_utc
+            assert [
+                m["content"]
+                for m in final.session.goal.context["conversation"]
+                if m["role"] == "user"
+            ] == texts
+            assert final.session.goal.inputs == goal_response["decision"]["goal"]["inputs"]
+            assert final.memory_result.history.status == "none"
+            assert final.memory_result.history.messages == []
+            assert final.memory_result.coverage["dialogue_dependency"] == "current_task"
+            assert not final.memory_result.coverage["requires_history"]
+            assert "CANDIDATE_BUDGET_LIMIT" in final.memory_result.degradations
+            if rerank_fails:
+                assert "RERANK_FAILED_FUSION_ORDER" in final.memory_result.degradations
+            rank_requests = [r for r in backend.requests if r.role == "memory_rerank"]
+            assert rank_requests and all(
+                r.input_data["history_candidates"] == [] for r in rank_requests
+            )
+            assessments = [r for r in intent_model.requests if r.role == "intent"]
+            assert len(assessments[-1].input_data["messages"]) == 5 and len(executor.requests) == 2
+            await memory._queue.join()
+            rows = memory.storage.event_rows(request_id=original.request_id)
+            assert sum(row["event_type"] == "user_message" for row in rows) == 3
+    finally:
+        await memory.close()
+
+
 async def test_cancel_pending_task_does_not_call_assessor_or_engine(tmp_path):
     agent, model, executor = agent_for(
         tmp_path,

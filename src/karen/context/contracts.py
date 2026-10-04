@@ -268,7 +268,14 @@ class QueryAnalysis(Contract):
             "个人爱好列表不是任务统计，默认查询当前有效事实，无需历史时间范围。"
         ),
     )
-    dialogue_dependency: Literal["none", "needed", "uncertain"] = "none"
+    dialogue_dependency: Literal["none", "current_task", "needed", "uncertain"] = Field(
+        default="none",
+        description=(
+            "none=独立输入；current_task=指代可由提供的 current_task_messages 解析，"
+            "如回答当前任务的澄清问题；needed=必须从当前任务之外的历史补查；"
+            "uncertain=无法确定是否需要当前任务之外的历史。已有澄清链不需要再次从记忆确认。"
+        ),
+    )
     time_mode: Literal["current", "effective_at", "known_at", "timeline", "unspecified"] = Field(
         default="current",
         description=(
@@ -303,6 +310,10 @@ class QueryAnalysis(Contract):
                 {"time_mode": self.time_mode},
             )
         return self
+
+    @property
+    def uses_external_history(self) -> bool:
+        return self.dialogue_dependency in {"needed", "uncertain"}
 
 
 class RankedCandidate(Contract):

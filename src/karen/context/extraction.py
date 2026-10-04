@@ -234,7 +234,7 @@ class Extractor:
             "events": [
                 bounded_data(e.model_dump(mode="json")) for e in state["allowed_events"].values()
             ],
-            "existing": [m.model_dump(mode="json") for m in existing.values()],
+                    "existing": [m.context() for m in existing.values()],
         }
 
         async def checked_verification(verification):

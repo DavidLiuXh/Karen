@@ -1442,6 +1442,25 @@ async def test_compatible_values_in_same_fact_slot_keep_both_active(tmp_path, op
         await memory.close()
 
 
+async def test_processing_diagnostics_do_not_crowd_out_memory_evidence(memory):
+    service, backend = memory
+    await service.flush(service.submit(event('我住在北京')))
+    revision, stored, _ = service.storage.snapshot()
+    original = next(m for m in stored.values() if m.layer == 'm1')
+    service.storage.commit_memories(original.sources[0].event_id, [original.model_copy(
+        update={'verification_reason': '核验过程' * 10000}
+    )], revision)
+    result = await service.recall(query('我住哪里？'))
+    assert result.m1 and result.m1[0].memory.value == '北京'
+    context = result.context()
+    entry = context['m1'][0]['memory']
+    assert 'verification_reason' not in entry and 'created_at' not in entry
+    assert entry['sources'] and entry['state'] == 'active'
+    assert entry['recorded_at'] and entry['scope'] and entry['valid_from'] is None
+    assert result.m1[0].memory.verification_reason == '核验过程' * 10000
+    requests = [r for r in backend.requests if r.role == 'memory_rerank']
+    assert 'verification_reason' not in requests[-1].input_data['memories'][0]
+
 
 async def test_invalid_model_json_is_supplied_to_bounded_memory_repair(tmp_path):
     class Model(MemoryModel):

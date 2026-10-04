@@ -260,6 +260,13 @@ class StoredMemory(Contract):
     prompt_version: str = "1"
     revision: int = 0
 
+    def context(self) -> dict[str, JsonValue]:
+        """Keep evidence and temporal semantics; leave processing diagnostics in the store."""
+        return self.model_dump(mode="json", exclude={
+            "verification_reason", "created_at", "updated_at", "extractor_model",
+            "verifier_model", "prompt_version", "revision",
+        })
+
 
 class RecallQuery(Contract):
     text: str = Field(min_length=1)
@@ -406,4 +413,8 @@ class RecallResult(Contract):
 
     def context(self) -> dict[str, JsonValue]:
         """A bounded, sourced JSON package; never includes vectors or credentials."""
-        return self.model_dump(mode="json")
+        data = self.model_dump(mode="json")
+        for layer in ("m1", "m2"):
+            for hit, original in zip(data[layer], getattr(self, layer), strict=True):
+                hit["memory"] = original.memory.context()
+        return data

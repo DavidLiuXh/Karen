@@ -391,7 +391,7 @@ class Retriever:
                 mid, eligible, reverse, timeline=analysis.time_mode == "timeline"
             )
             extra = set(bundle) - unique
-            added = sum(len(encode(eligible[m].model_dump(mode="json")).encode()) for m in extra)
+            added = sum(len(encode(eligible[m].context()).encode()) for m in extra)
             if len(unique | extra) > 80 or size + added > 24 * 1024:
                 degraded.append("CANDIDATE_BUDGET_LIMIT")
                 continue
@@ -454,7 +454,7 @@ class Retriever:
             "current_task_messages": state["query"].current_task_messages,
             "analysis": analysis.model_dump(mode="json"),
             "primary_ids": list(primary),
-            "memories": [state["memories"][mid].model_dump(mode="json") for mid in sorted(records)],
+            "memories": [state["memories"][mid].context() for mid in sorted(records)],
             "history_candidates": anchors,
         }
         # Bound the whole request, including raw locating clues, not just memories.
@@ -464,7 +464,7 @@ class Retriever:
             records = {mid for root in primary for mid in state["bundles"][root]}
             inputs["primary_ids"] = primary
             inputs["memories"] = [
-                state["memories"][mid].model_dump(mode="json") for mid in sorted(records)
+                state["memories"][mid].context() for mid in sorted(records)
             ]
             degraded.append("RERANK_INPUT_BUDGET_LIMIT")
         while len(encode(inputs).encode()) > 24 * 1024 and inputs["history_candidates"]:
@@ -565,7 +565,9 @@ class Retriever:
                         ),
                     )
                 )
-            size = len(encode([h.model_dump(mode="json") for h in hits]).encode())
+            size = len(encode([
+                {**h.model_dump(mode="json"), "memory": h.memory.context()} for h in hits
+            ]).encode())
             if used + size > 10 * 1024:
                 degraded.append("CONTEXT_BUDGET_LIMIT")
                 continue

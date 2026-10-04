@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 from zoneinfo import ZoneInfoNotFoundError
 
-from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings, RunResult
+from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings
 from dynamic_graph.models.client import ModelCallError
 from dynamic_graph.tools import (
     browser_open_local_page_tool,
@@ -28,54 +28,7 @@ from .context.contracts import PersistenceError
 from .intent import IntentRecognizer, IntentSession
 from .models import deepseek_client, memory_embeddings
 from .observability import ObservedModel, Observer
-
-
-def format_result(result: RunResult) -> str:
-    lines = []
-    if result.execution_status == "FAILED":
-        lines.append("任务执行失败。")
-    elif result.execution_status == "CANCELLED":
-        lines.append("任务已取消。")
-    elif not result.output_complete:
-        lines.append("执行已结束，但结果不完整。")
-
-    answer = result.outputs.get("answer")
-    if isinstance(answer, str) and answer.strip():
-        if lines:
-            lines.append("已产生的部分回答：")
-        lines.append(answer)
-    for name, value in result.outputs.items():
-        if name == "answer" and isinstance(answer, str) and answer.strip():
-            continue
-        if name in {"evidence", "limitations"} and value == []:
-            continue
-        if (
-            name == "evidence"
-            and isinstance(value, list)
-            and all(
-                isinstance(item, dict) and "source" in item and "text" in item for item in value
-            )
-        ):
-            lines.append("来源：")
-            lines.extend(f"- {item['source']}：{item['text']}" for item in value)
-        elif (
-            name == "limitations"
-            and isinstance(value, list)
-            and all(isinstance(item, dict) and "description" in item for item in value)
-        ):
-            lines.append("限制说明：")
-            lines.extend(f"- {item['description']}" for item in value)
-        else:
-            text = (
-                value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2)
-            )
-            lines.append(f"{name}：\n{text}")
-    if not result.outputs and not lines:
-        lines.append("执行已结束，没有返回内容。")
-    for diagnostic in result.diagnostics:
-        label = "提示" if diagnostic.severity == "warning" else "诊断"
-        lines.append(f"{label}（{diagnostic.code}）：{diagnostic.message}")
-    return "\n\n".join(lines)
+from .response import format_result
 
 
 def create_memory(model, *, observer=None) -> ContextMemory:

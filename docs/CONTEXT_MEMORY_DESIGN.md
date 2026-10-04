@@ -913,7 +913,8 @@ m3 落盘、已经得到结果的短事务提交和恢复任务登记继续执�
 
 #### 16.4.8 枚举与统计走结构化范围查询
 
-查询理解在已有召回图中选择 relevance、detail 或 collection；不另建记忆查询 Agent。
+查询理解在已有召回图中选择 relevance、facts、detail 或 collection；不另建记忆查询 Agent。
+facts 用于个人长期事实及偏好列表，默认查询当前有效 m1，无需任务历史起止日期。
 一般问题走混合召回；“上个月全部完成任务”等 collection 问题由明确范围与受控字段驱动查询。
 events 登记 task_result 时直接保存 request_id、run_id、execution_status、output_complete 与结果捕获时间，不等待 LLM 摘要。
 过滤在本地生成参数化 SQL，模型不能输出原始 SQL。日期按用户时区转换为 UTC 左闭右开区间。

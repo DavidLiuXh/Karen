@@ -260,7 +260,14 @@ class RecallQuery(Contract):
 
 class QueryAnalysis(Contract):
     search_text: str = Field(min_length=1)
-    kind: Literal["relevance", "detail", "collection"] = "relevance"
+    kind: Literal["relevance", "facts", "detail", "collection"] = Field(
+        default="relevance",
+        description=(
+            "facts=用户个人长期事实/偏好查询，包含事实列表；detail=历史原话/参数等细节；"
+            "collection=历史任务/对话的枚举与统计；relevance=其他任务的相关上下文。"
+            "个人爱好列表不是任务统计，默认查询当前有效事实，无需历史时间范围。"
+        ),
+    )
     dialogue_dependency: Literal["none", "needed", "uncertain"] = "none"
     time_mode: Literal["current", "effective_at", "known_at", "timeline", "unspecified"] = Field(
         default="current",

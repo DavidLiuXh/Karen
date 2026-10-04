@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints,
 from tzlocal import get_localzone_name
 
 from ..observability import Observer
+from ..prompts import RESPONSE_INSTRUCTION
 from .prompts import INTENT_SYSTEM_INSTRUCTION, INTENT_TASK_INSTRUCTION
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -235,6 +236,7 @@ class IntentRecognizer:
         context = {
             "timezone": session.timezone,
             "time_context": session.time_context(),
+            "response_instruction": RESPONSE_INSTRUCTION,
             "constraints": draft.constraints,
             "user_context": session.user_context,
             "conversation": [m.model_dump(mode="json") for m in session.messages],

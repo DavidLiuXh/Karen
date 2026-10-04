@@ -365,7 +365,7 @@ class Storage:
         """Assign provenance from the captured event, never model-generated metadata."""
         with self.connection() as conn:
             row = conn.execute(
-                "SELECT relative_file FROM events WHERE event_id=?", (event.event_id,)
+                "SELECT relative_file, sequence FROM events WHERE event_id=?", (event.event_id,)
             ).fetchone()
         role = {"user_message": "user", "task_result": "tool"}.get(event.event_type, "assistant")
         return SourceRef(
@@ -374,6 +374,7 @@ class Storage:
             quote=quote,
             source_role=role,
             occurred_at=event.occurred_at,
+            sequence=row[1] if row else None,
             relative_file=row[0] if row else None,
             storage_state="persisted" if row else "queued",
         )

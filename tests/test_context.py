@@ -511,6 +511,8 @@ async def test_details_require_scope_decode_unicode_and_preserve_field_pointer(m
     result = await service.search_details(DetailQuery(text="报告", request_id="task-1"))
     assert result.status == "complete" and result.hits
     assert result.hits[0].source.pointer == "/payload/content"
+    assert result.hits[0].source.sequence == receipt.sequence
+    assert result.hits[0].request_id == "task-1"
     assert "/tmp/报告.html" in result.hits[0].text
     with pytest.raises(ValueError, match="SOURCE_QUOTE"):
         service.storage.source(
@@ -1590,7 +1592,7 @@ async def test_detail_recall_expands_selected_task_and_respects_known_at(memory,
             if request.role == "memory_query":
                 return ModelResponse(
                     {
-                        "search_text": "活动持续",
+                        "search_text": "星海",
                         "kind": "detail",
                         "time_mode": "known_at",
                         "at": past.isoformat(),
@@ -1609,3 +1611,16 @@ async def test_detail_recall_expands_selected_task_and_respects_known_at(memory,
         assert not any("九天" in text or "十二天" in text for text in texts)
         for hit in result.details:
             assert (await service.load_event(hit.source.event_id)).request_id == "selected-activity"
+
+
+async def test_detail_context_preserves_original_sequence_when_timestamps_match(memory):
+    service, model = memory
+    instant = datetime.now(UTC)
+    first = service.submit(event("这项活动叫远星。", occurred_at=instant))
+    second = service.submit(event("共七天。", occurred_at=instant))
+    await service.flush()
+    model.kind = "detail"
+    result = await service.recall(query("远星持续了多久"))
+    assert [hit.text for hit in result.details] == ["这项活动叫远星。", "共七天。"]
+    assert [hit.source.sequence for hit in result.details] == [first.sequence, second.sequence]
+    assert {hit.request_id for hit in result.details} == {"task-1"}

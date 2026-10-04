@@ -96,6 +96,7 @@ class SourceRef(Contract):
     quote: str = ""
     source_role: Literal["user", "assistant", "tool"]
     occurred_at: datetime
+    sequence: int | None = None
     relative_file: str | None = None
     storage_state: Literal["queued", "persisted", "failed"] = "persisted"
 
@@ -390,6 +391,7 @@ class DetailQuery(Contract):
 class DetailHit(Contract):
     text: str
     source: SourceRef
+    request_id: str
     truncated: bool = False
 
 

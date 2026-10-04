@@ -19,7 +19,6 @@ from .contracts import (
     DetailHit,
     DetailQuery,
     DetailSearchResult,
-    Evidence,
     MemoryFlushError,
     MemoryQueueFull,
     PersistenceError,
@@ -404,6 +403,10 @@ class ContextMemory:
 
     async def source_ref(self, event, pointer, quote=""):
         source = await self._io(self.storage.source_ref, event, pointer, quote)
+        if source.sequence is None and event.event_id in self._pending:
+            source = source.model_copy(
+                update={"sequence": self._pending[event.event_id][1].sequence}
+            )
         if event.event_id in self._raw_failures:
             source = source.model_copy(update={"storage_state": "failed"})
         return source
@@ -515,18 +518,19 @@ class ContextMemory:
                         continue
                     if not refs and words and not any(w in text.casefold() for w in words):
                         continue
-                    source = await self._io(
-                        self.storage.source,
-                        Evidence(event_id=event_id, pointer=pointer, quote=text[:1000] or " "),
-                        {event_id: event},
-                    )
-                    if event_id in self._raw_failures:
-                        source = source.model_copy(update={"storage_state": "failed"})
+                    source = await self.source_ref(event, pointer, text[:1000])
                     match = next(
                         (text.casefold().find(w) for w in words if w in text.casefold()), 0
                     )
                     snippet = text[max(0, match - 200) : max(0, match - 200) + 2400]
-                    hits.append(DetailHit(text=snippet, source=source, truncated=snippet != text))
+                    hits.append(
+                        DetailHit(
+                            text=snippet,
+                            source=source,
+                            request_id=event.request_id,
+                            truncated=snippet != text,
+                        )
+                    )
             except (PersistenceError, ValueError, KeyError):
                 partial = True
         return DetailSearchResult(

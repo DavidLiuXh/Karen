@@ -683,7 +683,9 @@ class Retriever:
                     break
                 expanded = await self.service.search_details(
                     DetailQuery(
-                        text=analysis.search_text,
+                        # Replies can omit the entity and query vocabulary entirely.
+                        # The verified task boundary supplies the search scope.
+                        text="",
                         request_id=scope,
                         time_range=detail_range,
                     )
@@ -719,6 +721,7 @@ class Retriever:
                     continue
                 details.append(hit)
                 used += size
+            details.sort(key=lambda hit: (hit.source.occurred_at, hit.source.sequence or 0))
             if detail_status != "complete":
                 degraded.append("DETAIL_SEARCH_" + detail_status.upper())
         collection = None

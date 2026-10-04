@@ -266,6 +266,20 @@ class IntentRecognizer:
     @staticmethod
     def _initial_route(state: IntentState):
         routing = state["session"].routing
+        memory = state.get("memory_context") or {}
+        personal_query = (
+            "question" in routing.input_types
+            and "task_request" not in routing.input_types
+            and memory.get("coverage", {}).get("query_kind") in {"facts", "detail"}
+        )
+        if personal_query:
+            # Missing personal evidence is handled by the answer, not by asking
+            # the user to supply the answer. Necessary history guards still apply.
+            return (
+                "check_clarity"
+                if IntentRecognizer._memory_clarification(state)
+                else routing.handling
+            )
         if routing.handling == "assess" or (
             routing.handling == "respond" and "question" in routing.input_types
         ):

@@ -670,6 +670,7 @@ class Retriever:
                 collection["reason"] = "raw_writes_pending"
         coverage = {
             "complete": not degraded,
+            "query_kind": analysis.kind,
             "dialogue_dependency": analysis.dialogue_dependency,
             "requires_history": analysis.dialogue_dependency == "needed",
             "detail_status": detail_status,

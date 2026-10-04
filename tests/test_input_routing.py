@@ -724,3 +724,13 @@ async def test_multiple_inferred_referents_trigger_clarification_before_answer()
     assert result.reply is None and result.goal is None
 
 
+async def test_personal_fact_absence_is_answered_without_asking_for_the_missing_answer():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    model = RawModel([routing('respond', types=['question']), reply('我没有记录你的宠物名字。')])
+    result = await IntentRecognizer(model).advance(
+        IntentSession(timezone='UTC'), '我的宠物叫什么名字？',
+        memory_context={'coverage': {'query_kind': 'facts'}, 'm1': [], 'm2': []},
+    )
+    assert not result.questions and result.reply == '我没有记录你的宠物名字。'
+    assert [r.role for r in model.requests] == ['intent_router', 'intent_response']

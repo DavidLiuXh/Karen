@@ -167,7 +167,7 @@ async def test_multiple_clarifications_keep_full_conversation_until_ready():
 async def test_invalid_model_response_does_not_change_session(payload):
     session = IntentSession()
     with pytest.raises(ValidationError):
-        await IntentRecognizer(TaskIntentModel([payload])).advance(session, "写邮件")
+        await IntentRecognizer(TaskIntentModel([payload, payload])).advance(session, "写邮件")
     assert session.messages == () and session.goal is None
 
 
@@ -238,3 +238,32 @@ async def test_cancellation_during_assessment_propagates():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert session.messages == ()
+
+
+async def test_misplaced_model_field_is_repaired_without_losing_clarification():
+    invalid = ready()
+    invalid["decision"]["goal"]["reason"] = "wrong level"
+    model = TaskIntentModel([clarify(), invalid, ready()])
+    recognizer = IntentRecognizer(model)
+    pending = await recognizer.advance(IntentSession(), "写邮件")
+    final = await recognizer.advance(pending, "给客户，设计已完成，中文草稿")
+    assert final.goal is not None
+    assert final.goal.inputs["progress"] == "设计已完成"
+    assert final.goal.context["conversation"][-1]["content"] == "给客户，设计已完成，中文草稿"
+    repair = model.assessments[-1].input_data
+    assert repair["original_input"]["messages"][-1]["content"] == "给客户，设计已完成，中文草稿"
+    assert repair["validation_errors"][0]["type"] == "extra_forbidden"
+    assert pending.goal is None
+
+
+async def test_schema_repair_is_bounded_and_does_not_retry_transport_auth_failures():
+    bad = ready(success_criteria=[])
+    model = TaskIntentModel([bad, bad, ready()])
+    with pytest.raises(ValidationError):
+        await IntentRecognizer(model).advance(IntentSession(), "写邮件")
+    assert len(model.assessments) == 2
+    auth = ModelCallError("MODEL_AUTH_FAILED", "credentials", retryable=False)
+    model = TaskIntentModel([auth, ready()])
+    with pytest.raises(ModelCallError) as caught:
+        await IntentRecognizer(model).advance(IntentSession(), "写邮件")
+    assert caught.value is auth and len(model.assessments) == 1

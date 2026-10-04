@@ -21,6 +21,7 @@ from pydantic import (
     Field,
     JsonValue,
     StringConstraints,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -34,6 +35,7 @@ from .prompts import (
     INTENT_SYSTEM_INSTRUCTION,
     INTENT_TASK_INSTRUCTION,
     ROUTING_INSTRUCTION,
+    STRUCTURE_REPAIR_INSTRUCTION,
 )
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -244,8 +246,7 @@ class IntentRecognizer:
                 },
                 output_schema=InputRouting.model_json_schema(),
             )
-            response = await self._generate(request)
-            routing = InputRouting.model_validate(response.payload)
+            routing = await self._validated(request, InputRouting)
             routing.check_session(session)
             self.observer.emit("decision", data={"routing": routing})
             return routing
@@ -287,6 +288,48 @@ class IntentRecognizer:
             raise ModelCallError(
                 "MODEL_TIMEOUT", "Intent model request timed out", retryable=True
             ) from exc
+
+    async def _validated(self, request: ModelRequest, schema):
+        """One schema repair, within the original deadline, without editing user requirements."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + request.timeout_seconds
+        try:
+            async with asyncio.timeout(request.timeout_seconds):
+                for attempt in range(2):
+                    response = await self._generate(
+                        replace(request, timeout_seconds=max(0, deadline - loop.time()))
+                    )
+                    try:
+                        return schema.model_validate(response.payload)
+                    except ValidationError as error:
+                        if attempt:
+                            raise
+                        errors = [
+                            {"path": list(item["loc"]), "type": item["type"]}
+                            for item in error.errors(include_input=False, include_url=False)
+                        ]
+                        self.observer.emit(
+                            "model.schema_repair",
+                            data={
+                                "model_role": request.role,
+                                "errors": errors,
+                                "next_attempt": 2,
+                            },
+                        )
+                        request = replace(
+                            request,
+                            task_instruction=request.task_instruction
+                            + STRUCTURE_REPAIR_INSTRUCTION,
+                            input_data={
+                                "original_input": request.input_data,
+                                "previous_response": response.payload,
+                                "validation_errors": errors,
+                            },
+                        )
+        except TimeoutError as error:
+            raise ModelCallError(
+                "MODEL_TIMEOUT", "Intent schema repair timed out", retryable=True
+            ) from error
 
     @staticmethod
     def prepare_session(
@@ -353,8 +396,8 @@ class IntentRecognizer:
             input_data=self._model_inputs(state),
             output_schema=DirectAssessment.model_json_schema(),
         )
-        response = await self._generate(request)
-        return {"decision": DirectAssessment.model_validate(response.payload).decision}
+        assessment = await self._validated(request, DirectAssessment)
+        return {"decision": assessment.decision}
 
     @staticmethod
     def _finish_reply(state: IntentState) -> dict:
@@ -442,8 +485,7 @@ class IntentRecognizer:
             input_data=inputs,
             output_schema=Assessment.model_json_schema(),
         )
-        response = await self._generate(request)
-        assessment = Assessment.model_validate(response.payload)
+        assessment = await self._validated(request, Assessment)
         return {"decision": assessment.decision}
 
     @staticmethod

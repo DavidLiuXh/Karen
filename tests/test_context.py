@@ -1551,3 +1551,61 @@ async def test_history_identity_survives_raw_message_budget_limit(memory):
         assert "HISTORY_BUDGET_LIMIT" in result.degradations
         assert not result.coverage["complete"]
 
+
+@pytest.mark.parametrize("relevance", ["relevant", "uncertain"])
+async def test_detail_recall_expands_selected_task_and_respects_known_at(memory, relevance):
+    from dynamic_graph import ModelResponse
+
+    service, model = memory
+    past = datetime.now(UTC) + timedelta(minutes=1)
+    anchor = event(
+        "星海活动的记录", request="selected-activity", occurred_at=past - timedelta(hours=2)
+    )
+    await service.flush(service.submit(anchor))
+    async with service.foreground():
+        service.submit(
+            event(
+                "活动持续了七天。",
+                request="selected-activity",
+                occurred_at=past - timedelta(hours=1),
+            )
+        )
+        service.submit(
+            event(
+                "活动后来延长到九天。",
+                request="selected-activity",
+                occurred_at=past + timedelta(hours=1),
+            )
+        )
+        service.submit(
+            event(
+                "另一项活动持续十二天。",
+                request="unrelated-activity",
+                occurred_at=past - timedelta(hours=1),
+            )
+        )
+        original_generate = model.generate
+
+        async def generate(request):
+            if request.role == "memory_query":
+                return ModelResponse(
+                    {
+                        "search_text": "活动持续",
+                        "kind": "detail",
+                        "time_mode": "known_at",
+                        "at": past.isoformat(),
+                    }
+                )
+            response = await original_generate(request)
+            if request.role == "memory_rerank":
+                for candidate in response.payload["ranking"]:
+                    candidate["relevance"] = relevance
+            return response
+
+        model.generate = generate
+        result = await service.recall(query("当时星海活动持续多久"))
+        texts = [hit.text for hit in result.details]
+        assert "活动持续了七天。" in texts
+        assert not any("九天" in text or "十二天" in text for text in texts)
+        for hit in result.details:
+            assert (await service.load_event(hit.source.event_id)).request_id == "selected-activity"

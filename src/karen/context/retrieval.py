@@ -568,7 +568,8 @@ class Retriever:
                     [{**h.model_dump(mode="json"), "memory": h.memory.context()} for h in hits]
                 ).encode()
             )
-            if used + size > 10 * 1024:
+            memory_budget = (6 if analysis.kind == "detail" else 10) * 1024
+            if used + size > memory_budget:
                 degraded.append("CONTEXT_BUDGET_LIMIT")
                 continue
             for hit in hits:
@@ -655,15 +656,71 @@ class Retriever:
                 )
             )
             detail_status = result.status
-            for hit in result.hits[:4]:
+            detail_hits = list(result.hits)
+            reference_ids = {ref.event_id for ref in refs}
+            words = set(terms(analysis.search_text)) - FALLBACK_STOP_WORDS
+            priority_details = []
+            # A summary can cite an earlier turn while its missing detail lives in
+            # a later turn of that same task. Expand only positively selected tasks.
+            scopes = list(
+                dict.fromkeys(
+                    [
+                        *ranking.related_request_ids,
+                        *(
+                            memories[mid].request_id
+                            for mid, relevance, _ in ranked
+                            if memories[mid].layer == "m2"
+                        ),
+                    ]
+                )
+            )
+            scopes = [scope for scope in scopes if scope != query.request_id]
+            if len(scopes) > 3:
+                degraded.append("DETAIL_SCOPE_BUDGET_LIMIT")
+            for scope in scopes[:3]:
+                if time.monotonic() >= state["deadline"]:
+                    detail_status = "partial"
+                    break
+                expanded = await self.service.search_details(
+                    DetailQuery(
+                        text=analysis.search_text,
+                        request_id=scope,
+                        time_range=detail_range,
+                    )
+                )
+                detail_hits.extend(expanded.hits)
+                novel_user_hits = [
+                    hit
+                    for hit in expanded.hits
+                    if hit.source.event_id not in reference_ids and hit.source.source_role == "user"
+                ]
+                if novel_user_hits:
+                    priority_details.append(
+                        max(novel_user_hits, key=lambda hit: len(words & set(terms(hit.text))))
+                    )
+                if expanded.status != "complete":
+                    detail_status = expanded.status
+            detail_hits.sort(
+                key=lambda hit: (
+                    hit.source.event_id not in reference_ids and hit.source.source_role == "user",
+                    len(words & set(terms(hit.text))),
+                ),
+                reverse=True,
+            )
+            seen_details = set()
+            for hit in [*priority_details, *detail_hits]:
+                identity = (hit.source.event_id, hit.source.pointer)
+                if identity in seen_details:
+                    continue
+                seen_details.add(identity)
                 size = len(encode(hit.model_dump(mode="json")).encode())
                 if used + size > 11 * 1024:
                     degraded.append("DETAIL_BUDGET_LIMIT")
-                    break
+                    continue
                 details.append(hit)
                 used += size
-            if result.status != "complete":
-                degraded.append("DETAIL_SEARCH_" + result.status.upper())
+            if detail_status != "complete":
+                degraded.append("DETAIL_SEARCH_" + detail_status.upper())
         collection = None
         if analysis.kind == "collection":
             collection = await self.service._io(

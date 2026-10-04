@@ -1,4 +1,15 @@
+import errno
 import json
+import os
+import pty
+import select
+import shlex
+import signal
+import subprocess
+import sys
+import termios
+import time
+from contextlib import contextmanager
 from zoneinfo import ZoneInfoNotFoundError
 
 import pytest
@@ -232,3 +243,239 @@ async def test_cancelled_console_read_does_not_join_blocked_input(monkeypatch):
         assert not release.is_set()
     finally:
         release.set()
+
+
+@pytest.mark.parametrize(
+    "keystrokes",
+    [
+        "明天北京是否还有大错".encode() + b"\x7f" + "风".encode(),
+        "明天北海".encode() + b"\x08" + "京是否还有大风".encode(),
+        "明天北错错".encode() + b"\x7f\x7f" + "京是否还有大风".encode(),
+        "明天北海是否还有大风".encode() + b"\x1b[D" * 7 + b"\x1b[3~" + "京".encode(),
+    ],
+)
+def test_real_console_submits_edited_chinese_text(keystrokes):
+    import os
+    import pty
+    import select
+    import subprocess
+    import sys
+    import time
+
+    master, slave = pty.openpty()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            "import asyncio, json; from karen.cli import read_input; "
+            "print('RESULT=' + json.dumps(asyncio.run(read_input())), flush=True)",
+        ],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        env={**os.environ, "TERM": "xterm", "LC_ALL": "en_US.UTF-8", "INPUTRC": os.devnull},
+    )
+    os.close(slave)
+    output = b""
+    deadline = time.monotonic() + 10
+
+    def read_until(marker):
+        nonlocal output
+        while marker not in output:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0 and select.select([master], [], [], remaining)[0], output
+            output += os.read(master, 65536)
+
+    try:
+        read_until("你：".encode())
+        os.write(master, keystrokes + b"\r")
+        read_until(b"RESULT=")
+        while b"\n" not in output.split(b"RESULT=", 1)[1]:
+            assert select.select([master], [], [], 1)[0], output
+            output += os.read(master, 65536)
+        submitted = json.loads(output.split(b"RESULT=", 1)[1].splitlines()[0])
+        assert submitted == "明天北京是否还有大风"
+        assert process.wait(timeout=5) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        os.close(master)
+
+
+def test_piped_input_remains_supported():
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import asyncio, json; from karen.cli import read_input; "
+            "print('RESULT=' + json.dumps(asyncio.run(read_input())))",
+        ],
+        input="明天北京是否还有大风\n",
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=True,
+    )
+    assert json.loads(result.stdout.split("RESULT=", 1)[1]) == "明天北京是否还有大风"
+
+
+@pytest.fixture
+def local_cli_script(tmp_path):
+    """Exercise the real CLI lifecycle without models, memory data or external calls."""
+    script = tmp_path / "console_cli.py"
+    script.write_text(
+        """
+import asyncio
+import json
+import os
+import sys
+import termios
+from pathlib import Path
+from dynamic_graph import FakeModelClient
+from karen import cli
+
+def terminal_state():
+    attrs = termios.tcgetattr(sys.stdin)
+    return [*attrs[:6], [c[0] if isinstance(c, bytes) else c for c in attrs[6]]]
+
+before = terminal_state()
+
+class Memory:
+    async def start(self):
+        pass
+
+    async def close(self):
+        await asyncio.sleep(0.05)
+        Path(os.environ['KAREN_TEST_PERSISTED']).write_text(json.dumps({'before': before, 'after': terminal_state()}))
+        print('PERSISTENCE_COMPLETE', flush=True)
+
+class WaitingAgent:
+    async def advance(self, session, user_input):
+        print('TASK_STARTED', flush=True)
+        await asyncio.Event().wait()
+
+cli.create_memory = lambda model, **kwargs: Memory()
+cli.create_observer = lambda: cli.Observer()
+cli.deepseek_client = FakeModelClient
+cli.Karen = lambda **kwargs: WaitingAgent()
+cli.main()
+"""
+    )
+    return script, tmp_path / "persisted.txt"
+
+
+@contextmanager
+def terminal_command(command, *, extra_env):
+    master, slave = pty.openpty()
+    # Claim the controlling terminal so writing Ctrl+C exercises a real terminal signal.
+    wrapper = (
+        "import fcntl, os, sys, termios; "
+        "fcntl.ioctl(0, termios.TIOCSCTTY, 0); os.execvp(sys.argv[1], sys.argv[1:])"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", wrapper, *command],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        start_new_session=True,
+        env={
+            **os.environ,
+            "TERM": "xterm",
+            "LC_ALL": "en_US.UTF-8",
+            "INPUTRC": os.devnull,
+            **extra_env,
+        },
+    )
+    os.close(slave)
+    pending = b""
+
+    def read_until(marker):
+        nonlocal pending
+        deadline = time.monotonic() + 10
+        while marker not in pending:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0 and select.select([master], [], [], remaining)[0], pending
+            pending += os.read(master, 65536)
+        end = pending.index(marker) + len(marker)
+        received, pending = pending[:end], pending[end:]
+        return received
+
+    def wait_for_exit():
+        nonlocal pending
+        deadline = time.monotonic() + 5
+        while process.poll() is None:
+            assert time.monotonic() < deadline, pending
+            # Drain the PTY: macOS can block shell exit while terminal output is pending.
+            if select.select([master], [], [], 0.05)[0]:
+                try:
+                    pending += os.read(master, 65536)
+                except OSError as exc:
+                    if exc.errno != errno.EIO:
+                        raise
+        return process.returncode
+
+    try:
+        yield process, master, read_until, wait_for_exit
+    finally:
+        if process.poll() is None:
+            process.kill()
+        os.close(master)
+        process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("exit_method", ["ctrl_c", "sigint", "task_ctrl_c", "eof", "exit"])
+def test_cli_exit_restores_terminal_and_waits_for_persistence(local_cli_script, exit_method):
+    script, persisted = local_cli_script
+    with terminal_command(
+        [sys.executable, "-u", str(script), "--timezone", "Asia/Shanghai"],
+        extra_env={"KAREN_TEST_PERSISTED": str(persisted)},
+    ) as (process, master, read_until, wait_for_exit):
+        read_until("你：".encode())
+        if exit_method == "task_ctrl_c":
+            os.write(master, "执行测试任务\r".encode())
+            read_until(b"TASK_STARTED")
+        elif exit_method in {"ctrl_c", "sigint"}:
+            os.write(master, "未提交的中文输入".encode())
+        if exit_method == "sigint":
+            process.send_signal(signal.SIGINT)
+        elif exit_method == "eof":
+            os.write(master, b"\x04")
+        elif exit_method == "exit":
+            os.write(master, b"/exit\r")
+        else:
+            os.write(master, b"\x03")
+        read_until(b"PERSISTENCE_COMPLETE")
+        assert wait_for_exit() == (0 if exit_method in {"eof", "exit"} else 130)
+        state = json.loads(persisted.read_text())
+        # macOS sets PENDIN when changing terminal modes; it is a kernel replay flag.
+        for attrs in state.values():
+            attrs[3] &= ~getattr(termios, "PENDIN", 0)
+        assert state["after"] == state["before"]
+
+
+def test_shell_accepts_another_command_after_karen_ctrl_c(local_cli_script):
+    script, persisted = local_cli_script
+    with terminal_command(
+        ["/bin/bash", "--noprofile", "--norc", "-i"],
+        extra_env={"KAREN_TEST_PERSISTED": str(persisted), "PS1": "SHELL_READY> "},
+    ) as (_, master, read_until, wait_for_exit):
+        read_until(b"SHELL_READY> ")
+        command = shlex.join([sys.executable, "-u", str(script), "--timezone", "Asia/Shanghai"])
+        os.write(master, command.encode() + b"\r")
+        read_until("你：".encode())
+        os.write(master, "未提交的任务".encode() + b"\x03")
+        read_until(b"PERSISTENCE_COMPLETE")
+        read_until(b"SHELL_READY> ")
+        # Split the marker so echoed command text cannot masquerade as execution.
+        os.write(master, b"printf 'SHELL_%s\\n' INPUT_WORKS\r")
+        read_until(b"SHELL_INPUT_WORKS\r\n")
+        assert json.loads(persisted.read_text())["after"][3] & termios.ECHO
+        read_until(b"SHELL_READY> ")
+        os.write(master, b"exit\r")
+        read_until(b"exit\r\n")
+        assert wait_for_exit() == 0

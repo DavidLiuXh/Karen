@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 
 import pytest
 from dynamic_graph import (
@@ -270,7 +271,11 @@ async def test_next_task_has_no_previous_conversation_or_results(tmp_path, first
     if first_status == "CANCELLED":
         token.cancel()
     first = await agent.advance(
-        IntentSession(timezone="America/New_York", user_context={"language": "zh-CN"}),
+        IntentSession(
+            timezone="America/New_York",
+            user_context={"language": "zh-CN"},
+            reference_time_utc=datetime(2020, 1, 1, tzinfo=UTC),
+        ),
         "第一项任务：写中文邮件",
         policy=ExecutionPolicy(max_model_calls=0) if first_status == "FAILED" else None,
         cancellation_token=token,
@@ -281,6 +286,7 @@ async def test_next_task_has_no_previous_conversation_or_results(tmp_path, first
     assert second.session.request_id != first.session.request_id
     assert second.session.timezone == "America/New_York"
     assert second.session.user_context == {"language": "zh-CN"}
+    assert second.session.reference_time_utc > first.session.reference_time_utc
     assert intent_model.requests[1].input_data["messages"] == [
         {"role": "user", "content": "第二项任务：写一封新邮件"}
     ]
@@ -297,6 +303,11 @@ async def test_next_task_has_no_previous_conversation_or_results(tmp_path, first
     ]
     planner_goal = executor.requests[-2].input_data["goal"]
     assert planner_goal["context"]["conversation"] == conversation
+    assert (
+        planner_goal["context"]["time_context"]
+        == intent_model.requests[1].input_data["time_context"]
+    )
+    assert final.session.reference_time_utc == second.session.reference_time_utc
     assert "第一项任务" not in json.dumps(planner_goal, ensure_ascii=False)
     assert first.session.messages[0].content == "第一项任务：写中文邮件"
     assert final.session.goal.objective == "写一封新的中文邮件"

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 from zoneinfo import ZoneInfoNotFoundError
@@ -17,6 +18,8 @@ from dynamic_graph.tools import (
     tavily_search_tool,
     web_fetch_tool,
 )
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import DummyHistory
 from pydantic import ValidationError
 
 from .agent import Karen
@@ -92,7 +95,13 @@ def create_observer() -> Observer:
 
 
 async def read_input() -> str:
-    """A cancelled console read must not hold asyncio's executor shutdown open."""
+    """Cancel terminal editing cleanly; keep redirected input compatible with input()."""
+    if sys.stdin.isatty():
+        # Async editing restores terminal modes before cancellation or Ctrl+C propagates.
+        # Do not retain user requests in the line editor's history.
+        return await PromptSession(history=DummyHistory()).prompt_async("你：")
+
+    # A cancelled pipe read must not hold asyncio's executor shutdown open.
     loop = asyncio.get_running_loop()
     future = loop.create_future()
 

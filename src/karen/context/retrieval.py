@@ -10,6 +10,7 @@ from typing import TypedDict
 import numpy as np
 from dynamic_graph.models.client import ModelRequest
 from langgraph.graph import END, START, StateGraph
+from pydantic import ValidationError
 
 from .contracts import (
     DetailQuery,
@@ -216,6 +217,49 @@ class Retriever:
         graph.add_edge("assemble", END)
         self.graph = graph.compile()
 
+    def report_degradation(self, code, error):
+        """Record handled failures without copying response values or exception messages."""
+        details = {
+            "code": code,
+            "error_type": type(error).__name__,
+            "error_code": getattr(error, "code", type(error).__name__),
+        }
+        if isinstance(error, ValidationError):
+            details["error_code"] = "MODEL_RESPONSE_VALIDATION_FAILED"
+            details["validation_errors"] = []
+            for item in error.errors(include_input=False, include_url=False):
+                issue = {"type": item["type"], "location": list(item["loc"])}
+                if item["type"] == "time_reference_required":
+                    mode = item["ctx"]["time_mode"]
+                    issue.update(
+                        field="at",
+                        time_mode=mode,
+                        reason=f"{mode} 需要显式、带时区的 at；time_range 不能替代 at。",
+                    )
+                elif item["type"] == "at_timezone_required":
+                    issue.update(field="at", reason="at 缺少时区偏移。")
+                details["validation_errors"].append(issue)
+        elif isinstance(error, TimeoutError):
+            details["error_code"] = "RECALL_TIMEOUT"
+        elif (
+            isinstance(error, ValueError)
+            and error.args
+            and isinstance(error.args[0], str)
+            and error.args[0]
+            in {
+                "RERANK_INPUT_TOO_LARGE",
+                "INVALID_RERANK_IDS",
+                "DUPLICATE_HISTORY_EVENT",
+                "INVALID_HISTORY_EVENT",
+                "INVALID_HISTORY_TASK",
+                "EMPTY_SELECTED_HISTORY",
+                "UNEXPECTED_HISTORY",
+                "UNRELATED_HISTORY",
+            }
+        ):
+            details["error_code"] = error.args[0]
+        self.service.observer.emit("memory.degraded", status="degraded", data=details)
+
     async def recall(self, query):
         state = {"query": query, "deadline": time.monotonic() + 20, "degraded": []}
         try:
@@ -226,7 +270,8 @@ class Retriever:
             return state["result"]
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
+            self.report_degradation("MEMORY_RECALL_UNAVAILABLE", error)
             analysis = state.get("analysis")
             dependency = analysis.dialogue_dependency if analysis else "none"
             return RecallResult(
@@ -276,7 +321,8 @@ class Retriever:
                 },
                 QueryAnalysis,
             )
-        except Exception:
+        except Exception as error:
+            self.report_degradation("QUERY_ANALYSIS_FAILED", error)
             analysis = QueryAnalysis(search_text=query.text, time_mode="unspecified")
             degraded.append("QUERY_ANALYSIS_FAILED")
         if query.time_constraint:
@@ -389,6 +435,8 @@ class Retriever:
         ]
         inputs = {
             "query": state["query"].text,
+            "current_request_id": state["query"].request_id,
+            "current_task_messages": state["query"].current_task_messages,
             "analysis": analysis.model_dump(mode="json"),
             "primary_ids": list(primary),
             "memories": [state["memories"][mid].model_dump(mode="json") for mid in sorted(records)],
@@ -434,7 +482,8 @@ class Retriever:
                 raise ValueError("UNEXPECTED_HISTORY")
             if analysis.dialogue_dependency == "none" and ranking.history_status != "none":
                 raise ValueError("UNRELATED_HISTORY")
-        except Exception:
+        except Exception as error:
+            self.report_degradation("RERANK_FAILED_FUSION_ORDER", error)
             # Preserve the existing fused order and label it; no invented precision.
             ranking = Ranking(
                 ranking=[],

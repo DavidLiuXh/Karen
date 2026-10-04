@@ -361,6 +361,7 @@
       "memory.submitted": "记忆入队",
       "memory.persisted": "原文已持久化",
       "memory.persistence_failed": "原文持久化失败",
+      "memory.degraded": "召回降级原因",
       "memory.retry": "记忆重试／终止",
       "memory.indexed": "索引完成",
       "embedding.request": "向量请求",
@@ -474,6 +475,32 @@
           "meta",
         ),
       );
+      for (const event of data.events.filter(
+        (e) => e.trace_id === selected && e.event_type === "memory.degraded",
+      )) {
+        const failure = event.data;
+        const issues = Array.isArray(failure.validation_errors)
+          ? failure.validation_errors.map(
+              (issue) =>
+                issue.reason ||
+                ((Array.isArray(issue.location)
+                  ? issue.location.join(".")
+                  : "") || "响应") +
+                  ": " +
+                  (issue.type || "记录已裁剪"),
+            )
+          : [];
+        target.append(
+          el(
+            "div",
+            "召回降级（" +
+              failure.code +
+              "）：" +
+              (issues.join("；") || failure.error_code),
+            "notice",
+          ),
+        );
+      }
       const unhealthy =
         data.coverage.partial ||
         data.coverage.invalid_lines ||

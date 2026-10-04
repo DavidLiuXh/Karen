@@ -16,6 +16,7 @@ dependencies = [
   "numpy>=2,<3",
   "jieba>=0.42,<1",
   "pydantic>=2.11,<3",
+  "prompt-toolkit>=3.0,<4",
   "tzlocal>=5.3,<6",
 ]
 

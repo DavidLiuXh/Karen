@@ -779,3 +779,25 @@ async def test_explicit_referent_identification_uses_user_evidence():
         IntentSession(timezone="UTC"), "周宁告诉沈清，她收到了信。这里她指沈清。是谁收到了信？"
     )
     assert not result.questions and result.reply == "沈清收到了信。"
+
+
+async def test_supporting_memory_facts_remain_internal_to_direct_response():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    model = RawModel(
+        [
+            routing("respond", types=["question"]),
+            {
+                "supporting_facts": ["内部证据：先借了两本，后来又借了三本。"],
+                "decision": {"outcome": "reply", "answer": "你共借了五本。"},
+            },
+        ]
+    )
+    result = await IntentRecognizer(model).advance(
+        IntentSession(timezone="UTC"),
+        "我总共借了多少本书？",
+        memory_context={"coverage": {"query_kind": "detail"}, "m1": [], "m2": []},
+    )
+    assert result.reply == "你共借了五本。"
+    assert result.messages[-1].content == result.reply
+    assert "内部证据" not in result.reply and not result.questions

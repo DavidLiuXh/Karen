@@ -123,6 +123,10 @@ class Assessment(IntentContract):
 
 
 class DirectAssessment(IntentContract):
+    supporting_facts: list[Text] = Field(
+        default_factory=list,
+        description="先列出当前输入或记忆原文支持且与问题相关的事实，再形成 decision；无相关事实时为空。",
+    )
     decision: Annotated[Reply | Clarification, Field(discriminator="outcome")]
 
 

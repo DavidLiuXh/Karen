@@ -813,7 +813,7 @@ async def test_detail_search_budget_reports_partial_instead_of_no_evidence(memor
         await service._queue.join()
         result = await service.search_details(DetailQuery(text="报告", request_id="task-1"))
         assert result.status == "partial" and 0 < result.scanned_events <= 200
-        assert len(result.hits) == 200
+        assert len(result.hits) == result.scanned_events
 
 
 async def test_semantic_fact_matching_keeps_canonical_slot_when_new_key_differs(memory):

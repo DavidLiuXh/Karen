@@ -1,0 +1,186 @@
+[
+  {
+    "suite": "karen-zh",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "gold": {
+      "answer": "应询问Zelnoprax是什么对象、类型或正确名称，不得臆测实体。"
+    },
+    "id": "variant-unidentified-object",
+    "category": "independent-variant",
+    "steps": [
+      {
+        "text": "Zelnoprax 的平均故障率是多少？",
+        "expected": {
+          "outcome": "clarification"
+        }
+      }
+    ],
+    "search_fixture": false
+  },
+  {
+    "suite": "karen-zh",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "gold": {
+      "answer": "应询问用户的阅读兴趣、目标或选择标准，而非只问输出格式。"
+    },
+    "id": "variant-selection-criteria",
+    "category": "independent-variant",
+    "steps": [
+      {
+        "text": "给我推荐几本值得读的书。",
+        "expected": {
+          "outcome": "clarification"
+        }
+      }
+    ],
+    "search_fixture": false
+  },
+  {
+    "suite": "karen-zh",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "gold": {
+      "answer": "应询问她指林悦还是陈安，不能擅自指定。"
+    },
+    "id": "variant-unresolved-pronoun",
+    "category": "independent-variant",
+    "steps": [
+      {
+        "text": "林悦告诉陈安，她把包裹寄出去了。这里是谁寄出了包裹？",
+        "expected": {
+          "outcome": "clarification"
+        }
+      }
+    ],
+    "search_fixture": false
+  },
+  {
+    "suite": "karen-zh",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "gold": {
+      "answer": "我们已完成方案设计。"
+    },
+    "id": "variant-clear-rewrite",
+    "category": "independent-variant",
+    "steps": [
+      {
+        "text": "把“我们已经完成方案的设计。”改写成更简洁的中文，只输出改写后的句子。",
+        "expected": {
+          "outcome": "complete"
+        }
+      }
+    ],
+    "search_fixture": false
+  },
+  {
+    "suite": "karen-zh",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "gold": {
+      "answer": "晴雯是贾宝玉的丫鬟，性格聪明爽直、倔强，遭到逐出大观园后病逝。"
+    },
+    "id": "variant-scoped-character",
+    "category": "independent-variant",
+    "steps": [
+      {
+        "text": "《红楼梦》中的晴雯是什么人物？简要说明即可。",
+        "expected": {
+          "outcome": "complete"
+        }
+      }
+    ],
+    "search_fixture": false
+  },
+  {
+    "suite": "karen-zh",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [
+      {
+        "session_id": "library-a",
+        "role": "user",
+        "content": "我昨天去市图书馆借了2本书。",
+        "occurred_at": "2026-10-02T08:00:00+00:00",
+        "turn": 0
+      },
+      {
+        "session_id": "library-b",
+        "role": "user",
+        "content": "我今天又去同一家市图书馆借了3本书。",
+        "occurred_at": "2026-10-03T08:00:00+00:00",
+        "turn": 0
+      }
+    ],
+    "gold": {
+      "answer": "两次共借了5本书（2+3）。"
+    },
+    "id": "variant-episode-total",
+    "category": "independent-variant",
+    "steps": [
+      {
+        "text": "我这两次去市图书馆一共借了几本书？",
+        "expected": {
+          "outcome": "complete"
+        }
+      }
+    ],
+    "search_fixture": false
+  },
+  {
+    "suite": "karen-zh",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [
+      {
+        "session_id": "commute-a",
+        "role": "user",
+        "content": "我以前在通勤时常听财经评论，最近想换成自然和天文方面的音频节目。单程通勤约45分钟。",
+        "occurred_at": "2026-10-02T08:00:00+00:00",
+        "turn": 0
+      },
+      {
+        "session_id": "commute-b",
+        "role": "user",
+        "content": "我希望在通勤时通过听音频了解自然与天文知识。",
+        "occurred_at": "2026-10-03T08:00:00+00:00",
+        "turn": 0
+      }
+    ],
+    "gold": {
+      "answer": "推荐自然与天文相关音频，适合45分钟通勤；不要主推财经评论或阅读文字/看视频。"
+    },
+    "id": "variant-change-direction",
+    "category": "independent-variant",
+    "steps": [
+      {
+        "text": "有什么适合我通勤时听的内容建议？",
+        "expected": {
+          "outcome": "complete"
+        }
+      }
+    ],
+    "search_fixture": false
+  }
+]

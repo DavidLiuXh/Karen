@@ -202,7 +202,9 @@ async def evaluate_case(case, directory, *, client_factory=deepseek_client):
                 observer=observer,
             )
             await memory.start()
-        engine = create_engine(meter, directory, case["suite"] == "karen-zh")
+        engine = create_engine(
+            meter, directory, case.get("search_fixture", case["suite"] == "karen-zh")
+        )
         agent = Karen(intent=intent, engine=engine, memory=memory, observer=observer)
         session = None
         for step in case["steps"]:

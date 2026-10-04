@@ -107,6 +107,8 @@ class Extractor:
                         raise
                     payload = error.raw_response
                     feedback = {"code": error.code}
+                    if error.details.get("json_syntax"):
+                        feedback["json_syntax"] = error.details["json_syntax"]
                 except ValidationError as error:
                     if attempt:
                         raise

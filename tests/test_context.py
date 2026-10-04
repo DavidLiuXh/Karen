@@ -1500,7 +1500,10 @@ async def test_processing_diagnostics_do_not_crowd_out_memory_evidence(memory):
     assert "verification_reason" not in requests[-1].input_data["memories"][0]
 
 
-async def test_invalid_model_json_is_supplied_to_bounded_memory_repair(tmp_path):
+@pytest.mark.parametrize(
+    "syntax", [None, {"message": "Expecting value", "line": 1, "column": 27, "position": 26}]
+)
+async def test_invalid_model_json_is_supplied_to_bounded_memory_repair(tmp_path, syntax):
     class Model(MemoryModel):
         raw = '{"facts": [], "summaries": [broken]}'
         repaired = False
@@ -1509,9 +1512,13 @@ async def test_invalid_model_json_is_supplied_to_bounded_memory_repair(tmp_path)
             if request.role == "memory_extract":
                 if "validation_error" not in request.input_data:
                     raise ModelCallError(
-                        "MODEL_RESPONSE_INVALID", "Invalid generated JSON", raw_response=self.raw
+                        "MODEL_RESPONSE_INVALID",
+                        "Invalid generated JSON",
+                        raw_response=self.raw,
+                        details={"json_syntax": syntax} if syntax else {},
                     )
                 assert request.input_data["previous_response"] == self.raw
+                assert request.input_data["validation_error"].get("json_syntax") == syntax
                 self.repaired = True
             return await super().generate(request)
 
@@ -1527,3 +1534,4 @@ async def test_invalid_model_json_is_supplied_to_bounded_memory_repair(tmp_path)
         assert any(m.layer == "m2" for m in stored.values())
     finally:
         await service.close()
+

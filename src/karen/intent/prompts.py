@@ -26,6 +26,8 @@ time_context 是 Karen 根据请求首次输入时刻和用户时区计算的可
 若足够清晰，返回 ready，提取 objective、可观察且可验证的 success_criteria、明确的
 constraints 和用户提供的 inputs。目标须保留用户要求的交付物、范围与约束。
 成功标准描述结果，不要替用户增加额外工作，也不要声称成功标准已被验证。
+方向性内容建议可以用适合的类别、主题和选择方法满足；除非用户明确要求具体节目、产品或
+资源清单，不要增加‘必须给出真实名称、链接、精确时长或联网核实’等验收条件。
 output_schema 描述执行结果，根必须为 object；一般任务省略它以使用引擎默认的
 answer/evidence/limitations 格式；明确需要结构化结果时给出对应 schema。
 Schema 仅支持 type/properties/required/additionalProperties/items/enum、数值上下界、

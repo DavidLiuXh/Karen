@@ -1,0 +1,100 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from karen.evaluation.datasets import clamber, longmemeval, parse_date, read_rows
+from karen.evaluation.runner import check_step, summarize
+
+
+def long_row():
+    return {
+        "question_id": "example",
+        "question_type": "knowledge-update",
+        "question": "Where?",
+        "answer": "Shanghai",
+        "question_date": "2026/10/04 (Sun) 12:00",
+        "haystack_dates": ["2026/10/03 (Sat) 09:00", "2026/10/01 (Thu) 10:00"],
+        "haystack_session_ids": ["new", "old"],
+        "answer_session_ids": ["new"],
+        "haystack_sessions": [
+            [{"role": "user", "content": "Shanghai", "has_answer": True}],
+            [{"role": "assistant", "content": "Beijing"}],
+        ],
+    }
+
+
+def test_official_clamber_double_encoding_and_gold_separation(tmp_path):
+    row = {
+        "question": "Where?",
+        "context": "given context",
+        "clarifying_question": "Which city?",
+        "require_clarification": 1,
+        "category": "FD",
+        "subclass": "where",
+        "predict_clarifying_question": "must never enter agent input",
+    }
+    path = tmp_path / "data.jsonl"
+    path.write_text(json.dumps(json.dumps(row)) + "\n")
+    case = clamber(read_rows(path)[0], 12)
+    assert case["context"] == "given context"
+    assert case["steps"][0]["text"] == "Where?"
+    assert "Which city?" not in json.dumps(case["steps"])
+    assert "predict" not in json.dumps(case)
+
+
+def test_memory_adapter_sorts_preserves_roles_and_excludes_answer_annotations():
+    case = longmemeval(long_row(), "oracle", "Asia/Shanghai")
+    assert [h["session_id"] for h in case["history"]] == ["old", "new"]
+    assert [h["role"] for h in case["history"]] == ["assistant", "user"]
+    assert len(case["history"]) == 2
+    assert "has_answer" not in json.dumps(case["history"])
+    assert "answer_session_ids" not in json.dumps(case["history"])
+    assert case["reference_time"].endswith("+08:00")
+
+
+def test_memory_adapter_rejects_future_sessions_without_silently_truncating():
+    row = long_row()
+    row["haystack_dates"][0] = "2026/10/05 (Mon) 09:00"
+    with pytest.raises(ValueError, match="future"):
+        longmemeval(row, "s")
+    row["haystack_session_ids"].pop()
+    with pytest.raises(ValueError, match="Misaligned"):
+        longmemeval(row, "s")
+
+
+def test_date_offset_is_preserved_and_naive_date_uses_explicit_zone():
+    assert parse_date("2026-10-04T00:00:00+09:00", "UTC").utcoffset().total_seconds() == 32400
+    assert (
+        parse_date("2026/10/04 (Sun) 00:00", "Asia/Shanghai").utcoffset().total_seconds() == 28800
+    )
+
+
+def test_engine_completion_and_trusted_clock_are_not_business_passes():
+    actual = {
+        "outcome": "execution",
+        "execution_status": "COMPLETED",
+        "output_complete": False,
+        "answer": "Done",
+        "goal": {"context": {"date": "2026-10-05"}},
+    }
+    failures = check_step({"outcome": "execution", "goal_contains": ["2026-10-05"]}, actual)
+    assert len(failures) == 2
+    assert check_step({"outcome": "complete"}, {"outcome": "clarification", "answer": "When?"})
+
+
+def test_reporting_keeps_errors_in_denominator_and_splits_separate():
+    results = [
+        {"suite": "clamber", "split": "development", "status": status}
+        for status in ["passed", "failed", "error", "judge_error"]
+    ]
+    summary = summarize(results)["clamber/development"]
+    assert summary["total"] == 4
+    assert summary["pass_rate_all"] == 0.25
+
+
+def test_frozen_chinese_cases_are_public_synthetic_and_have_unique_ids():
+    rows = read_rows(Path(__file__).parent / "fixtures/evaluation_zh.json")
+    assert len({row["id"] for row in rows}) == len(rows)
+    assert {row["split"] for row in rows} == {"development", "heldout"}
+    assert all(row["timezone"] and row["reference_time"] for row in rows)

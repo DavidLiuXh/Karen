@@ -6,7 +6,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from dynamic_graph.models.client import ModelCallError, ModelResponse
-from intent_helpers import ClarityAwareModel as FakeModelClient, TaskIntentModel
+from intent_helpers import ClarityAwareModel as FakeModelClient
+from intent_helpers import TaskIntentModel
 from langchain_core.embeddings import Embeddings
 
 from karen.context import (
@@ -494,7 +495,10 @@ async def test_missing_external_history_still_clarifies_during_current_task(memo
     assert second.result is None and second.memory_result.coverage["requires_history"]
     assert "哪一次任务" in second.session.questions[0]
     assert [r.role for r in intent_model.requests] == [
-        "intent_router", "intent_clarity", "intent", "intent_router"
+        "intent_router",
+        "intent_clarity",
+        "intent",
+        "intent_router",
     ]
     assert not executor.requests
 
@@ -1398,68 +1402,97 @@ async def test_invalid_source_quote_is_repaired_and_never_cached_as_evidence(tmp
         await service.close()
 
 
-@pytest.mark.parametrize('operation,succeeds', [('coexist', True), ('new', False)])
+@pytest.mark.parametrize("operation,succeeds", [("coexist", True), ("new", False)])
 async def test_compatible_values_in_same_fact_slot_keep_both_active(tmp_path, operation, succeeds):
     class Model(MemoryModel):
         async def generate(self, request):
             from dynamic_graph.models.client import ModelResponse
 
             data = request.input_data
-            if request.role == 'memory_extract':
-                current = next(e for e in data['events'] if e['event_id'] == data['new_event_id'])
-                value = current['payload']['content']
-                return ModelResponse({'facts': [{
-                    'candidate_id': 'interest', 'fact_key': 'interest.activities',
-                    'value': value, 'text': value,
-                    'evidence': [{'event_id': current['event_id'],
-                                  'pointer': '/payload/content', 'quote': value}],
-                }], 'summaries': []})
-            if request.role == 'memory_verify':
-                old = data['existing']
-                return ModelResponse({'decisions': [{
-                    'candidate_id': 'interest', 'verification': 'supported',
-                    'operation': operation if old else 'new',
-                    'matched_ids': [old[0]['memory_id']] if old and operation == 'coexist' else [],
-                    'reason': '不同兴趣可以并存，不表示撤销旧兴趣',
-                }]})
+            if request.role == "memory_extract":
+                current = next(e for e in data["events"] if e["event_id"] == data["new_event_id"])
+                value = current["payload"]["content"]
+                return ModelResponse(
+                    {
+                        "facts": [
+                            {
+                                "candidate_id": "interest",
+                                "fact_key": "interest.activities",
+                                "value": value,
+                                "text": value,
+                                "evidence": [
+                                    {
+                                        "event_id": current["event_id"],
+                                        "pointer": "/payload/content",
+                                        "quote": value,
+                                    }
+                                ],
+                            }
+                        ],
+                        "summaries": [],
+                    }
+                )
+            if request.role == "memory_verify":
+                old = data["existing"]
+                return ModelResponse(
+                    {
+                        "decisions": [
+                            {
+                                "candidate_id": "interest",
+                                "verification": "supported",
+                                "operation": operation if old else "new",
+                                "matched_ids": [old[0]["memory_id"]]
+                                if old and operation == "coexist"
+                                else [],
+                                "reason": "不同兴趣可以并存，不表示撤销旧兴趣",
+                            }
+                        ]
+                    }
+                )
             return await super().generate(request)
 
-    memory = ContextMemory(root_dir=tmp_path / 'context', model=Model(), embeddings=LocalEmbeddings())
+    memory = ContextMemory(
+        root_dir=tmp_path / "context", model=Model(), embeddings=LocalEmbeddings()
+    )
     await memory.start()
     try:
-        await memory.flush(memory.submit(event('我喜欢摄影', request='first')))
-        second = memory.submit(event('我也喜欢游泳', request='second'))
+        await memory.flush(memory.submit(event("我喜欢摄影", request="first")))
+        second = memory.submit(event("我也喜欢游泳", request="second"))
         if succeeds:
             await memory.flush(second)
         else:
             with pytest.raises(MemoryFlushError):
                 await memory.flush(second)
         _, stored, _ = memory.storage.snapshot()
-        facts = [m for m in stored.values() if m.layer == 'm1']
-        assert {m.value for m in facts} == ({'我喜欢摄影', '我也喜欢游泳'} if succeeds else {'我喜欢摄影'})
-        assert all(m.state == 'active' and not m.supersedes and not m.corrects for m in facts)
+        facts = [m for m in stored.values() if m.layer == "m1"]
+        assert {m.value for m in facts} == (
+            {"我喜欢摄影", "我也喜欢游泳"} if succeeds else {"我喜欢摄影"}
+        )
+        assert all(m.state == "active" and not m.supersedes and not m.corrects for m in facts)
     finally:
         await memory.close()
 
 
 async def test_processing_diagnostics_do_not_crowd_out_memory_evidence(memory):
     service, backend = memory
-    await service.flush(service.submit(event('我住在北京')))
+    await service.flush(service.submit(event("我住在北京")))
     revision, stored, _ = service.storage.snapshot()
-    original = next(m for m in stored.values() if m.layer == 'm1')
-    service.storage.commit_memories(original.sources[0].event_id, [original.model_copy(
-        update={'verification_reason': '核验过程' * 10000}
-    )], revision)
-    result = await service.recall(query('我住哪里？'))
-    assert result.m1 and result.m1[0].memory.value == '北京'
+    original = next(m for m in stored.values() if m.layer == "m1")
+    service.storage.commit_memories(
+        original.sources[0].event_id,
+        [original.model_copy(update={"verification_reason": "核验过程" * 10000})],
+        revision,
+    )
+    result = await service.recall(query("我住哪里？"))
+    assert result.m1 and result.m1[0].memory.value == "北京"
     context = result.context()
-    entry = context['m1'][0]['memory']
-    assert 'verification_reason' not in entry and 'created_at' not in entry
-    assert entry['sources'] and entry['state'] == 'active'
-    assert entry['recorded_at'] and entry['scope'] and entry['valid_from'] is None
-    assert result.m1[0].memory.verification_reason == '核验过程' * 10000
-    requests = [r for r in backend.requests if r.role == 'memory_rerank']
-    assert 'verification_reason' not in requests[-1].input_data['memories'][0]
+    entry = context["m1"][0]["memory"]
+    assert "verification_reason" not in entry and "created_at" not in entry
+    assert entry["sources"] and entry["state"] == "active"
+    assert entry["recorded_at"] and entry["scope"] and entry["valid_from"] is None
+    assert result.m1[0].memory.verification_reason == "核验过程" * 10000
+    requests = [r for r in backend.requests if r.role == "memory_rerank"]
+    assert "verification_reason" not in requests[-1].input_data["memories"][0]
 
 
 async def test_invalid_model_json_is_supplied_to_bounded_memory_repair(tmp_path):
@@ -1468,20 +1501,24 @@ async def test_invalid_model_json_is_supplied_to_bounded_memory_repair(tmp_path)
         repaired = False
 
         async def generate(self, request):
-            if request.role == 'memory_extract':
-                if 'validation_error' not in request.input_data:
-                    raise ModelCallError('MODEL_RESPONSE_INVALID', 'Invalid generated JSON', raw_response=self.raw)
-                assert request.input_data['previous_response'] == self.raw
+            if request.role == "memory_extract":
+                if "validation_error" not in request.input_data:
+                    raise ModelCallError(
+                        "MODEL_RESPONSE_INVALID", "Invalid generated JSON", raw_response=self.raw
+                    )
+                assert request.input_data["previous_response"] == self.raw
                 self.repaired = True
             return await super().generate(request)
 
     model = Model()
-    service = ContextMemory(root_dir=tmp_path / 'context', model=model, embeddings=LocalEmbeddings())
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings()
+    )
     await service.start()
     try:
-        await service.flush(service.submit(event('用户提到花园', kind='assistant_message')))
+        await service.flush(service.submit(event("用户提到花园", kind="assistant_message")))
         assert model.repaired
         _, stored, _ = service.storage.snapshot()
-        assert any(m.layer == 'm2' for m in stored.values())
+        assert any(m.layer == "m2" for m in stored.values())
     finally:
         await service.close()

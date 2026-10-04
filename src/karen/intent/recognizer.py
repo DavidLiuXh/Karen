@@ -31,11 +31,11 @@ from ..observability import Observer
 from ..prompts import RESPONSE_INSTRUCTION
 from .prompts import (
     CLARITY_INSTRUCTION,
+    CLARITY_TASK_INSTRUCTION,
     DIRECT_RESPONSE_INSTRUCTION,
     GOAL_CONTEXT_INSTRUCTION,
     INTENT_SYSTEM_INSTRUCTION,
     INTENT_TASK_INSTRUCTION,
-    CLARITY_TASK_INSTRUCTION,
     ROUTING_INSTRUCTION,
     STRUCTURE_REPAIR_INSTRUCTION,
 )
@@ -203,7 +203,10 @@ class IntentRecognizer:
         self.model = model
         self.observer = observer or Observer()
         graph = StateGraph(IntentState)
-        graph.add_node("check_clarity", self.observer.node("intent.check_clarity", self._check_clarity, lambda r: r))
+        graph.add_node(
+            "check_clarity",
+            self.observer.node("intent.check_clarity", self._check_clarity, lambda r: r),
+        )
         graph.add_node("assess", self.observer.node("intent.assess", self._assess, lambda r: r))
         graph.add_node(
             "clarify",

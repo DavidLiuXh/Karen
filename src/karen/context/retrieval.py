@@ -463,9 +463,7 @@ class Retriever:
             primary.pop()
             records = {mid for root in primary for mid in state["bundles"][root]}
             inputs["primary_ids"] = primary
-            inputs["memories"] = [
-                state["memories"][mid].context() for mid in sorted(records)
-            ]
+            inputs["memories"] = [state["memories"][mid].context() for mid in sorted(records)]
             degraded.append("RERANK_INPUT_BUDGET_LIMIT")
         while len(encode(inputs).encode()) > 24 * 1024 and inputs["history_candidates"]:
             inputs["history_candidates"].pop()
@@ -565,9 +563,11 @@ class Retriever:
                         ),
                     )
                 )
-            size = len(encode([
-                {**h.model_dump(mode="json"), "memory": h.memory.context()} for h in hits
-            ]).encode())
+            size = len(
+                encode(
+                    [{**h.model_dump(mode="json"), "memory": h.memory.context()} for h in hits]
+                ).encode()
+            )
             if used + size > 10 * 1024:
                 degraded.append("CONTEXT_BUDGET_LIMIT")
                 continue

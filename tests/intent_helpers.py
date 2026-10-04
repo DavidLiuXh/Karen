@@ -13,10 +13,14 @@ class ClarityAwareModel(FakeModelClient):
     async def generate(self, request):
         if request.role == "intent_clarity":
             self.requests.append(request)
-            return ModelResponse({
-                "known_referents": {}, "selection_criteria": [], "questions": [],
-                "reason": "No unresolved referents in this scripted routing test",
-            })
+            return ModelResponse(
+                {
+                    "known_referents": {},
+                    "selection_criteria": [],
+                    "questions": [],
+                    "reason": "No unresolved referents in this scripted routing test",
+                }
+            )
         return await super().generate(request)
 
 

@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 
 import pytest
 from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings
-from intent_helpers import ClarityAwareModel as FakeModelClient
 from dynamic_graph.models.client import ModelCallError
+from intent_helpers import ClarityAwareModel as FakeModelClient
 from pydantic import ValidationError
 from test_context import LocalEmbeddings, MemoryModel, event
 from test_execution import graph_response, ready
@@ -70,7 +70,8 @@ async def test_direct_routes_do_not_generate_goals_or_call_engine(tmp_path, text
     assert turn.session.goal is None and turn.session.questions == () and turn.session.completed
     assert [r.role for r in model.requests] == (
         ["intent_router", "intent_clarity", "intent_response"]
-        if kind == "question" else ["intent_router", "intent_response"]
+        if kind == "question"
+        else ["intent_router", "intent_response"]
     )
     assert executor.requests == [] and not (tmp_path / "runs").exists()
     assert original.messages == () and original.reply is None
@@ -296,7 +297,12 @@ async def test_cancel_pending_task_does_not_call_assessor_or_engine(tmp_path):
         cancelled.session.request_id == pending.session.request_id and cancelled.session.completed
     )
     assert cancelled.session.questions == () and cancelled.result is None
-    assert [r.role for r in model.requests] == ["intent_router", "intent_clarity", "intent", "intent_router"]
+    assert [r.role for r in model.requests] == [
+        "intent_router",
+        "intent_clarity",
+        "intent",
+        "intent_router",
+    ]
     assert executor.requests == []
     next_turn = await agent.advance(cancelled.session, "你好")
     assert next_turn.session.request_id != pending.session.request_id
@@ -647,37 +653,55 @@ async def test_clarity_gate_retains_pending_context_and_stops_goal_creation():
     from dynamic_graph import FakeModelClient as RawModel
 
     def clarity(questions, *, known=None, criteria=None):
-        return {'known_referents': known or {}, 'selection_criteria': criteria or [],
-                'questions': questions, 'reason': 'Only unresolved necessary information is requested'}
+        return {
+            "known_referents": known or {},
+            "selection_criteria": criteria or [],
+            "questions": questions,
+            "reason": "Only unresolved necessary information is requested",
+        }
 
-    model = RawModel([
-        routing(), clarity(['你说的产品编号对应哪个产品？']),
-        routing(types=['task_control'], relation='continue'), clarity(['采用哪一个版本？'], known={'产品': '离线音频转码器'}),
-        routing(types=['task_control'], relation='continue'), clarity([], known={'产品': '离线音频转码器版本2'}),
-        ready(),
-    ])
+    model = RawModel(
+        [
+            routing(),
+            clarity(["你说的产品编号对应哪个产品？"]),
+            routing(types=["task_control"], relation="continue"),
+            clarity(["采用哪一个版本？"], known={"产品": "离线音频转码器"}),
+            routing(types=["task_control"], relation="continue"),
+            clarity([], known={"产品": "离线音频转码器版本2"}),
+            ready(),
+        ]
+    )
     recognizer = IntentRecognizer(model)
-    first = await recognizer.advance(IntentSession(timezone='UTC'), '比较这个产品的耗时')
+    first = await recognizer.advance(IntentSession(timezone="UTC"), "比较这个产品的耗时")
     assert first.questions and first.goal is None
-    assert [r.role for r in model.requests] == ['intent_router', 'intent_clarity']
-    second = await recognizer.advance(first, '我说的是离线音频转码器')
+    assert [r.role for r in model.requests] == ["intent_router", "intent_clarity"]
+    second = await recognizer.advance(first, "我说的是离线音频转码器")
     assert second.questions and second.goal is None
-    final = await recognizer.advance(second, '版本2')
+    final = await recognizer.advance(second, "版本2")
     assert final.goal is not None and not final.questions
-    checks = [r for r in model.requests if r.role == 'intent_clarity']
+    checks = [r for r in model.requests if r.role == "intent_clarity"]
     assert len(checks) == 3
-    assert checks[-1].input_data['messages'][0]['content'] == '比较这个产品的耗时'
-    assert checks[-1].input_data['messages'][-1]['content'] == '版本2'
-    assert model.requests[-1].input_data['clarity']['known_referents'] == {'产品': '离线音频转码器版本2'}
+    assert checks[-1].input_data["messages"][0]["content"] == "比较这个产品的耗时"
+    assert checks[-1].input_data["messages"][-1]["content"] == "版本2"
+    assert model.requests[-1].input_data["clarity"]["known_referents"] == {
+        "产品": "离线音频转码器版本2"
+    }
 
 
 async def test_direct_question_uses_clarity_gate_but_information_does_not():
     from dynamic_graph import FakeModelClient as RawModel
 
-    model = RawModel([
-        routing('respond', types=['question']),
-        {'known_referents': {}, 'selection_criteria': [], 'questions': ['你指哪一位？'], 'reason': '指代不明确'},
-    ])
-    pending = await IntentRecognizer(model).advance(IntentSession(timezone='UTC'), '他叫什么名字？')
-    assert pending.questions == ('你指哪一位？',) and pending.reply is None
-    assert [r.role for r in model.requests] == ['intent_router', 'intent_clarity']
+    model = RawModel(
+        [
+            routing("respond", types=["question"]),
+            {
+                "known_referents": {},
+                "selection_criteria": [],
+                "questions": ["你指哪一位？"],
+                "reason": "指代不明确",
+            },
+        ]
+    )
+    pending = await IntentRecognizer(model).advance(IntentSession(timezone="UTC"), "他叫什么名字？")
+    assert pending.questions == ("你指哪一位？",) and pending.reply is None
+    assert [r.role for r in model.requests] == ["intent_router", "intent_clarity"]

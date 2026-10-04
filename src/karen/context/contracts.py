@@ -262,10 +262,18 @@ class StoredMemory(Contract):
 
     def context(self) -> dict[str, JsonValue]:
         """Keep evidence and temporal semantics; leave processing diagnostics in the store."""
-        return self.model_dump(mode="json", exclude={
-            "verification_reason", "created_at", "updated_at", "extractor_model",
-            "verifier_model", "prompt_version", "revision",
-        })
+        return self.model_dump(
+            mode="json",
+            exclude={
+                "verification_reason",
+                "created_at",
+                "updated_at",
+                "extractor_model",
+                "verifier_model",
+                "prompt_version",
+                "revision",
+            },
+        )
 
 
 class RecallQuery(Contract):

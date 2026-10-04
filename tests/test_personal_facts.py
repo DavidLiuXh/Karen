@@ -4,7 +4,8 @@ import pytest
 from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings
 from dynamic_graph.contracts import default_output_schema
 from dynamic_graph.models.client import ModelResponse
-from intent_helpers import ClarityAwareModel as FakeModelClient, TaskIntentModel
+from intent_helpers import ClarityAwareModel as FakeModelClient
+from intent_helpers import TaskIntentModel
 from test_context import LocalEmbeddings, MemoryModel, event, query
 
 from karen import IntentRecognizer, IntentSession, Karen

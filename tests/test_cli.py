@@ -80,7 +80,7 @@ async def test_cli_registers_and_authorizes_all_available_tools(monkeypatch, cap
     assert "test-key" not in output
 
 
-def test_readable_result_displays_answer_sources_and_limitations():
+def test_readable_result_does_not_append_internal_evidence_and_limitations():
     result = RunResult(
         run_id="test-run",
         execution_status="COMPLETED",
@@ -93,8 +93,8 @@ def test_readable_result_displays_answer_sources_and_limitations():
     )
     displayed = cli.format_result(result)
     assert "HTML 已保存到 /tmp/github.html" in displayed
-    assert "https://github.com/trending：共 15 个仓库" in displayed
-    assert "仅确认打开请求已发出。" in displayed
+    assert displayed == result.outputs["answer"]
+    assert result.outputs["evidence"] and result.outputs["limitations"]
     assert "execution_status" not in displayed and "test-run" not in displayed
 
 
@@ -479,3 +479,32 @@ def test_shell_accepts_another_command_after_karen_ctrl_c(local_cli_script):
         os.write(master, b"exit\r")
         read_until(b"exit\r\n")
         assert wait_for_exit() == 0
+
+
+def test_answer_preserves_requested_sources_and_material_limitations():
+    answer = "来源：[天气预报](https://example.com/weather)。仅有上午预报，傍晚风力还无法确定。"
+    result = RunResult(
+        run_id="sources",
+        execution_status="COMPLETED",
+        output_complete=True,
+        outputs={
+            "answer": answer,
+            "evidence": [{"source": "internal-event-id", "text": "raw"}],
+            "limitations": [{"description": "INTERNAL_BUDGET_CODE"}],
+        },
+    )
+    assert cli.format_result(result) == answer
+
+
+def test_evidence_and_limitations_remain_visible_without_an_answer():
+    result = RunResult(
+        run_id="fallback",
+        execution_status="COMPLETED",
+        output_complete=True,
+        outputs={
+            "evidence": [{"source": "https://example.com", "text": "找到部分资料"}],
+            "limitations": [{"description": "仍缺傍晚预报"}],
+        },
+    )
+    text = cli.format_result(result)
+    assert "https://example.com" in text and "仍缺傍晚预报" in text

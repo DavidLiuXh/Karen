@@ -365,6 +365,12 @@ class Retriever:
                 hybrid, memories, vectors, keyword, None, None, query
             )
             degraded.append("INVALID_QUERY_EMBEDDING")
+        if analysis.kind == "facts" and analysis.time_mode == "current":
+            # Personal facts are answered from m1; m2 is a fallback when no m1 was retrieved.
+            # Keep version/conflict bundles so preference changes remain visible.
+            fact_roots = [mid for mid in roots if eligible[mid].layer == "m1"]
+            if fact_roots:
+                roots = fact_roots
         if vector is not None and any(mid not in vectors for mid in eligible):
             degraded.append("VECTOR_INDEX_INCOMPLETE")
         reverse = {}
@@ -527,7 +533,11 @@ class Retriever:
         root_counts = {"m1": 0, "m2": 0}
         for mid, relevance, rank in ranked:
             layer = memories[mid].layer
-            if root_counts[layer] >= (5 if layer == "m1" else 8):
+            root_limit = (
+                20 if analysis.kind == "facts" and layer == "m1" else (5 if layer == "m1" else 8)
+            )
+            if root_counts[layer] >= root_limit:
+                degraded.append("CONTEXT_BUDGET_LIMIT")
                 continue
             extra = [related for related in state["bundles"][mid] if related not in included]
             hits = []

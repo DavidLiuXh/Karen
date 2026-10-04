@@ -95,6 +95,7 @@ class Karen:
         from .intent.recognizer import Message
 
         Message(role="user", content=user_input)
+        session = session.anchor_time()
         trace_id = uuid4().hex
         with self.observer.span(
             "turn",
@@ -108,6 +109,7 @@ class Karen:
                 data={
                     "text": user_input,
                     "timezone": session.timezone,
+                    "time_context": session.time_context(),
                     "clarification_round": sum(m.role == "assistant" for m in session.messages),
                 },
             )
@@ -134,6 +136,7 @@ class Karen:
                     RecallQuery(
                         text=user_input,
                         timezone=session.timezone,
+                        current_time_utc=session.reference_time_utc,
                         conversation_id=session.conversation_id,
                         request_id=session.request_id,
                         exclude_event_ids=[receipt.event_id] if receipt else [],

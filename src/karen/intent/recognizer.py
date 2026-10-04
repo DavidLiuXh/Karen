@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal, TypedDict
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -65,6 +66,7 @@ class IntentSession(IntentContract):
     messages: tuple[Message, ...] = ()
     user_context: dict[str, JsonValue] = Field(default_factory=dict)
     timezone: Text = Field(default_factory=get_localzone_name, validate_default=True)
+    reference_time_utc: datetime | None = None
     questions: tuple[str, ...] = ()
     goal: GoalSpec | None = None
 
@@ -76,6 +78,42 @@ class IntentSession(IntentContract):
         except ZoneInfoNotFoundError:
             raise ValueError("timezone must be a valid IANA timezone name") from None
         return value
+
+    @field_validator("reference_time_utc")
+    @classmethod
+    def validate_reference_time(cls, value: datetime | None) -> datetime | None:
+        if value is not None:
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError("reference_time_utc must be timezone-aware")
+            return value.astimezone(UTC)
+        return None
+
+    def anchor_time(self) -> IntentSession:
+        """Anchor relative dates at the first input, retaining them during clarification."""
+        if self.reference_time_utc is not None:
+            return self
+        return self.model_copy(update={"reference_time_utc": datetime.now(UTC)})
+
+    def time_context(self) -> dict[str, JsonValue]:
+        if self.reference_time_utc is None:
+            raise ValueError("A time reference must be anchored before assessment")
+        local = self.reference_time_utc.astimezone(ZoneInfo(self.timezone))
+        return {
+            "reference_time_utc": self.reference_time_utc.isoformat(),
+            "timezone": self.timezone,
+            "local_datetime": local.isoformat(),
+            "local_date": local.date().isoformat(),
+            "relative_dates": {
+                name: (local.date() + timedelta(days=offset)).isoformat()
+                for name, offset in (
+                    ("day_before_yesterday", -2),
+                    ("yesterday", -1),
+                    ("today", 0),
+                    ("tomorrow", 1),
+                    ("day_after_tomorrow", 2),
+                )
+            },
+        }
 
 
 class IntentState(TypedDict):
@@ -115,7 +153,7 @@ class IntentRecognizer:
             raise ValueError("This session already has a goal; start a new session")
         message = Message(role="user", content=user_input)
         # Isolate nested user data from a model adapter and the returned session.
-        session = session.model_copy(deep=True)
+        session = session.anchor_time().model_copy(deep=True)
         messages = (*session.messages, message)
         session = session.model_copy(update={"messages": messages})
         state = await self.graph.ainvoke(
@@ -157,6 +195,7 @@ class IntentRecognizer:
             "messages": [m.model_dump(mode="json") for m in session.messages],
             "user_context": session.model_dump(mode="json")["user_context"],
             "timezone": session.timezone,
+            "time_context": session.time_context(),
         }
         if memory is not None:
             inputs["memory"] = memory
@@ -195,6 +234,7 @@ class IntentRecognizer:
         draft = decision.goal
         context = {
             "timezone": session.timezone,
+            "time_context": session.time_context(),
             "constraints": draft.constraints,
             "user_context": session.user_context,
             "conversation": [m.model_dump(mode="json") for m in session.messages],

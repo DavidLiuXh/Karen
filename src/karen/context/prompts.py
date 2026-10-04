@@ -38,12 +38,27 @@ QUERY = """只分析当前输入、时间和明确范围，不猜测上一轮对
 话题相似不自动表示延续旧任务。问常住城市可用 needed_fact_keys=[profile.residence.city]，不必依赖最近对话。
 原话/路径/参数等细节用 detail；全部任务/计数等用 collection，给出明确 time_range，缺范围不得虚构。
 日期基于 current_time_utc/timezone；time_range 是有 offset 的左闭右开区间。
-known_at 是当时已提交的记忆，effective_at 是现实中事实的有效时间。
+time_mode 描述所需记忆的时间口径，字段约束以响应 schema 为准。
+effective_at/known_at 必须同时给出带时区的 at，不能只有 time_range，不能猜造精确时点。
+known_at 查询截至某时点已知的记忆；effective_at 查询事实在某时点的有效状态。
+时间范围与时间点不是同一语义，不得自动把 time_range.start 当成 at。
+区分新任务的目标时间和筛选历史记忆的时间：‘查明天北京的天气’是独立新任务，
+使用 current、at=null、time_range=null、dialogue_dependency=none，提取实体北京；
+‘查一下昨天我问过哪些问题’才按昨天本地全天设置 time_range，kind=collection。
+‘去年10月我住在哪里’需要历史事实口径；若仅有月份不能确定 at，用 timeline 保留变化和时间精度，
+不要把月初猜作事实查询的精确时点。current 用于当前有效事实，timeline 用于变化过程。
 独立问题不能仅为了个性化就猜出实体或强制索取历史。"""
 
 RERANK = """按当前问题对主候选 ranking 排序，每个主候选恰好出现一次，附 relevant/uncertain/irrelevant 与简短依据。
 只能使用给出的 memory_id；关联记录仅帮助解释版本，不另造候选。排名不是事实真伪概率。
 明确不相关者 irrelevant，无答案不能硬凑记忆。历史状态、来源与时间规则不由精排改写。
+相关性以当前请求的增量价值为准，不以话题相似、词语重合或‘用户曾问过同样的问题’为依据。
+relevant 必须补充当前需要的事实、偏好、约束、结果、对象定位或变化证据；reason 说明具体贡献。
+当前 query 与 current_task_messages 的明确输入优先。仅重复当前已知信息、没有回答或结果的旧请求，
+以及已被当前输入解决或覆盖的旧澄清，标为 irrelevant；旧错别字和助手提出的问题不能变成当前需求。
+例如当前已明确北京和日期，旧记录只问‘北否是哪里、明天是哪天’，没有天气数据，不能帮助天气查询。
+不要按 event_kind 一概排除澄清：用户回顾‘上次你问了什么’，或延续某任务且旧记录提供必要约定时可相关。
+当前任务 ID 是 current_request_id。候选 request_id 不同不能声称‘同一请求’，需要历史来源核验才能关联。
 如果 dialogue_dependency=none，history_status 必须 none，related_request_ids 和 selected_event_ids 必须为空。
 否则用 history_candidates 的定位线索确认是否真的相关。任务 ID/事件 ID 必须实际存在。
 selected 必须指代明确且对象与当前要求一致；selected_event_ids 只选当前任务需要的原请求、约定、关键回复或结果。

@@ -46,6 +46,9 @@ CLI 默认启用独立的 `karen.context` 模块。“继续修改上一份文�
   `tzlocal` 获取本机 IANA 时区（如 `Asia/Shanghai`），并校验其有效性。
   调用方可通过 `IntentSession(timezone="America/New_York")` 显式指定用户时区；
   在远程服务器运行时应传入用户端提供的时区，不能将服务器时区视为用户时区。
+- 首次输入时记录时间基准，以用户时区计算今天、明天等日历日期，供意图模型自动解析，
+  并保存到 `GoalSpec.context["time_context"]`。澄清过程中保持基准，新任务重新取时；
+  明确指定的日期及任务时区优先，只有真正含糊或矛盾的日期要求才需要澄清。
 - 输出默认使用引擎的 answer/evidence/limitations 格式，也支持用户明确要求的结构化结果。
 - 未显式传入 `ExecutionPolicy` 时，Karen 授权当前引擎中全部已注册工具、评估器和 reducer。
   对标记为 `read_only=False` 的工具，同时填入 `allowed_side_effect_tools`，满足引擎的双重授权规则。
@@ -70,6 +73,8 @@ uv run karen
 调试时使用 `uv run karen --json` 查看完整结果 JSON。完整执行记录仍由引擎保存在 `runs/`。
 任务完成、失败或取消后都会继续等待下一条输入；输入 `/exit`、EOF 或 Ctrl+C 退出。
 正常退出时的退出码对应最后一次任务的执行结果；未执行任务时为 0。
+交互输入使用 prompt-toolkit 的异步行编辑，支持中文退格、光标移动后修改；仅提交按回车时的最终文本。
+Ctrl+C 会结束行编辑并恢复终端状态，然后等待正常退出所需的持久化完成；退出后可以继续在同一 shell 输入。
 
 CLI 可通过 `uv run karen --timezone Asia/Shanghai` 指定用户时区。
 无法检测时区或传入无效时区时会提示并退出，不会继续生成缺少时区的目标。

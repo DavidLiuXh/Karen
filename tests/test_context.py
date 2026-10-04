@@ -489,11 +489,16 @@ async def test_ambiguous_history_clarifies_then_reassesses_current_task(memory):
         models=ModelBindings(executor, executor),
     )
     agent = Karen(intent=IntentRecognizer(intent_model), engine=engine, memory=service)
+    reference = datetime(2026, 10, 3, 12, 54, tzinfo=UTC)
     async with service.foreground():
         service.submit(event("给甲客户写中文邮件", request="old-task"))
         model.dependency, model.history_status = "needed", "ambiguous"
         turn = await agent.advance(
-            IntentSession(conversation_id="conversation", timezone="Asia/Shanghai"),
+            IntentSession(
+                conversation_id="conversation",
+                timezone="Asia/Shanghai",
+                reference_time_utc=reference,
+            ),
             "改一下刚才那封邮件",
         )
         assert turn.result is None and "任务" in turn.session.questions[0]
@@ -505,6 +510,14 @@ async def test_ambiguous_history_clarifies_then_reassesses_current_task(memory):
         assert turn.session.goal.context["timezone"] == "Asia/Shanghai"
         assert len(turn.session.goal.context["conversation"]) == 3
         assert intent_model.requests[0].input_data["memory"]["history"]["messages"]
+        query_requests = [r for r in model.requests if r.role == "memory_query"]
+        assert all(
+            r.input_data["current_time_utc"] == reference.isoformat() for r in query_requests
+        )
+        assert (
+            intent_model.requests[0].input_data["time_context"]["reference_time_utc"]
+            == reference.isoformat()
+        )
         agent.record_response(turn.session, "依据所选来源写的草稿")
     await service.flush()
     types = {

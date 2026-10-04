@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 
 import pytest
 from dynamic_graph import FakeModelClient, GoalSpec, ModelCallError
@@ -61,6 +62,66 @@ async def test_explicit_user_timezone_reaches_model_clarification_and_goal(timez
     final = await recognizer.advance(session, "给客户写中文进度邮件，设计已完成")
     assert model.requests[1].input_data["timezone"] == timezone
     assert final.goal.context["timezone"] == timezone
+
+
+@pytest.mark.parametrize(
+    "instant,zone,today,tomorrow",
+    [
+        ("2026-10-03T12:54:02+00:00", "Asia/Shanghai", "2026-10-03", "2026-10-04"),
+        ("2026-10-03T16:30:00+00:00", "Asia/Shanghai", "2026-10-04", "2026-10-05"),
+        ("2026-10-03T00:30:00+00:00", "America/New_York", "2026-10-02", "2026-10-03"),
+        ("2026-12-31T12:00:00+00:00", "UTC", "2026-12-31", "2027-01-01"),
+        ("2028-02-28T12:00:00+00:00", "UTC", "2028-02-28", "2028-02-29"),
+        ("2026-03-08T04:30:00+00:00", "America/New_York", "2026-03-07", "2026-03-08"),
+    ],
+)
+async def test_calendar_dates_use_request_time_and_user_timezone(instant, zone, today, tomorrow):
+    model = FakeModelClient([ready()])
+    original = IntentSession(timezone=zone, reference_time_utc=datetime.fromisoformat(instant))
+    final = await IntentRecognizer(model).advance(original, "今天北京傍晚大风，明天是否还有大风？")
+    clock = model.requests[0].input_data["time_context"]
+    assert clock["reference_time_utc"] == instant
+    assert clock["local_date"] == today
+    assert clock["relative_dates"]["today"] == today
+    assert clock["relative_dates"]["tomorrow"] == tomorrow
+    assert clock["timezone"] == zone
+    assert final.goal.context["time_context"] == clock
+    assert (
+        final.goal.context["conversation"][0]["content"] == "今天北京傍晚大风，明天是否还有大风？"
+    )
+
+
+async def test_first_input_anchors_time_and_clarification_keeps_it_across_midnight(monkeypatch):
+    from karen.intent import recognizer
+
+    class Clock(datetime):
+        instant = datetime(2026, 10, 3, 15, 59, tzinfo=UTC)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.instant.astimezone(tz)
+
+    monkeypatch.setattr(recognizer, "datetime", Clock)
+    model = FakeModelClient([clarify("你想查询哪里？"), ready()])
+    original = IntentSession(timezone="Asia/Shanghai")
+    assert original.reference_time_utc is None
+    intent = IntentRecognizer(model)
+    pending = await intent.advance(original, "明天还有大风吗？")
+    Clock.instant = datetime(2026, 10, 3, 16, 1, tzinfo=UTC)
+    final = await intent.advance(pending, "北京")
+    assert original.reference_time_utc is None
+    assert final.reference_time_utc == pending.reference_time_utc
+    assert (
+        model.requests[1].input_data["time_context"] == model.requests[0].input_data["time_context"]
+    )
+    assert final.goal.context["time_context"]["relative_dates"]["tomorrow"] == "2026-10-04"
+
+
+def test_time_reference_rejects_naive_datetime_and_normalizes_offset():
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        IntentSession(reference_time_utc=datetime(2026, 10, 3))
+    session = IntentSession(reference_time_utc=datetime.fromisoformat("2026-10-03T20:00:00+08:00"))
+    assert session.reference_time_utc == datetime(2026, 10, 3, 12, tzinfo=UTC)
 
 
 @pytest.mark.parametrize("timezone", ["", "Not/A_Timezone", "UTC+08:00"])

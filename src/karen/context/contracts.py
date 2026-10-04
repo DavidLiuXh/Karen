@@ -9,6 +9,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic_core import PydanticCustomError
 
 
 def utcnow() -> datetime:
@@ -261,9 +262,25 @@ class QueryAnalysis(Contract):
     search_text: str = Field(min_length=1)
     kind: Literal["relevance", "detail", "collection"] = "relevance"
     dialogue_dependency: Literal["none", "needed", "uncertain"] = "none"
-    time_mode: Literal["current", "effective_at", "known_at", "timeline", "unspecified"] = "current"
-    at: datetime | None = None
-    time_range: TimeRange | None = None
+    time_mode: Literal["current", "effective_at", "known_at", "timeline", "unspecified"] = Field(
+        default="current",
+        description=(
+            "记忆的时间口径。current=当前事实；effective_at=事实在指定时点的有效状态；"
+            "known_at=截至指定时点已知的记忆；timeline=变化过程；unspecified=无法确定。"
+            "effective_at/known_at 必须提供带时区的 at。新任务的目标日期不等于记忆时间口径。"
+        ),
+    )
+    at: datetime | None = Field(
+        default=None,
+        description="effective_at/known_at 所指的显式、带时区时点；不能用 time_range 的起点擅自填充。",
+    )
+    time_range: TimeRange | None = Field(
+        default=None,
+        description=(
+            "按原始事件发生时间筛选历史记录的左闭右开区间，起止必须带时区。"
+            "例如‘昨天问过哪些问题’；不是新任务的执行或目标日期。没有历史时间筛选要求时为 null。"
+        ),
+    )
     entities: list[str] = Field(default_factory=list)
     needed_fact_keys: list[str] = Field(default_factory=list)
     task_status: Literal["COMPLETED", "FAILED", "CANCELLED"] | None = None
@@ -271,16 +288,20 @@ class QueryAnalysis(Contract):
     @model_validator(mode="after")
     def valid_at(self):
         if self.at is not None and self.at.tzinfo is None:
-            raise ValueError("at must be timezone-aware")
+            raise PydanticCustomError("at_timezone_required", "at must be timezone-aware")
         if self.time_mode in {"effective_at", "known_at"} and self.at is None:
-            raise ValueError("historical query requires at")
+            raise PydanticCustomError(
+                "time_reference_required",
+                "time_mode={time_mode} requires an explicit timezone-aware at",
+                {"time_mode": self.time_mode},
+            )
         return self
 
 
 class RankedCandidate(Contract):
     memory_id: str
     relevance: Literal["relevant", "uncertain", "irrelevant"]
-    reason: str
+    reason: str = Field(description="说明该记忆为当前请求补充了什么必要信息，或为何没有增量价值。")
 
 
 class Ranking(Contract):

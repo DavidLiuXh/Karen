@@ -1398,6 +1398,11 @@ async def test_invalid_source_quote_is_repaired_and_never_cached_as_evidence(tmp
         assert "不存在的原文" not in service.storage.job(receipt.event_id)["extraction"]
         status = await service.write_status(receipt)
         assert status.attempts == 0
+        repaired = next(r for r in model.requests if "validation_error" in r.input_data)
+        feedback = repaired.input_data["validation_error"]
+        assert feedback["code"] == "INVALID_SOURCE_QUOTE"
+        assert feedback["invalid_evidence"]["event_id"] == receipt.event_id
+        assert feedback["invalid_evidence"]["quote"] == "不存在的原文"
     finally:
         await service.close()
 

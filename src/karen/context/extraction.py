@@ -32,6 +32,12 @@ class ExtractionState(TypedDict, total=False):
     model_info: dict
 
 
+class EvidenceValidationError(ValueError):
+    def __init__(self, code, evidence):
+        super().__init__(code)
+        self.feedback = {"code": code, "invalid_evidence": evidence.model_dump(mode="json")}
+
+
 class Extractor:
     def __init__(self, storage: Storage, model: ModelClient, background_ready, io, embed, observer):
         self.storage = storage
@@ -112,7 +118,7 @@ class Extractor:
                     if payload is None or attempt:
                         raise
                     # validate callbacks emit contract codes, never provider exception text.
-                    feedback = {"code": str(error)}
+                    feedback = getattr(error, "feedback", {"code": str(error)})
                 self.observer.emit(
                     "memory.model_repair",
                     data={"model_role": role, "validation_error": feedback, "next_attempt": 2},
@@ -159,10 +165,18 @@ class Extractor:
                 raise ValueError("DUPLICATE_CANDIDATE_ID")
             eligible = []
             for candidate in (*extraction.facts, *extraction.summaries):
-                sources = [
-                    await self.io(self.storage.source, evidence, allowed)
-                    for evidence in candidate.evidence
-                ]
+                # Old fact echoes cannot be new evidence; discard them before
+                # validating quotes that will never be used for this event.
+                if candidate in extraction.facts and not any(
+                    e.event_id == event_id for e in candidate.evidence
+                ):
+                    continue
+                sources = []
+                for evidence in candidate.evidence:
+                    try:
+                        sources.append(await self.io(self.storage.source, evidence, allowed))
+                    except ValueError as error:
+                        raise EvidenceValidationError(str(error), evidence) from error
                 if candidate in extraction.facts and direct_fact_evidence(event, sources):
                     eligible.append(candidate)
             return extraction.model_copy(update={"facts": eligible})

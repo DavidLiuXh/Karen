@@ -28,6 +28,17 @@ Schema 仅支持 type/properties/required/additionalProperties/items/enum、数�
 字符串或数组长度、description、$defs 和 $ref。不要生成执行计划或工具调用。
 使用用户的语言。严格按照响应 schema 返回。"""
 
+CLARITY_INSTRUCTION = """
+清晰度判断也适用于可直接回应的咨询，不仅适用于执行任务。
+如果句子中的代词有多个合理先行词、术语有多个会改变答案的含义、对象名称不能确认或可能误写，
+不能仅凭最常见解释或位置最近就当作用户已明确。简短指出候选含义并询问必要区分信息。
+不认识的专有名词不能被擅自补成某类实体及其属性；先确认名称、类型或背景，避免把猜测写入目标。
+对于‘好、适合、值得’等依赖用户标准的选择，若现有输入或相关偏好无法确定实质选择标准，
+询问影响选择的优先因素；可同时问必要地点/用途，但不能用可选格式问题代替真正的缺口。
+输入或明确上下文已能消除歧义时直接回答/执行；不要要求用户确认可推算日期或已有明确事实。
+"""
+INTENT_SYSTEM_INSTRUCTION += CLARITY_INSTRUCTION
+
 INTENT_TASK_INSTRUCTION = "判断请求是否清晰；需要时提出澄清问题，否则提取执行目标。"
 INTENT_TASK_INSTRUCTION += (
     "在 reason 中简短说明目标已足够明确，或具体缺少什么信息；只提供判断依据，不提供推理过程。"
@@ -91,6 +102,7 @@ messages 中的当前请求与澄清链可直接解释本轮回答，不需要�
 遵循 time_context 中的用户时区与可信时间，不猜模型当前日期。严格按响应 schema 返回。
 """
     + RESPONSE_INSTRUCTION
+    + CLARITY_INSTRUCTION
 )
 
 INTENT_SYSTEM_INSTRUCTION += """

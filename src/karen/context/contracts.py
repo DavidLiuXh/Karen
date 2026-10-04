@@ -211,7 +211,7 @@ class Extraction(Contract):
 class FactDecision(Contract):
     candidate_id: str
     verification: Literal["supported", "uncertain", "rejected"]
-    operation: Literal["new", "reinforce", "replace", "correct", "conflict", "ignore"]
+    operation: Literal["new", "coexist", "reinforce", "replace", "correct", "conflict", "ignore"]
     matched_ids: list[str] = Field(default_factory=list)
     reason: str = Field(min_length=1)
     canonical_value: JsonValue = None

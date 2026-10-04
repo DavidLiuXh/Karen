@@ -1396,3 +1396,48 @@ async def test_invalid_source_quote_is_repaired_and_never_cached_as_evidence(tmp
         assert status.attempts == 0
     finally:
         await service.close()
+
+
+@pytest.mark.parametrize('operation,succeeds', [('coexist', True), ('new', False)])
+async def test_compatible_values_in_same_fact_slot_keep_both_active(tmp_path, operation, succeeds):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            from dynamic_graph.models.client import ModelResponse
+
+            data = request.input_data
+            if request.role == 'memory_extract':
+                current = next(e for e in data['events'] if e['event_id'] == data['new_event_id'])
+                value = current['payload']['content']
+                return ModelResponse({'facts': [{
+                    'candidate_id': 'interest', 'fact_key': 'interest.activities',
+                    'value': value, 'text': value,
+                    'evidence': [{'event_id': current['event_id'],
+                                  'pointer': '/payload/content', 'quote': value}],
+                }], 'summaries': []})
+            if request.role == 'memory_verify':
+                old = data['existing']
+                return ModelResponse({'decisions': [{
+                    'candidate_id': 'interest', 'verification': 'supported',
+                    'operation': operation if old else 'new',
+                    'matched_ids': [old[0]['memory_id']] if old and operation == 'coexist' else [],
+                    'reason': '不同兴趣可以并存，不表示撤销旧兴趣',
+                }]})
+            return await super().generate(request)
+
+    memory = ContextMemory(root_dir=tmp_path / 'context', model=Model(), embeddings=LocalEmbeddings())
+    await memory.start()
+    try:
+        await memory.flush(memory.submit(event('我喜欢摄影', request='first')))
+        second = memory.submit(event('我也喜欢游泳', request='second'))
+        if succeeds:
+            await memory.flush(second)
+        else:
+            with pytest.raises(MemoryFlushError):
+                await memory.flush(second)
+        _, stored, _ = memory.storage.snapshot()
+        facts = [m for m in stored.values() if m.layer == 'm1']
+        assert {m.value for m in facts} == ({'我喜欢摄影', '我也喜欢游泳'} if succeeds else {'我喜欢摄影'})
+        assert all(m.state == 'active' and not m.supersedes and not m.corrects for m in facts)
+    finally:
+        await memory.close()
+

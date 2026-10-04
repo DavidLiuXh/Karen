@@ -316,6 +316,13 @@ class Extractor:
                 for old in existing.values()
             ):
                 raise ValueError("EXISTING_FACT_NOT_MATCHED")
+            if decision.operation == "coexist" and any(
+                old.fact_key != matched[0].fact_key
+                or old.state != "active"
+                or digest(old.value) == digest(candidate.value)
+                for old in matched
+            ):
+                raise ValueError("INVALID_COEXISTING_FACT")
             if decision.operation in {"replace", "correct"} and any(
                 max(s.occurred_at for s in old.sources) > event.occurred_at for old in matched
             ):

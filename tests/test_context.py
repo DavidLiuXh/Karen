@@ -1208,3 +1208,133 @@ async def test_rerank_fallback_does_not_use_only_generic_shared_words(memory):
     generic = await service.recall(query("我们需要了解太阳的温度"))
     assert generic.m1 == [] and generic.m2 == []
     assert "RERANK_FAILED_FUSION_ORDER" in result.degradations
+
+
+async def test_assistant_echo_keeps_summary_without_reverifying_personal_facts(tmp_path):
+    class Model(MemoryModel):
+        fail_verify = False
+
+        async def generate(self, request):
+            if self.fail_verify and request.role == "memory_verify":
+                raise ModelCallError("TEST_AUTH_FAILED", "must not verify assistant facts")
+            return await super().generate(request)
+
+    model = Model()
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        await service.flush(service.submit(event("我住在北京")))
+        model.fail_verify = True
+        echo = event("你住在北京", kind="assistant_message")
+        await service.flush(service.submit(echo))
+        _, stored, _ = service.storage.snapshot()
+        facts = [m for m in stored.values() if m.layer == "m1"]
+        assert len(facts) == 1 and len(facts[0].sources) == 1
+        assert any(m.layer == "m2" and m.text == "你住在北京" for m in stored.values())
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize(
+    "canonical,succeeds", [({"city": "京都"}, True), ({"city": "大阪"}, False)]
+)
+async def test_equivalent_fact_representation_reinforces_canonical_value(
+    tmp_path, canonical, succeeds
+):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            from dynamic_graph.models.client import ModelResponse
+
+            data = request.input_data
+            if request.role == "memory_extract":
+                current = next(e for e in data["events"] if e["event_id"] == data["new_event_id"])
+                return ModelResponse(
+                    {
+                        "facts": [
+                            {
+                                "candidate_id": "residence",
+                                "fact_key": "profile.residence.city",
+                                "value": {"name": "京都"}
+                                if current["request_id"] == "second"
+                                else {"city": "京都"},
+                                "text": "用户住在京都",
+                                "evidence": [
+                                    {
+                                        "event_id": current["event_id"],
+                                        "pointer": "/payload/content",
+                                        "quote": current["payload"]["content"],
+                                    }
+                                ],
+                            }
+                        ],
+                        "summaries": [],
+                    }
+                )
+            if request.role == "memory_verify":
+                old = data["existing"]
+                return ModelResponse(
+                    {
+                        "decisions": [
+                            {
+                                "candidate_id": "residence",
+                                "verification": "supported",
+                                "operation": "reinforce" if old else "new",
+                                "matched_ids": [old[0]["memory_id"]] if old else [],
+                                "canonical_value": canonical if old else None,
+                                "reason": "同一事实，不同表示，保留既有值",
+                            }
+                        ]
+                    }
+                )
+            return await super().generate(request)
+
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=Model(), embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        await service.flush(service.submit(event("我住在京都", request="first")))
+        second = service.submit(event("我现在仍住在京都", request="second"))
+        if succeeds:
+            await service.flush(second)
+        else:
+            with pytest.raises(MemoryFlushError):
+                await service.flush(second)
+        _, stored, _ = service.storage.snapshot()
+        facts = [m for m in stored.values() if m.layer == "m1"]
+        assert len(facts) == 1 and facts[0].value == {"city": "京都"}
+        assert len(facts[0].sources) == (2 if succeeds else 1)
+        assert facts[0].state == "active"
+    finally:
+        await service.close()
+
+
+async def test_invalid_verification_is_repaired_before_atomic_commit(tmp_path):
+    class Model(MemoryModel):
+        repairs = 0
+
+        async def generate(self, request):
+            response = await super().generate(request)
+            if request.role == "memory_verify" and request.input_data["existing"]:
+                if "validation_error" in request.input_data:
+                    self.repairs += 1
+                else:
+                    response.payload["decisions"][0]["operation"] = "new"
+            return response
+
+    model = Model()
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        await service.flush(service.submit(event("我住在北京", request="one")))
+        await service.flush(service.submit(event("我住在北京", request="two")))
+        _, stored, _ = service.storage.snapshot()
+        facts = [m for m in stored.values() if m.layer == "m1"]
+        assert len(facts) == 1 and len(facts[0].sources) == 2
+        assert model.repairs == 1
+    finally:
+        await service.close()

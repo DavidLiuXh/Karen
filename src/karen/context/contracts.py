@@ -199,6 +199,13 @@ class FactDecision(Contract):
     operation: Literal["new", "reinforce", "replace", "correct", "conflict", "ignore"]
     matched_ids: list[str] = Field(default_factory=list)
     reason: str = Field(min_length=1)
+    canonical_value: JsonValue = None
+
+    @model_validator(mode="after")
+    def valid_normalization(self):
+        if self.canonical_value is not None and self.operation != "reinforce":
+            raise ValueError("CANONICAL_VALUE_ONLY_FOR_REINFORCEMENT")
+        return self
 
 
 class Verification(Contract):

@@ -13,6 +13,13 @@ from .prompts import EXTRACT, MEMORY_SYSTEM, PROMPT_VERSION, VERIFY
 from .storage import Storage, digest, encode, stable_id
 
 
+def direct_fact_evidence(event, sources):
+    return event.event_type in {"user_message", "task_result"} and any(
+        source.event_id == event.event_id and source.source_role in {"user", "tool"}
+        for source in sources
+    )
+
+
 class ExtractionState(TypedDict, total=False):
     event_id: str
     extraction: Extraction
@@ -117,9 +124,15 @@ class Extractor:
                 derived="extracting",
             )
         # Validate every source before any potentially destructive verification decision.
+        eligible = []
         for candidate in (*extraction.facts, *extraction.summaries):
-            for evidence in candidate.evidence:
+            sources = [
                 await self.io(self.storage.source, evidence, allowed)
+                for evidence in candidate.evidence
+            ]
+            if candidate in extraction.facts and direct_fact_evidence(event, sources):
+                eligible.append(candidate)
+        extraction = extraction.model_copy(update={"facts": eligible})
         return {"extraction": extraction, "allowed_events": allowed, "model_info": info}
 
     async def verify(self, state):
@@ -156,27 +169,54 @@ class Extractor:
                 existing.update({m.memory_id: m for m in similar})
             except Exception:
                 info["matching"] = "bm25_and_exact_keys"
+        inputs = {
+            "candidates": [c.model_dump(mode="json") for c in facts],
+            "events": [
+                bounded_data(e.model_dump(mode="json")) for e in state["allowed_events"].values()
+            ],
+            "existing": [m.model_dump(mode="json") for m in existing.values()],
+        }
         if facts:
-            verification, name = await self.call(
-                "memory_verify",
-                VERIFY,
-                {
-                    "candidates": [c.model_dump(mode="json") for c in facts],
-                    "events": [
-                        bounded_data(e.model_dump(mode="json"))
-                        for e in state["allowed_events"].values()
-                    ],
-                    "existing": [m.model_dump(mode="json") for m in existing.values()],
-                },
-                Verification,
-            )
-            info["verifier"] = name
+            for attempt in range(2):
+                verification, name = await self.call(
+                    "memory_verify",
+                    VERIFY,
+                    inputs,
+                    Verification,
+                )
+                info["verifier"] = name
+                try:
+                    if sorted(d.candidate_id for d in verification.decisions) != sorted(
+                        f.candidate_id for f in facts
+                    ):
+                        raise ValueError("INCOMPLETE_VERIFICATION")
+                    self.build_changes(
+                        {
+                            **state,
+                            "verification": verification,
+                            "existing": existing,
+                            "model_info": info,
+                        }
+                    )
+                    break
+                except ValueError as error:
+                    if attempt:
+                        raise
+                    # These errors are contract codes from build_changes, not user/provider text.
+                    inputs = {
+                        **inputs,
+                        "previous_decisions": verification.model_dump(mode="json"),
+                        "validation_error": str(error),
+                    }
+                    self.observer.emit(
+                        "memory.verification_repair",
+                        data={
+                            "error_code": str(error),
+                            "next_attempt": 2,
+                        },
+                    )
         else:
             verification = Verification(decisions=[])
-        if sorted(d.candidate_id for d in verification.decisions) != sorted(
-            f.candidate_id for f in facts
-        ):
-            raise ValueError("INCOMPLETE_VERIFICATION")
         await self.io(
             self.storage.update_job,
             state["event_id"],
@@ -209,9 +249,7 @@ class Extractor:
                 raise ValueError("UNVERIFIED_PROJECT_SCOPE")
             sources = [self.storage.source(e, state["allowed_events"]) for e in candidate.evidence]
             # Assistant echoes and goals cannot create durable personal assertions.
-            if event.event_type not in {"user_message", "task_result"} or not any(
-                s.event_id == event.event_id and s.source_role in {"user", "tool"} for s in sources
-            ):
+            if not direct_fact_evidence(event, sources):
                 continue
             if len(decision.matched_ids) != len(set(decision.matched_ids)):
                 raise ValueError("DUPLICATE_MATCHED_ID")
@@ -249,7 +287,12 @@ class Extractor:
                 raise ValueError("STALE_FACT_CHANGE")
             if decision.operation == "reinforce":
                 for old in matched:
-                    if digest(old.value) != digest(candidate.value):
+                    value = (
+                        decision.canonical_value
+                        if decision.canonical_value is not None
+                        else candidate.value
+                    )
+                    if digest(old.value) != digest(value):
                         raise ValueError("REINFORCE_DIFFERENT_VALUE")
                     refs = {(s.event_id, s.pointer): s for s in (*old.sources, *sources)}
                     update = {"sources": list(refs.values())}

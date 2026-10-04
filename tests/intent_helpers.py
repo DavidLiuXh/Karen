@@ -16,6 +16,7 @@ class ClarityAwareModel(FakeModelClient):
             return ModelResponse(
                 {
                     "known_referents": {},
+                    "references": [],
                     "selection_criteria": [],
                     "questions": [],
                     "reason": "No unresolved referents in this scripted routing test",

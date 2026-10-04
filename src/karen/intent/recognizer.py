@@ -113,10 +113,32 @@ class DirectAssessment(IntentContract):
     decision: Annotated[Reply | Clarification, Field(discriminator="outcome")]
 
 
+class ReferenceAssessment(IntentContract):
+    expression: Text
+    candidates: list[Text] = Field(min_length=1)
+    resolution: Literal["unique_candidate", "explicit_identification", "inferred", "unresolved"]
+    evidence: str
+
+    @model_validator(mode="after")
+    def valid_resolution(self):
+        if self.resolution == "unique_candidate" and len(self.candidates) != 1:
+            raise ValueError("Multiple candidates cannot be resolved as unique")
+        if self.resolution == "explicit_identification" and not self.evidence.strip():
+            raise ValueError("Explicit identification needs source evidence")
+        return self
+
+
 class ClarityAssessment(IntentContract):
     known_referents: dict[str, Text]
     selection_criteria: list[Text]
-    questions: list[Text]
+    references: list[ReferenceAssessment]
+    questions: list[Text] = Field(
+        description=(
+            "仅填写缺失后无法给出任何符合已知要求的有效回应/方案的必要问题。"
+            "开放式推荐已有相关偏好且至少一种方案可行时为空；"
+            "不能要求用户先决定是否需要其他类别，或补某个未选备选方案的条件。"
+        )
+    )
     reason: Text = Field(max_length=1500)
 
 
@@ -274,6 +296,20 @@ class IntentRecognizer:
             max_output_tokens=2048,
         )
         clarity = await self._validated(request, ClarityAssessment)
+        unresolved = [
+            ref
+            for ref in clarity.references
+            if len(ref.candidates) > 1 and ref.resolution != "explicit_identification"
+        ]
+        if unresolved and not clarity.questions:
+            clarity = clarity.model_copy(
+                update={
+                    "questions": [
+                        f"‘{ref.expression}’指的是哪一个：{'、'.join(ref.candidates)}？"
+                        for ref in unresolved
+                    ]
+                }
+            )
         result = {"clarity": clarity}
         if clarity.questions:
             result["decision"] = Clarification(
@@ -436,8 +472,6 @@ class IntentRecognizer:
         return updated
 
     async def _respond(self, state: IntentState) -> dict:
-        session = state["session"]
-        # A direct reply cannot fabricate an unresolved, necessary history reference.
         request = ModelRequest(
             role="intent_response",
             system_instruction=DIRECT_RESPONSE_INSTRUCTION,

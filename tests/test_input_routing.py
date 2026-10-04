@@ -655,6 +655,7 @@ async def test_clarity_gate_retains_pending_context_and_stops_goal_creation():
     def clarity(questions, *, known=None, criteria=None):
         return {
             "known_referents": known or {},
+            "references": [],
             "selection_criteria": criteria or [],
             "questions": questions,
             "reason": "Only unresolved necessary information is requested",
@@ -696,6 +697,7 @@ async def test_direct_question_uses_clarity_gate_but_information_does_not():
             routing("respond", types=["question"]),
             {
                 "known_referents": {},
+                "references": [],
                 "selection_criteria": [],
                 "questions": ["你指哪一位？"],
                 "reason": "指代不明确",
@@ -705,3 +707,20 @@ async def test_direct_question_uses_clarity_gate_but_information_does_not():
     pending = await IntentRecognizer(model).advance(IntentSession(timezone="UTC"), "他叫什么名字？")
     assert pending.questions == ("你指哪一位？",) and pending.reply is None
     assert [r.role for r in model.requests] == ["intent_router", "intent_clarity"]
+
+
+async def test_multiple_inferred_referents_trigger_clarification_before_answer():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    model = RawModel([
+        routing('respond', types=['question']),
+        {'known_referents': {}, 'selection_criteria': [], 'questions': [],
+         'references': [{'expression': '她', 'candidates': ['周宁', '沈清'],
+                         'resolution': 'inferred', 'evidence': '按句法倾向猜周宁'}],
+         'reason': '只按句法猜测仍非唯一指代'},
+    ])
+    result = await IntentRecognizer(model).advance(IntentSession(timezone='UTC'), '周宁告诉沈清，她收到了信。是谁收到了信？')
+    assert result.questions and '周宁' in result.questions[0] and '沈清' in result.questions[0]
+    assert result.reply is None and result.goal is None
+
+

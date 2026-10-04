@@ -178,6 +178,11 @@ class FactCandidate(Contract):
         return self
 
 
+ACTION_STATUSES = frozenset(
+    {"requested", "planned", "attempted", "completed", "failed", "cancelled"}
+)
+
+
 class SummaryDraft(Contract):
     text: str = Field(min_length=1)
     event_kind: str
@@ -186,6 +191,16 @@ class SummaryDraft(Contract):
     outcome: dict[str, JsonValue] = Field(default_factory=dict)
     artifact_refs: list[dict[str, JsonValue]] = Field(default_factory=list)
     evidence: list[Evidence] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def valid_action_states(self):
+        if any(
+            action.get("status") is not None
+            and (not isinstance(action["status"], str) or action["status"] not in ACTION_STATUSES)
+            for action in self.actions
+        ):
+            raise PydanticCustomError("invalid_action_status", "INVALID_ACTION_STATUS")
+        return self
 
 
 class Extraction(Contract):

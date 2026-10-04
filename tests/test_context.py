@@ -1338,3 +1338,58 @@ async def test_invalid_verification_is_repaired_before_atomic_commit(tmp_path):
         assert model.repairs == 1
     finally:
         await service.close()
+
+
+@pytest.mark.parametrize("invalid", ["unknown", ["completed"]])
+async def test_invalid_summary_action_is_repaired_before_caching(tmp_path, invalid):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            response = await super().generate(request)
+            if request.role == "memory_extract":
+                response.payload["summaries"][0]["actions"] = [
+                    {"status": "completed" if "validation_error" in request.input_data else invalid}
+                ]
+            return response
+
+    model = Model()
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        receipt = service.submit(event("已经给出草稿", kind="assistant_message"))
+        await service.flush(receipt)
+        _, stored, _ = service.storage.snapshot()
+        assert next(m for m in stored.values() if m.layer == "m2").actions == [
+            {"status": "completed"}
+        ]
+        status = await service.write_status(receipt)
+        assert status.derived == "committed" and status.attempts == 0
+        assert len([r for r in model.requests if r.role == "memory_extract"]) == 2
+    finally:
+        await service.close()
+
+
+async def test_invalid_source_quote_is_repaired_and_never_cached_as_evidence(tmp_path):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            response = await super().generate(request)
+            if request.role == "memory_extract" and "validation_error" not in request.input_data:
+                response.payload["summaries"][0]["evidence"][0]["quote"] = "不存在的原文"
+            return response
+
+    model = Model()
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        receipt = service.submit(event("我喜欢做陶艺"))
+        await service.flush(receipt)
+        _, stored, _ = service.storage.snapshot()
+        assert next(iter(stored.values())).sources[0].quote == "我喜欢做陶艺"
+        assert "不存在的原文" not in service.storage.job(receipt.event_id)["extraction"]
+        status = await service.write_status(receipt)
+        assert status.attempts == 0
+    finally:
+        await service.close()

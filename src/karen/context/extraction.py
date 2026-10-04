@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import TypedDict
 
-from dynamic_graph.models.client import ModelClient, ModelRequest
+from dynamic_graph.models.client import ModelCallError, ModelClient, ModelRequest
 from langgraph.graph import END, START, StateGraph
+from pydantic import ValidationError
 
 from .contracts import Extraction, Scope, StoredMemory, Verification, utcnow
-from .prompts import EXTRACT, MEMORY_SYSTEM, PROMPT_VERSION, VERIFY
+from .prompts import EXTRACT, MEMORY_SYSTEM, PROMPT_VERSION, REPAIR, VERIFY
 from .storage import Storage, digest, encode, stable_id
 
 
@@ -66,7 +68,7 @@ class Extractor:
         graph.add_edge("commit", END)
         self.graph = graph.compile()
 
-    async def call(self, role, instruction, inputs, schema):
+    async def call(self, role, instruction, inputs, schema, *, validate=None):
         await self.background_ready()
         request = ModelRequest(
             role=role,
@@ -77,9 +79,52 @@ class Extractor:
             max_output_tokens=4096,
             timeout_seconds=30,
         )
+        deadline = asyncio.get_running_loop().time() + request.timeout_seconds
         async with asyncio.timeout(request.timeout_seconds):
-            response = await self.model.generate(request)
-        return schema.model_validate(response.payload), response.response_metadata.get("model")
+            for attempt in range(2):
+                payload = None
+                try:
+                    await self.background_ready()
+                    response = await self.model.generate(
+                        replace(
+                            request,
+                            timeout_seconds=max(0, deadline - asyncio.get_running_loop().time()),
+                        )
+                    )
+                    payload = response.payload
+                    result = schema.model_validate(payload)
+                    if validate is not None:
+                        result = await validate(result)
+                    return result, response.response_metadata.get("model")
+                except ModelCallError as error:
+                    if error.code != "MODEL_RESPONSE_INVALID" or attempt:
+                        raise
+                    feedback = {"code": error.code}
+                except ValidationError as error:
+                    if attempt:
+                        raise
+                    feedback = [
+                        {"path": list(e["loc"]), "type": e["type"]}
+                        for e in error.errors(include_input=False, include_url=False)
+                    ]
+                except ValueError as error:
+                    if payload is None or attempt:
+                        raise
+                    # validate callbacks emit contract codes, never provider exception text.
+                    feedback = {"code": str(error)}
+                self.observer.emit(
+                    "memory.model_repair",
+                    data={"model_role": role, "validation_error": feedback, "next_attempt": 2},
+                )
+                request = replace(
+                    request,
+                    task_instruction=instruction + REPAIR,
+                    input_data={
+                        **inputs,
+                        "previous_response": payload,
+                        "validation_error": feedback,
+                    },
+                )
 
     async def extract(self, state):
         event_id = state["event_id"]
@@ -106,33 +151,47 @@ class Extractor:
         import json
 
         info = json.loads(job["model_info"] or "{}")
-        if job["extraction"]:
-            extraction = Extraction.model_validate_json(job["extraction"])
-        else:
-            extraction, name = await self.call(
-                "memory_extract", EXTRACT, {"new_event_id": event_id, "events": inputs}, Extraction
-            )
-            ids = [c.candidate_id for c in extraction.facts]
+
+        async def checked_extraction(extraction):
+            ids = [fact.candidate_id for fact in extraction.facts]
             if len(ids) != len(set(ids)):
                 raise ValueError("DUPLICATE_CANDIDATE_ID")
-            info["extractor"] = name
-            await self.io(
-                self.storage.update_job,
-                event_id,
-                extraction=extraction.model_dump_json(),
-                model_info=encode(info),
-                derived="extracting",
+            eligible = []
+            for candidate in (*extraction.facts, *extraction.summaries):
+                sources = [
+                    await self.io(self.storage.source, evidence, allowed)
+                    for evidence in candidate.evidence
+                ]
+                if candidate in extraction.facts and direct_fact_evidence(event, sources):
+                    eligible.append(candidate)
+            return extraction.model_copy(update={"facts": eligible})
+
+        extraction = None
+        if job["extraction"]:
+            try:
+                extraction = await checked_extraction(
+                    Extraction.model_validate_json(job["extraction"])
+                )
+            except ValueError:
+                # Older/invalid cached output is not evidence and must be regenerated.
+                await self.io(self.storage.update_job, event_id, extraction=None, verification=None)
+        if extraction is None:
+            extraction, name = await self.call(
+                "memory_extract",
+                EXTRACT,
+                {"new_event_id": event_id, "events": inputs},
+                Extraction,
+                validate=checked_extraction,
             )
-        # Validate every source before any potentially destructive verification decision.
-        eligible = []
-        for candidate in (*extraction.facts, *extraction.summaries):
-            sources = [
-                await self.io(self.storage.source, evidence, allowed)
-                for evidence in candidate.evidence
-            ]
-            if candidate in extraction.facts and direct_fact_evidence(event, sources):
-                eligible.append(candidate)
-        extraction = extraction.model_copy(update={"facts": eligible})
+            info["extractor"] = name
+        # Only validated output is cached. Retry cannot be poisoned by an invalid source/status.
+        await self.io(
+            self.storage.update_job,
+            event_id,
+            extraction=extraction.model_dump_json(),
+            model_info=encode(info),
+            derived="extracting",
+        )
         return {"extraction": extraction, "allowed_events": allowed, "model_info": info}
 
     async def verify(self, state):
@@ -176,45 +235,22 @@ class Extractor:
             ],
             "existing": [m.model_dump(mode="json") for m in existing.values()],
         }
+
+        async def checked_verification(verification):
+            if sorted(d.candidate_id for d in verification.decisions) != sorted(
+                f.candidate_id for f in facts
+            ):
+                raise ValueError("INCOMPLETE_VERIFICATION")
+            self.build_changes(
+                {**state, "verification": verification, "existing": existing, "model_info": info}
+            )
+            return verification
+
         if facts:
-            for attempt in range(2):
-                verification, name = await self.call(
-                    "memory_verify",
-                    VERIFY,
-                    inputs,
-                    Verification,
-                )
-                info["verifier"] = name
-                try:
-                    if sorted(d.candidate_id for d in verification.decisions) != sorted(
-                        f.candidate_id for f in facts
-                    ):
-                        raise ValueError("INCOMPLETE_VERIFICATION")
-                    self.build_changes(
-                        {
-                            **state,
-                            "verification": verification,
-                            "existing": existing,
-                            "model_info": info,
-                        }
-                    )
-                    break
-                except ValueError as error:
-                    if attempt:
-                        raise
-                    # These errors are contract codes from build_changes, not user/provider text.
-                    inputs = {
-                        **inputs,
-                        "previous_decisions": verification.model_dump(mode="json"),
-                        "validation_error": str(error),
-                    }
-                    self.observer.emit(
-                        "memory.verification_repair",
-                        data={
-                            "error_code": str(error),
-                            "next_attempt": 2,
-                        },
-                    )
+            verification, name = await self.call(
+                "memory_verify", VERIFY, inputs, Verification, validate=checked_verification
+            )
+            info["verifier"] = name
         else:
             verification = Verification(decisions=[])
         await self.io(
@@ -350,20 +386,6 @@ class Extractor:
             sources = [self.storage.source(e, state["allowed_events"]) for e in summary.evidence]
             if not any(s.event_id == event.event_id for s in sources):
                 continue
-            if any(
-                a.get("status")
-                not in {
-                    None,
-                    "requested",
-                    "planned",
-                    "attempted",
-                    "completed",
-                    "failed",
-                    "cancelled",
-                }
-                for a in summary.actions
-            ):
-                raise ValueError("INVALID_ACTION_STATUS")
             mid = stable_id(event.event_id, "m2", str(index))
             changes[mid] = StoredMemory(
                 memory_id=mid,

@@ -4,7 +4,23 @@ from dynamic_graph import FakeModelClient
 from dynamic_graph.models.client import ModelResponse
 
 
-class TaskIntentModel(FakeModelClient):
+class ClarityAwareModel(FakeModelClient):
+    """Script routing/answers independently of the dedicated clarity gate.
+
+    Gate behavior is tested with explicit real FakeModelClient responses.
+    """
+
+    async def generate(self, request):
+        if request.role == "intent_clarity":
+            self.requests.append(request)
+            return ModelResponse({
+                "known_referents": {}, "selection_criteria": [], "questions": [],
+                "reason": "No unresolved referents in this scripted routing test",
+            })
+        return await super().generate(request)
+
+
+class TaskIntentModel(ClarityAwareModel):
     @property
     def assessments(self):
         return [r for r in self.requests if r.role == "intent"]

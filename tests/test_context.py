@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from dynamic_graph.models.client import ModelCallError, ModelResponse
-from intent_helpers import TaskIntentModel
+from intent_helpers import ClarityAwareModel as FakeModelClient, TaskIntentModel
 from langchain_core.embeddings import Embeddings
 
 from karen.context import (
@@ -468,7 +468,7 @@ async def test_external_history_anchors_exclude_sources_from_current_task(memory
 
 
 async def test_missing_external_history_still_clarifies_during_current_task(memory):
-    from dynamic_graph import DynamicGraphEngine, EngineConfig, FakeModelClient, ModelBindings
+    from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings
     from test_input_routing import clarify, routing
 
     from karen import IntentRecognizer, IntentSession, Karen
@@ -493,7 +493,10 @@ async def test_missing_external_history_still_clarifies_during_current_task(memo
     assert second.session.request_id == first.session.request_id
     assert second.result is None and second.memory_result.coverage["requires_history"]
     assert "哪一次任务" in second.session.questions[0]
-    assert len(intent_model.requests) == 3 and not executor.requests
+    assert [r.role for r in intent_model.requests] == [
+        "intent_router", "intent_clarity", "intent", "intent_router"
+    ]
+    assert not executor.requests
 
 
 async def test_details_require_scope_decode_unicode_and_preserve_field_pointer(memory):
@@ -623,7 +626,7 @@ async def test_reindex_rebuilds_vectors_without_reextracting_facts(memory):
 
 
 async def test_ambiguous_history_clarifies_then_reassesses_current_task(memory):
-    from dynamic_graph import DynamicGraphEngine, EngineConfig, FakeModelClient, ModelBindings
+    from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings
     from test_execution import graph_response, ready
 
     from karen import IntentRecognizer, IntentSession, Karen
@@ -674,7 +677,7 @@ async def test_ambiguous_history_clarifies_then_reassesses_current_task(memory):
 
 
 async def test_independent_new_task_goal_does_not_inherit_previous_task_messages(memory):
-    from dynamic_graph import DynamicGraphEngine, EngineConfig, FakeModelClient, ModelBindings
+    from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings
     from test_execution import graph_response, ready
 
     from karen import IntentRecognizer, IntentSession, Karen

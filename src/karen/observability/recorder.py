@@ -29,6 +29,36 @@ def error_code(error):
     return getattr(error, "code", type(error).__name__)
 
 
+def error_details(error):
+    """Record diagnostic types and numeric codes without provider messages or bodies."""
+    result = {
+        "error_code": error_code(error),
+        "error_type": type(error).__name__,
+        "http_status": None,
+        "errno": None,
+        "cause_types": [],
+    }
+    current = error
+    seen = set()
+    while current is not None and id(current) not in seen and len(seen) < 8:
+        seen.add(id(current))
+        if current is not error:
+            result["cause_types"].append(type(current).__name__)
+        details = getattr(current, "details", {})
+        status = (
+            getattr(current, "status_code", None)
+            or getattr(getattr(current, "response", None), "status_code", None)
+            or (details.get("http_status") if isinstance(details, dict) else None)
+        )
+        errno = getattr(current, "errno", None)
+        if result["http_status"] is None and isinstance(status, int):
+            result["http_status"] = status
+        if result["errno"] is None and isinstance(errno, int):
+            result["errno"] = errno
+        current = current.__cause__ or current.__context__
+    return result
+
+
 def sanitize(value, sensitive_values=()):
     """Redact before clipping, including credentials embedded in ordinary text."""
     return redact(json_value(value), sensitive_values=sensitive_values)
@@ -150,12 +180,7 @@ class Observer:
             self.emit(
                 "span.finished",
                 status="cancelled" if isinstance(exc, asyncio.CancelledError) else "failed",
-                data={
-                    "error_code": error_code(exc),
-                    "error_type": type(exc).__name__,
-                    "http_status": getattr(getattr(exc, "response", None), "status_code", None),
-                    "errno": getattr(exc, "errno", None),
-                },
+                data=error_details(exc),
                 duration_ms=round((time.monotonic() - started) * 1000, 3),
             )
             raise
@@ -322,7 +347,7 @@ class ObservedModel:
                     "model.error",
                     status="failed",
                     data={
-                        "error_code": error_code(exc),
+                        **error_details(exc),
                         "usage": getattr(exc, "usage", None),
                         "retryable": getattr(exc, "retryable", None),
                     },

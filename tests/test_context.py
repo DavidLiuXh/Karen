@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from dynamic_graph.models.client import ModelCallError, ModelResponse
+from intent_helpers import TaskIntentModel
 from langchain_core.embeddings import Embeddings
 
 from karen.context import (
@@ -170,6 +171,79 @@ def query(text):
     return RecallQuery(
         text=text, conversation_id="conversation", request_id="new-task", timezone="Asia/Shanghai"
     )
+
+
+async def test_future_move_plan_is_indexed_without_replacing_current_residence(tmp_path):
+    class PlannedMoveModel(MemoryModel):
+        async def generate(self, request):
+            if request.role == "memory_extract":
+                response = await super().generate(request)
+                if response.payload["facts"] and "下个月" in response.payload["facts"][0]["text"]:
+                    fact = response.payload["facts"][0]
+                    fact["fact_key"] = "profile.residence.move_plan"
+                    fact["value"] = {
+                        "city": "上海",
+                        "planned_for": {
+                            "value": "2026-11",
+                            "precision": "month",
+                            "timezone": "Asia/Shanghai",
+                            "origin": "inferred",
+                        },
+                        "status": "planned",
+                    }
+                return response
+            if request.role == "memory_verify":
+                candidate = request.input_data["candidates"][0]
+                if candidate["fact_key"] == "profile.residence.move_plan":
+                    return ModelResponse(
+                        {
+                            "decisions": [
+                                {
+                                    "candidate_id": candidate["candidate_id"],
+                                    "verification": "supported",
+                                    "operation": "new",
+                                    "matched_ids": [],
+                                    "reason": "未来计划与当前住所是不同事实",
+                                }
+                            ]
+                        }
+                    )
+            return await super().generate(request)
+
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=PlannedMoveModel(), embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        current = event(
+            "我目前住在北京。",
+            request="current-residence",
+            occurred_at=datetime(2026, 10, 4, tzinfo=UTC),
+        )
+        await service.flush(service.submit(current))
+        planned = event(
+            "我下个月会搬到上海。",
+            request="move-plan",
+            occurred_at=datetime(2026, 10, 4, 10, tzinfo=UTC),
+        )
+        receipt = service.submit(planned)
+        await service.flush(receipt)
+        _, stored, vectors = service.storage.snapshot()
+        facts = {m.fact_key: m for m in stored.values() if m.layer == "m1"}
+        residence, plan = facts["profile.residence.city"], facts["profile.residence.move_plan"]
+        assert (
+            residence.value == "北京" and residence.state == "active" and residence.valid_to is None
+        )
+        assert plan.value["city"] == "上海" and plan.value["status"] == "planned"
+        assert plan.value["planned_for"]["value"] == "2026-11"
+        assert plan.supersedes == [] and plan.corrects == [] and plan.state == "active"
+        assert residence.memory_id in vectors and plan.memory_id in vectors
+        assert (
+            service.storage.load_event(planned.event_id).payload["content"]
+            == planned.payload["content"]
+        )
+    finally:
+        await service.close()
 
 
 async def test_submit_is_isolated_nonblocking_and_close_persists_without_model(memory):
@@ -483,7 +557,7 @@ async def test_ambiguous_history_clarifies_then_reassesses_current_task(memory):
 
     service, model = memory
     executor = FakeModelClient([graph_response(), {"draft": "依据所选来源写的草稿"}])
-    intent_model = FakeModelClient([ready()])
+    intent_model = TaskIntentModel([ready()])
     engine = DynamicGraphEngine(
         config=EngineConfig(runs_dir=service.root_dir / "runs"),
         models=ModelBindings(executor, executor),
@@ -502,20 +576,20 @@ async def test_ambiguous_history_clarifies_then_reassesses_current_task(memory):
             "改一下刚才那封邮件",
         )
         assert turn.result is None and "任务" in turn.session.questions[0]
-        assert intent_model.requests == [] and executor.requests == []
+        assert intent_model.assessments == [] and executor.requests == []
         model.history_status = "selected"
         turn = await agent.advance(turn.session, "是给甲客户的那封")
         assert turn.result.execution_status == "COMPLETED"
         assert turn.session.goal.context["memory"]["history"]["status"] == "selected"
         assert turn.session.goal.context["timezone"] == "Asia/Shanghai"
         assert len(turn.session.goal.context["conversation"]) == 3
-        assert intent_model.requests[0].input_data["memory"]["history"]["messages"]
+        assert intent_model.assessments[0].input_data["memory"]["history"]["messages"]
         query_requests = [r for r in model.requests if r.role == "memory_query"]
         assert all(
             r.input_data["current_time_utc"] == reference.isoformat() for r in query_requests
         )
         assert (
-            intent_model.requests[0].input_data["time_context"]["reference_time_utc"]
+            intent_model.assessments[0].input_data["time_context"]["reference_time_utc"]
             == reference.isoformat()
         )
         agent.record_response(turn.session, "依据所选来源写的草稿")
@@ -536,7 +610,7 @@ async def test_independent_new_task_goal_does_not_inherit_previous_task_messages
     executor = FakeModelClient(
         [graph_response(), {"draft": "第一封"}, graph_response(), {"draft": "第二封"}]
     )
-    intent_model = FakeModelClient([ready(), ready()])
+    intent_model = TaskIntentModel([ready(), ready()])
     engine = DynamicGraphEngine(
         config=EngineConfig(runs_dir=service.root_dir / "runs"),
         models=ModelBindings(executor, executor),
@@ -548,7 +622,7 @@ async def test_independent_new_task_goal_does_not_inherit_previous_task_messages
     assert first.session.conversation_id == second.session.conversation_id
     assert len(second.session.messages) == 1
     assert second.session.goal.context["memory"]["history"]["messages"] == []
-    assert len(intent_model.requests[1].input_data["messages"]) == 1
+    assert len(intent_model.assessments[1].input_data["messages"]) == 1
 
 
 async def test_metadata_and_vector_transaction_reject_invalid_batch_atomically(memory):
@@ -726,13 +800,13 @@ async def test_credentials_are_redacted_with_json_pointer_metadata(memory):
 
 
 async def test_collection_missing_time_range_requests_clarification_without_executing(memory):
-    from dynamic_graph import DynamicGraphEngine, FakeModelClient, ModelBindings
+    from dynamic_graph import DynamicGraphEngine, ModelBindings
 
     from karen import IntentRecognizer, IntentSession, Karen
 
     service, model = memory
     model.kind = "collection"
-    intent = FakeModelClient()
+    intent = TaskIntentModel()
     agent = Karen(
         intent=IntentRecognizer(intent),
         engine=DynamicGraphEngine(models=ModelBindings(intent, intent)),
@@ -740,7 +814,7 @@ async def test_collection_missing_time_range_requests_clarification_without_exec
     )
     turn = await agent.advance(IntentSession(timezone="UTC"), "列出所有完成的任务")
     assert turn.result is None and "时间范围" in turn.session.questions[0]
-    assert intent.requests == []
+    assert intent.assessments == []
 
 
 async def test_partial_index_coverage_is_reported_without_waiting_for_derivation(memory):
@@ -947,7 +1021,7 @@ def test_recovery_does_not_follow_links_outside_memory_directory(tmp_path):
 async def test_unavailable_storage_preserves_history_dependency_for_clarification(
     memory, monkeypatch
 ):
-    from dynamic_graph import DynamicGraphEngine, FakeModelClient, ModelBindings
+    from dynamic_graph import DynamicGraphEngine, ModelBindings
 
     from karen import IntentRecognizer, IntentSession, Karen
 
@@ -958,7 +1032,7 @@ async def test_unavailable_storage_preserves_history_dependency_for_clarificatio
         raise PersistenceError("TEST_STORAGE_UNAVAILABLE")
 
     monkeypatch.setattr(service.storage, "retrieval_snapshot", unavailable)
-    intent = FakeModelClient()
+    intent = TaskIntentModel()
     agent = Karen(
         intent=IntentRecognizer(intent),
         engine=DynamicGraphEngine(models=ModelBindings(intent, intent)),
@@ -966,7 +1040,7 @@ async def test_unavailable_storage_preserves_history_dependency_for_clarificatio
     )
     turn = await agent.advance(IntentSession(timezone="UTC"), "继续修改刚才的页面")
     assert turn.result is None and turn.memory_result.status == "unavailable"
-    assert turn.session.questions and intent.requests == []
+    assert turn.session.questions and intent.assessments == []
 
 
 def test_long_version_chain_resolves_current_state_without_unbounded_history():

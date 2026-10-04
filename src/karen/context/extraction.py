@@ -99,6 +99,7 @@ class Extractor:
                 except ModelCallError as error:
                     if error.code != "MODEL_RESPONSE_INVALID" or attempt:
                         raise
+                    payload = error.raw_response
                     feedback = {"code": error.code}
                 except ValidationError as error:
                     if attempt:

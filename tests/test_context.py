@@ -1441,3 +1441,28 @@ async def test_compatible_values_in_same_fact_slot_keep_both_active(tmp_path, op
     finally:
         await memory.close()
 
+
+
+async def test_invalid_model_json_is_supplied_to_bounded_memory_repair(tmp_path):
+    class Model(MemoryModel):
+        raw = '{"facts": [], "summaries": [broken]}'
+        repaired = False
+
+        async def generate(self, request):
+            if request.role == 'memory_extract':
+                if 'validation_error' not in request.input_data:
+                    raise ModelCallError('MODEL_RESPONSE_INVALID', 'Invalid generated JSON', raw_response=self.raw)
+                assert request.input_data['previous_response'] == self.raw
+                self.repaired = True
+            return await super().generate(request)
+
+    model = Model()
+    service = ContextMemory(root_dir=tmp_path / 'context', model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        await service.flush(service.submit(event('用户提到花园', kind='assistant_message')))
+        assert model.repaired
+        _, stored, _ = service.storage.snapshot()
+        assert any(m.layer == 'm2' for m in stored.values())
+    finally:
+        await service.close()

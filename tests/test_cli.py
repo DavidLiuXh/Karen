@@ -278,7 +278,7 @@ def test_real_console_submits_edited_chinese_text(keystrokes):
     )
     os.close(slave)
     output = b""
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 30
 
     def read_until(marker):
         nonlocal output
@@ -289,6 +289,7 @@ def test_real_console_submits_edited_chinese_text(keystrokes):
 
     try:
         read_until("你：".encode())
+        deadline = time.monotonic() + 10  # Editing has its own budget after interpreter startup.
         os.write(master, keystrokes + b"\r")
         read_until(b"RESULT=")
         while b"\n" not in output.split(b"RESULT=", 1)[1]:
@@ -318,7 +319,7 @@ def test_piped_input_remains_supported():
         input="明天北京是否还有大风\n",
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=30,
         check=True,
     )
     assert json.loads(result.stdout.split("RESULT=", 1)[1]) == "明天北京是否还有大风"

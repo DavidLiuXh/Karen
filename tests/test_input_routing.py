@@ -709,28 +709,73 @@ async def test_direct_question_uses_clarity_gate_but_information_does_not():
     assert [r.role for r in model.requests] == ["intent_router", "intent_clarity"]
 
 
-async def test_multiple_inferred_referents_trigger_clarification_before_answer():
+@pytest.mark.parametrize("resolution", ["inferred", "explicit_identification"])
+async def test_multiple_inferred_referents_trigger_clarification_before_answer(resolution):
     from dynamic_graph import FakeModelClient as RawModel
 
-    model = RawModel([
-        routing('respond', types=['question']),
-        {'known_referents': {}, 'selection_criteria': [], 'questions': [],
-         'references': [{'expression': '她', 'candidates': ['周宁', '沈清'],
-                         'resolution': 'inferred', 'evidence': '按句法倾向猜周宁'}],
-         'reason': '只按句法猜测仍非唯一指代'},
-    ])
-    result = await IntentRecognizer(model).advance(IntentSession(timezone='UTC'), '周宁告诉沈清，她收到了信。是谁收到了信？')
-    assert result.questions and '周宁' in result.questions[0] and '沈清' in result.questions[0]
+    model = RawModel(
+        [
+            routing("respond", types=["question"]),
+            {
+                "known_referents": {},
+                "selection_criteria": [],
+                "questions": [],
+                "references": [
+                    {
+                        "expression": "她",
+                        "candidates": ["周宁", "沈清"],
+                        "resolution": resolution,
+                        "evidence": "按句法倾向猜周宁",
+                    }
+                ],
+                "reason": "只按句法猜测仍非唯一指代",
+            },
+        ]
+    )
+    result = await IntentRecognizer(model).advance(
+        IntentSession(timezone="UTC"), "周宁告诉沈清，她收到了信。是谁收到了信？"
+    )
+    assert result.questions and "周宁" in result.questions[0] and "沈清" in result.questions[0]
     assert result.reply is None and result.goal is None
 
 
 async def test_personal_fact_absence_is_answered_without_asking_for_the_missing_answer():
     from dynamic_graph import FakeModelClient as RawModel
 
-    model = RawModel([routing('respond', types=['question']), reply('我没有记录你的宠物名字。')])
+    model = RawModel([routing("respond", types=["question"]), reply("我没有记录你的宠物名字。")])
     result = await IntentRecognizer(model).advance(
-        IntentSession(timezone='UTC'), '我的宠物叫什么名字？',
-        memory_context={'coverage': {'query_kind': 'facts'}, 'm1': [], 'm2': []},
+        IntentSession(timezone="UTC"),
+        "我的宠物叫什么名字？",
+        memory_context={"coverage": {"query_kind": "facts"}, "m1": [], "m2": []},
     )
-    assert not result.questions and result.reply == '我没有记录你的宠物名字。'
-    assert [r.role for r in model.requests] == ['intent_router', 'intent_response']
+    assert not result.questions and result.reply == "我没有记录你的宠物名字。"
+    assert [r.role for r in model.requests] == ["intent_router", "intent_response"]
+
+
+async def test_explicit_referent_identification_uses_user_evidence():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    model = RawModel(
+        [
+            routing("respond", types=["question"]),
+            {
+                "references": [
+                    {
+                        "expression": "她",
+                        "candidates": ["周宁", "沈清"],
+                        "resolution": "explicit_identification",
+                        "evidence": "这里她指沈清",
+                    }
+                ],
+                "known_referents": {},
+                "selection_criteria": [],
+                "questions": [],
+                "reason": "用户已直接说明",
+            },
+            reply("沈清收到了信。"),
+        ]
+    )
+    result = await IntentRecognizer(model).advance(
+        IntentSession(timezone="UTC"), "周宁告诉沈清，她收到了信。这里她指沈清。是谁收到了信？"
+    )
+    assert not result.questions and result.reply == "沈清收到了信。"

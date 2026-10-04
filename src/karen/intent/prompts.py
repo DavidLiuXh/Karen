@@ -64,8 +64,11 @@ CLARITY_TASK_INSTRUCTION = """逐一识别核心对象：known_referents 只能�
 无法识别的对象询问定义或拼写，不能把名称抄成定义或凭语法猜身份。
 references 列出代词、指代和省略表达及所有同类候选；不能按姓名猜性别，不能仅因某人是
 告知者/接收者、出现最近或较常见的语义习惯排除其他候选。
+先枚举 references，再解释 known_referents，不能提前把‘谁是施事者’写成对象定义，
+然后用自己写的定义证明唯一指代。对象定义不得包含正在询问的答案。
 resolution：仅一个合理候选为 unique_candidate；用户/上下文直接声明对应哪个对象才是
 explicit_identification，evidence 引用直接声明的原文，不能重复待解析句子充当对应关系证据；
+evidence 只能是连续原话，不得附加自己的句法推理或身份解释。
 仅按句法习惯/常见解释选择为 inferred；其余 unresolved。多个候选没有直接声明时须询问。
 selection_criteria 记录用户明确或相关已支持记忆提供的实质筛选标准，而不是只写用途/地点。
 对主观筛选未说明关键标准时，询问选择因素，不以仅问城市或用途代替选择标准。

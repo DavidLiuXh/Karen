@@ -129,9 +129,9 @@ class ReferenceAssessment(IntentContract):
 
 
 class ClarityAssessment(IntentContract):
+    references: list[ReferenceAssessment]
     known_referents: dict[str, Text]
     selection_criteria: list[Text]
-    references: list[ReferenceAssessment]
     questions: list[Text] = Field(
         description=(
             "仅填写缺失后无法给出任何符合已知要求的有效回应/方案的必要问题。"
@@ -310,10 +310,29 @@ class IntentRecognizer:
             max_output_tokens=2048,
         )
         clarity = await self._validated(request, ClarityAssessment)
+        source_texts = [m.content for m in state["session"].messages]
+        memory = state.get("memory_context") or {}
+        for layer in ("m1", "m2"):
+            source_texts.extend(
+                source["quote"]
+                for hit in memory.get(layer, [])
+                for source in hit.get("memory", {}).get("sources", [])
+                if source.get("quote")
+            )
+        source_texts.extend(hit["text"] for hit in memory.get("details", []) if hit.get("text"))
+        source_texts.extend(
+            message["content"]
+            for message in memory.get("history", {}).get("messages", [])
+            if message.get("content")
+        )
         unresolved = [
             ref
             for ref in clarity.references
-            if len(ref.candidates) > 1 and ref.resolution != "explicit_identification"
+            if len(ref.candidates) > 1
+            and (
+                ref.resolution != "explicit_identification"
+                or not any(ref.evidence in text for text in source_texts)
+            )
         ]
         if unresolved and not clarity.questions:
             clarity = clarity.model_copy(

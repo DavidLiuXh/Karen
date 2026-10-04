@@ -1535,3 +1535,19 @@ async def test_invalid_model_json_is_supplied_to_bounded_memory_repair(tmp_path,
     finally:
         await service.close()
 
+
+async def test_history_identity_survives_raw_message_budget_limit(memory):
+    service, model = memory
+    async with service.foreground():
+        service.submit(event("上次的方案内容。" * 1600, request="identified-task"))
+        service.submit(
+            event("方案补充细节。" * 1600, request="identified-task", kind="assistant_message")
+        )
+        model.dependency, model.history_status = "needed", "selected"
+        result = await service.recall(query("继续上次的方案"))
+        assert result.history.status == "selected"
+        assert not result.history.complete and result.history.messages == []
+        assert result.related_request_ids == ["identified-task"]
+        assert "HISTORY_BUDGET_LIMIT" in result.degradations
+        assert not result.coverage["complete"]
+

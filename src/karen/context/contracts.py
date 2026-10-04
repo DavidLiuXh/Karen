@@ -404,6 +404,7 @@ class History(Contract):
     status: Literal["none", "selected", "ambiguous", "unavailable"] = "none"
     reason: str = ""
     messages: list[dict[str, JsonValue]] = Field(default_factory=list)
+    complete: bool = True
 
 
 class RecallResult(Contract):

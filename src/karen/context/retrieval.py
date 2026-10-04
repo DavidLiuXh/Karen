@@ -580,6 +580,7 @@ class Retriever:
             m1.sort(key=lambda hit: hit.fusion_rank)
             m2.sort(key=lambda hit: hit.fusion_rank)
         history_messages = []
+        before_history = used
         if ranking.history_status == "selected":
             events = {e.event_id: e for e in state["anchors"]}
             selected = sorted(
@@ -612,13 +613,20 @@ class Retriever:
                 history_messages.append(message)
                 used += size
         history_status = ranking.history_status
-        if history_status == "selected" and len(history_messages) != len(
-            ranking.selected_event_ids
-        ):
+        all_history_events = len(history_messages) == len(ranking.selected_event_ids)
+        history_complete = all_history_events and not any(
+            message["truncated"] for message in history_messages
+        )
+        if history_status == "selected" and not all_history_events:
             history_messages = []
-            history_status = "unavailable"
+            used = before_history
+        if history_status == "selected" and not history_complete:
+            degraded.append("HISTORY_BUDGET_LIMIT")
         history = History(
-            status=history_status, reason=ranking.history_reason, messages=history_messages
+            status=history_status,
+            reason=ranking.history_reason,
+            messages=history_messages,
+            complete=history_complete,
         )
         details, detail_status = [], None
         if analysis.kind == "detail" and time.monotonic() < state["deadline"]:
@@ -715,8 +723,9 @@ class Retriever:
         if len(encode(result.context()).encode()) > 12 * 1024 and result.history.messages:
             result = result.model_copy(
                 update={
-                    "history": History(status="unavailable", reason="所选历史超出本轮上下文预算。"),
-                    "related_request_ids": [],
+                    "history": result.history.model_copy(
+                        update={"messages": [], "complete": False}
+                    ),
                     "status": "degraded",
                     "degradations": [*result.degradations, "HISTORY_BUDGET_LIMIT"],
                 }

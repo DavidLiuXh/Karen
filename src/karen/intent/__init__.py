@@ -1,5 +1,5 @@
 """User intent recognition and clarification."""
 
-from .recognizer import IntentRecognizer, IntentSession
+from .recognizer import InputRouting, IntentRecognizer, IntentSession
 
-__all__ = ["IntentRecognizer", "IntentSession"]
+__all__ = ["InputRouting", "IntentRecognizer", "IntentSession"]

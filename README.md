@@ -132,13 +132,15 @@ turn = await agent.advance(
     IntentSession(),
     "用中文解释高内聚与低耦合，分别给出一个 Python 例子。",
 )
-if turn.result is None:
-    print(turn.session.questions)
-else:
+if turn.response is not None:
+    print(turn.response)
+elif turn.result is not None:
     print(turn.result.execution_status, turn.result.outputs)
+else:
+    print(turn.session.questions)
 
 # 第一项任务已产生结果时，传入返回会话即可开始另一项独立任务。
-if turn.result is not None:
+if turn.session.completed:
     next_turn = await agent.advance(turn.session, "用中文解释 Python 列表推导式，给一个例子。")
 ```
 
@@ -242,3 +244,15 @@ uv run ruff check .
 
 官方参考：[LangGraph Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api)、
 [ChatDeepSeek](https://docs.langchain.com/oss/python/integrations/chat/deepseek)。
+
+
+## 输入分类与路由
+
+Karen 先判断输入类型及处理方式，再决定是否使用执行器。信息告知、普通交流和能根据相关记忆
+回答的问题直接回应；需要外部信息、操作或交付物的请求继续澄清并生成 GoalSpec。
+补充/纠正待澄清任务保留其上下文，无关输入开始新请求；明确取消待澄清任务不会启动执行。
+混合输入中的个人事实与任务要求都保留，记忆写入仍独立异步处理。
+
+调用方通过 `TaskTurn.response` 获取直接回复，通过 `result` 获取真实执行结果，均无时读取
+`session.questions`。路由理由和完整过程可在观测页面查看。提示词、接口、取消范围及可重复的
+合成语义检查见 [输入路由说明](docs/INPUT_ROUTING.md)。

@@ -114,21 +114,33 @@ class TraceStore:
                 tail, _ = self._events(path, 64 * 1024, tail=True)
                 events.extend(tail)
             total_bytes += min(path.stat().st_size, 128 * 1024)
-            roots = [e for e in events if e.get("stage") == "turn"]
-            started = next((e for e in roots if e.get("event_type") == "span.started"), None)
+            roots = [e for e in events if e.get("stage") in {"input", "turn"}]
+            started = next(
+                (
+                    e
+                    for e in roots
+                    if e.get("stage") == "turn" and e.get("event_type") == "span.started"
+                ),
+                None,
+            )
+            started = started or next(
+                (e for e in roots if e.get("event_type") == "span.started"), None
+            )
             if not started:
                 continue
             finished = next(
                 (e for e in reversed(roots) if e.get("event_type") == "span.finished"), None
             )
-            request = next((e for e in events if e.get("event_type") == "turn.input"), {})
+            request = next(
+                (e for e in events if e.get("event_type") in {"turn.input", "input.received"}), {}
+            )
             tasks.append(
                 {
                     "trace_id": path.stem,
                     "request_id": started.get("request_id"),
                     "conversation_id": started.get("conversation_id"),
                     "turn_id": started.get("turn_id"),
-                    "timestamp_utc": started["timestamp_utc"],
+                    "timestamp_utc": roots[0]["timestamp_utc"],
                     "input": request.get("data", {}).get("text", ""),
                     "status": finished.get("status") if finished else "nonterminal",
                     "outcome": finished.get("data", {}).get("outcome") if finished else None,
@@ -153,7 +165,14 @@ class TraceStore:
         events, coverage = self._events(path)
         root = next((e for e in events if e.get("stage") == "turn"), None)
         if root is None:
-            return {"events": events, "coverage": coverage, "runs": []}
+            return {
+                "trace_id": trace_id,
+                "request_id": None,
+                "events": events,
+                "coverage": coverage,
+                "runs": [],
+                "checks": check_trace(events, coverage),
+            }
         request_id = root.get("request_id")
         paths, partial = self._files()
         scanned = 0
@@ -163,8 +182,11 @@ class TraceStore:
             if scanned >= 8 * 1024 * 1024:
                 partial = True
                 break
-            initial, _ = self._events(other, 16 * 1024)
-            if initial and initial[0].get("request_id") == request_id:
+            initial, _ = self._events(other, 128 * 1024)
+            other_root = next((e for e in initial if e.get("stage") == "turn"), None)
+            if other_root is None and initial and initial[0].get("stage") != "input":
+                other_root = initial[0]
+            if other_root and other_root.get("request_id") == request_id:
                 extra, state = self._events(other, 512 * 1024)
                 scanned += min(other.stat().st_size, 512 * 1024)
                 # Include all clarification turns and their independently timed background work.
@@ -173,7 +195,7 @@ class TraceStore:
                 coverage["invalid_lines"] += state["invalid_lines"]
                 coverage["unfinished_tail"] |= state.get("unfinished_tail", False)
             else:
-                scanned += min(other.stat().st_size, 16 * 1024)
+                scanned += min(other.stat().st_size, 128 * 1024)
         coverage["partial"] |= partial
         sessions = {e.get("process_session_id") for e in events}
         coverage["process_health"] = [

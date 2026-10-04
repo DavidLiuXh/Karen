@@ -2,7 +2,8 @@ import asyncio
 from datetime import UTC, datetime
 
 import pytest
-from dynamic_graph import FakeModelClient, GoalSpec, ModelCallError
+from dynamic_graph import GoalSpec, ModelCallError
+from intent_helpers import TaskIntentModel
 from pydantic import ValidationError
 from tzlocal import get_localzone_name
 
@@ -29,7 +30,7 @@ def ready(**overrides):
 
 
 async def test_clear_request_produces_engine_goal_without_clarification():
-    model = FakeModelClient([ready()])
+    model = TaskIntentModel([ready()])
     session = IntentSession(request_id="request-1", user_context={"language": "zh-CN"})
     updated = await IntentRecognizer(model).advance(session, "给客户写中文进度邮件，设计已完成")
     assert isinstance(updated.goal, GoalSpec)
@@ -45,7 +46,7 @@ async def test_clear_request_produces_engine_goal_without_clarification():
     assert updated.goal.context["timezone"] == session.timezone
     assert updated.questions == ()
     assert session.messages == () and session.goal is None
-    assert len(model.requests) == 1
+    assert len(model.assessments) == 1
 
 
 def test_default_timezone_uses_local_machine_configuration():
@@ -54,13 +55,13 @@ def test_default_timezone_uses_local_machine_configuration():
 
 @pytest.mark.parametrize("timezone", ["Asia/Shanghai", "America/New_York", "UTC"])
 async def test_explicit_user_timezone_reaches_model_clarification_and_goal(timezone):
-    model = FakeModelClient([clarify(), ready()])
+    model = TaskIntentModel([clarify(), ready()])
     recognizer = IntentRecognizer(model)
     session = await recognizer.advance(IntentSession(timezone=timezone), "帮我写邮件")
     assert session.timezone == timezone
-    assert model.requests[0].input_data["timezone"] == timezone
+    assert model.assessments[0].input_data["timezone"] == timezone
     final = await recognizer.advance(session, "给客户写中文进度邮件，设计已完成")
-    assert model.requests[1].input_data["timezone"] == timezone
+    assert model.assessments[1].input_data["timezone"] == timezone
     assert final.goal.context["timezone"] == timezone
 
 
@@ -76,10 +77,10 @@ async def test_explicit_user_timezone_reaches_model_clarification_and_goal(timez
     ],
 )
 async def test_calendar_dates_use_request_time_and_user_timezone(instant, zone, today, tomorrow):
-    model = FakeModelClient([ready()])
+    model = TaskIntentModel([ready()])
     original = IntentSession(timezone=zone, reference_time_utc=datetime.fromisoformat(instant))
     final = await IntentRecognizer(model).advance(original, "今天北京傍晚大风，明天是否还有大风？")
-    clock = model.requests[0].input_data["time_context"]
+    clock = model.assessments[0].input_data["time_context"]
     assert clock["reference_time_utc"] == instant
     assert clock["local_date"] == today
     assert clock["relative_dates"]["today"] == today
@@ -102,7 +103,7 @@ async def test_first_input_anchors_time_and_clarification_keeps_it_across_midnig
             return cls.instant.astimezone(tz)
 
     monkeypatch.setattr(recognizer, "datetime", Clock)
-    model = FakeModelClient([clarify("你想查询哪里？"), ready()])
+    model = TaskIntentModel([clarify("你想查询哪里？"), ready()])
     original = IntentSession(timezone="Asia/Shanghai")
     assert original.reference_time_utc is None
     intent = IntentRecognizer(model)
@@ -112,7 +113,8 @@ async def test_first_input_anchors_time_and_clarification_keeps_it_across_midnig
     assert original.reference_time_utc is None
     assert final.reference_time_utc == pending.reference_time_utc
     assert (
-        model.requests[1].input_data["time_context"] == model.requests[0].input_data["time_context"]
+        model.assessments[1].input_data["time_context"]
+        == model.assessments[0].input_data["time_context"]
     )
     assert final.goal.context["time_context"]["relative_dates"]["tomorrow"] == "2026-10-04"
 
@@ -131,7 +133,7 @@ def test_invalid_timezone_is_rejected(timezone):
 
 
 async def test_multiple_clarifications_keep_full_conversation_until_ready():
-    model = FakeModelClient([clarify(), clarify("目前进度是什么？"), ready()])
+    model = TaskIntentModel([clarify(), clarify("目前进度是什么？"), ready()])
     recognizer = IntentRecognizer(model)
     first = await recognizer.advance(IntentSession(), "帮我写封邮件")
     assert first.goal is None and first.questions == ("给谁写邮件？",)
@@ -139,14 +141,14 @@ async def test_multiple_clarifications_keep_full_conversation_until_ready():
     assert second.goal is None and second.questions == ("目前进度是什么？",)
     final = await recognizer.advance(second, "设计已完成")
     assert final.goal is not None and final.questions == ()
-    assert [m["content"] for m in model.requests[-1].input_data["messages"]] == [
+    assert [m["content"] for m in model.assessments[-1].input_data["messages"]] == [
         "帮我写封邮件",
         "给谁写邮件？",
         "给客户，用中文，先不要发送",
         "目前进度是什么？",
         "设计已完成",
     ]
-    assert final.goal.context["conversation"] == model.requests[-1].input_data["messages"]
+    assert final.goal.context["conversation"] == model.assessments[-1].input_data["messages"]
     assert first.messages[-1].content == "给谁写邮件？"
 
 
@@ -165,21 +167,21 @@ async def test_multiple_clarifications_keep_full_conversation_until_ready():
 async def test_invalid_model_response_does_not_change_session(payload):
     session = IntentSession()
     with pytest.raises(ValidationError):
-        await IntentRecognizer(FakeModelClient([payload])).advance(session, "写邮件")
+        await IntentRecognizer(TaskIntentModel([payload])).advance(session, "写邮件")
     assert session.messages == () and session.goal is None
 
 
 @pytest.mark.parametrize("text", ["", " \n "])
 async def test_blank_input_is_rejected_before_model_call(text):
-    model = FakeModelClient()
+    model = TaskIntentModel()
     with pytest.raises(ValidationError):
         await IntentRecognizer(model).advance(IntentSession(), text)
-    assert model.requests == []
+    assert model.assessments == []
 
 
 async def test_provider_failure_propagates_and_original_session_can_be_retried():
     error = ModelCallError("MODEL_UNAVAILABLE", "provider unavailable")
-    recognizer = IntentRecognizer(FakeModelClient([error, ready()]))
+    recognizer = IntentRecognizer(TaskIntentModel([error, ready()]))
     session = IntentSession()
     with pytest.raises(ModelCallError) as raised:
         await recognizer.advance(session, "写邮件")
@@ -189,17 +191,17 @@ async def test_provider_failure_propagates_and_original_session_can_be_retried()
 
 
 async def test_completed_intent_session_cannot_execute_a_second_task():
-    model = FakeModelClient([ready()])
+    model = TaskIntentModel([ready()])
     recognizer = IntentRecognizer(model)
     session = await recognizer.advance(IntentSession(), "写邮件")
     with pytest.raises(ValueError, match="already has a goal"):
         await recognizer.advance(session, "再写一封")
-    assert len(model.requests) == 1
+    assert len(model.assessments) == 1
 
 
 async def test_session_context_is_isolated_between_turns():
     original = IntentSession(user_context={"preferences": {"language": "中文"}})
-    updated = await IntentRecognizer(FakeModelClient([ready()])).advance(original, "写邮件")
+    updated = await IntentRecognizer(TaskIntentModel([ready()])).advance(original, "写邮件")
     updated.goal.context["user_context"]["preferences"]["language"] = "英语"
     assert original.user_context["preferences"]["language"] == "中文"
 
@@ -211,12 +213,12 @@ async def test_custom_output_schema_is_validated_by_engine_contract():
         "required": ["draft"],
         "additionalProperties": False,
     }
-    session = await IntentRecognizer(FakeModelClient([ready(output_schema=schema)])).advance(
+    session = await IntentRecognizer(TaskIntentModel([ready(output_schema=schema)])).advance(
         IntentSession(), "输出 draft 字段"
     )
     assert session.goal.output_schema.document() == schema
     with pytest.raises(ValueError):
-        await IntentRecognizer(FakeModelClient([ready(output_schema={"type": "array"})])).advance(
+        await IntentRecognizer(TaskIntentModel([ready(output_schema={"type": "array"})])).advance(
             IntentSession(), "写邮件"
         )
 

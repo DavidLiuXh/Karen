@@ -4,6 +4,7 @@ import pytest
 from dynamic_graph import DynamicGraphEngine, EngineConfig, FakeModelClient, ModelBindings
 from dynamic_graph.contracts import default_output_schema
 from dynamic_graph.models.client import ModelResponse
+from intent_helpers import TaskIntentModel
 from test_context import LocalEmbeddings, MemoryModel, event, query
 
 from karen import IntentRecognizer, IntentSession, Karen
@@ -134,7 +135,7 @@ async def test_hobbies_survive_restart_answer_directly_and_keep_observable_evide
         "evidence": [{"source": "internal-memory-id", "text": "用户直接陈述"}],
         "limitations": [],
     }
-    intent_model = FakeModelClient(
+    intent_model = TaskIntentModel(
         [
             {
                 "decision": {
@@ -172,7 +173,7 @@ async def test_hobbies_survive_restart_answer_directly_and_keep_observable_evide
         }
         assert recalled["history"]["messages"] == []
         assert turn.session.goal.context["response_instruction"] == RESPONSE_INSTRUCTION
-        assert RESPONSE_INSTRUCTION in intent_model.requests[0].system_instruction
+        assert RESPONSE_INSTRUCTION in intent_model.assessments[0].system_instruction
         assert format_result(turn.result) == answer
         assert turn.result.outputs == outputs
         agent.record_response(turn.session, answer)

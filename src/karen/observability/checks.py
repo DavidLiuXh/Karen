@@ -24,7 +24,7 @@ def check_trace(events, coverage):
             h.get("dropped") or h.get("write_failures") for h in coverage.get("process_health", [])
         )
     )
-    clarification, history, fallback = [], [], []
+    clarification, history, fallback, direct = [], [], [], []
     for event in events:
         data = event.get("data", {})
         if not isinstance(data, dict):
@@ -35,6 +35,17 @@ def check_trace(events, coverage):
             and data.get("outcome") == "needs_clarification"
         ):
             clarification.append(
+                not any(
+                    e.get("trace_id") == event.get("trace_id")
+                    and e.get("event_type") == "execution.started"
+                    for e in events
+                )
+            )
+        if event.get("event_type") == "intent.routed" and data.get("route") in {
+            "respond",
+            "cancel",
+        }:
+            direct.append(
                 not any(
                     e.get("trace_id") == event.get("trace_id")
                     and e.get("event_type") == "execution.started"
@@ -67,6 +78,7 @@ def check_trace(events, coverage):
         ("澄清轮未启动执行", clarification),
         ("历史仅在关联确认后注入", history),
         ("精排失败未冒充精排成功", fallback),
+        ("直接回应与取消未启动执行", direct),
     ]:
         status = (
             "fail"

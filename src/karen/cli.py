@@ -139,16 +139,33 @@ async def converse(*, json_output: bool = False, timezone: str | None = None) ->
                 print(f"Karen：本轮未完成（{code}），请重新输入。")
                 continue
             session = turn.session
-            if turn.result is None:
+            if turn.result is None and turn.response is None:
                 for warning in turn.memory_warnings:
                     print(f"Karen：记忆写入未完成（{warning}）。")
                 print("Karen：" + "\n".join(session.questions))
                 continue
-            response_text = (
-                json.dumps(turn.result.model_dump(mode="json"), ensure_ascii=False, indent=2)
-                if json_output
-                else format_result(turn.result)
-            )
+            if turn.response is not None:
+                response_text = (
+                    json.dumps(
+                        {
+                            "outcome": "cancelled"
+                            if session.routing.handling == "cancel"
+                            else "replied",
+                            "answer": turn.response,
+                            "routing": session.routing.model_dump(mode="json"),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    if json_output
+                    else turn.response
+                )
+            else:
+                response_text = (
+                    json.dumps(turn.result.model_dump(mode="json"), ensure_ascii=False, indent=2)
+                    if json_output
+                    else format_result(turn.result)
+                )
             print(response_text if json_output else "Karen：" + response_text)
             warnings = (
                 *turn.memory_warnings,
@@ -158,7 +175,10 @@ async def converse(*, json_output: bool = False, timezone: str | None = None) ->
                 print(f"Karen：记忆写入未完成（{warning}）。")
             exit_code = (
                 0
-                if (turn.result.execution_status == "COMPLETED" and turn.result.output_complete)
+                if (
+                    turn.response is not None
+                    or (turn.result.execution_status == "COMPLETED" and turn.result.output_complete)
+                )
                 else 1
             )
     finally:

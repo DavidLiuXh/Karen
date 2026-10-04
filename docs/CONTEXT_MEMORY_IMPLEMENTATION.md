@@ -96,7 +96,7 @@ COMPLETED/output_complete 是引擎结构状态，不代替用户业务验收。
 
 ## Karen 接入
 
-CLI 默认创建并启动记忆，将它注入 Karen。一次输入的处理顺序是原文 submit → recall → 意图判断/澄清 →
+CLI 默认创建并启动记忆，将它注入 Karen。一次输入先分类并选择请求身份，再非阻塞 submit 原文；问题和任务 recall → 意图判断/澄清 →
 GoalSpec.context.memory → 引擎执行 → task_result 记录 → 实际显示回复记录。新任务更新 request_id，conversation_id 保持。
 当前明确要求覆盖旧偏好；当前项目的偏好优先于全局默认，项目身份只取调用方显式 project_id。
 
@@ -152,3 +152,8 @@ uv run python scripts/benchmark_context.py --records 10000
 
 回归包含：两次偏好写入后重启再查询、无关的大量 m2 摘要、六项爱好、当前城市版本与冲突，
 以及日常展示和审计输出隔离。另以合成数据验证真实 DeepSeek 的查询分类及完整执行链路。
+
+
+输入分类后的纯信息告知与普通交流可以直接回应，生成的用户原文及实际回复继续进入 m3，
+不生成 goal_created/task_result；问题直接回应前仍召回相关记忆。后台记忆写入与业务执行状态独立。
+路由与相关测试见 [输入路由说明](INPUT_ROUTING.md)。

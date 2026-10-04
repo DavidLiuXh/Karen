@@ -1,0 +1,17 @@
+[
+  {"text":"我目前住在北京。","pending":false,"handling":"respond","task_relation":"new","input_types":["information"]},
+  {"text":"我喜欢历史和考古。","pending":false,"handling":"respond","task_relation":"new","input_types":["information"]},
+  {"text":"你好","pending":false,"handling":"respond","task_relation":"new","input_types":["conversation"]},
+  {"text":"什么是高内聚和低耦合？","pending":false,"handling":"respond","task_relation":"new","input_types":["question"]},
+  {"text":"我有哪些爱好？","pending":false,"handling":"respond","task_relation":"new","input_types":["question"]},
+  {"text":"帮我查一下明天北京是否还有大风","pending":false,"handling":"assess","task_relation":"new","input_types":[]},
+  {"text":"我搬到上海了，帮我查明天的天气。","pending":false,"handling":"assess","task_relation":"new","input_types":["information","task_request"]},
+  {"text":"帮我写一份项目进度报告","pending":false,"handling":"assess","task_relation":"new","input_types":["task_request"]},
+  {"text":"给甲客户，改用中文，设计完成了","pending":true,"handling":"assess","task_relation":"continue","input_types":["task_control"]},
+  {"text":"不用做了","pending":true,"handling":"cancel","task_relation":"continue","input_types":["task_control"]},
+  {"text":"我住在北京","pending":true,"handling":"respond","task_relation":"new","input_types":["information"]},
+  {"text":"我有哪些爱好？","pending":true,"handling":"respond","task_relation":"new","input_types":["question"]},
+  {"text":"不用写邮件了，改查上海明天的天气","pending":true,"handling":"assess","task_relation":"new","input_types":["task_control","task_request"]},
+  {"text":"取消我的订单","pending":false,"handling":"assess","task_relation":"new","input_types":["task_request"]},
+  {"text":"不用做了","pending":false,"handling":"respond","task_relation":"new","input_types":[]}
+]

@@ -508,3 +508,38 @@ def test_evidence_and_limitations_remain_visible_without_an_answer():
     )
     text = cli.format_result(result)
     assert "https://example.com" in text and "仍缺傍晚预报" in text
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+async def test_cli_displays_direct_reply_without_execution_result(monkeypatch, capsys, json_output):
+    from karen.intent import InputRouting
+
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    inputs = iter(["我住在北京", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+    route = InputRouting(
+        input_types=["information"], handling="respond", task_relation="new", reason="个人事实告知"
+    )
+    displayed = []
+
+    class DirectAgent:
+        async def advance(self, session, user_input):
+            return TaskTurn(
+                IntentSession(timezone="UTC", routing=route, reply="好的，了解了，你住在北京。")
+            )
+
+        def record_response(self, session, text, **kwargs):
+            displayed.append(text)
+            return ()
+
+    monkeypatch.setattr(cli, "Karen", lambda **kwargs: DirectAgent())
+    assert await cli.converse(json_output=json_output, timezone="UTC") == 0
+    output = capsys.readouterr().out
+    if json_output:
+        data = json.loads(output)
+        assert data["outcome"] == "replied" and data["answer"] == "好的，了解了，你住在北京。"
+        assert "execution_status" not in data and "run_id" not in data
+    else:
+        assert output == "Karen：好的，了解了，你住在北京。\n"
+    assert len(displayed) == 1 and "好的，了解了" in displayed[0]

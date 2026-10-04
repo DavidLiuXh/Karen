@@ -13,6 +13,7 @@ from dynamic_graph import (
     ReducerDefinition,
     ToolDefinition,
 )
+from intent_helpers import TaskIntentModel
 
 from karen import IntentRecognizer, IntentSession, Karen
 
@@ -76,7 +77,7 @@ def graph_response():
 
 
 async def test_clarification_then_real_engine_execution_and_recording(tmp_path):
-    intent_model = FakeModelClient(
+    intent_model = TaskIntentModel(
         [
             {"decision": {"outcome": "needs_clarification", "questions": ["给谁写？"]}},
             ready(),
@@ -109,7 +110,7 @@ async def test_clarification_then_real_engine_execution_and_recording(tmp_path):
 async def test_engine_failure_is_exposed_without_claiming_task_success(tmp_path):
     executor = FakeModelClient([graph_response()])
     agent = Karen(
-        intent=IntentRecognizer(FakeModelClient([ready()])),
+        intent=IntentRecognizer(TaskIntentModel([ready()])),
         engine=DynamicGraphEngine(
             config=EngineConfig(runs_dir=tmp_path), models=ModelBindings(executor, executor)
         ),
@@ -187,7 +188,7 @@ async def test_default_policy_authorizes_registered_tools_evaluators_and_reducer
     engine = DynamicGraphEngine(
         config=EngineConfig(runs_dir=tmp_path), models=ModelBindings(planner, FakeModelClient())
     )
-    agent = Karen(intent=IntentRecognizer(FakeModelClient([ready()])), engine=engine)
+    agent = Karen(intent=IntentRecognizer(TaskIntentModel([ready()])), engine=engine)
     calls = []
     # Registered after Karen construction: the execution policy must see these capabilities.
     register_capabilities(engine, calls)
@@ -214,7 +215,7 @@ async def test_explicit_restrictive_policy_is_not_expanded(tmp_path):
     )
     calls = []
     register_capabilities(engine, calls)
-    agent = Karen(intent=IntentRecognizer(FakeModelClient([ready()])), engine=engine)
+    agent = Karen(intent=IntentRecognizer(TaskIntentModel([ready()])), engine=engine)
     explicit = ExecutionPolicy(max_planning_rounds=1)
     turn = await agent.advance(IntentSession(), "写邮件", policy=explicit)
     assert turn.result.execution_status == "FAILED"
@@ -231,7 +232,7 @@ async def test_explicit_policy_without_side_effect_permission_prevents_execution
     )
     calls = []
     register_capabilities(engine, calls)
-    agent = Karen(intent=IntentRecognizer(FakeModelClient([ready()])), engine=engine)
+    agent = Karen(intent=IntentRecognizer(TaskIntentModel([ready()])), engine=engine)
     policy = ExecutionPolicy(
         allowed_tools=["demo.write@1.0.0"],
         allowed_reducers=["demo.replace@1.0.0"],
@@ -249,7 +250,7 @@ async def test_explicit_policy_without_side_effect_permission_prevents_execution
 async def test_next_task_has_no_previous_conversation_or_results(tmp_path, first_status):
     second_goal = ready()
     second_goal["decision"]["goal"]["objective"] = "写一封新的中文邮件"
-    intent_model = FakeModelClient(
+    intent_model = TaskIntentModel(
         [
             ready(),
             {"decision": {"outcome": "needs_clarification", "questions": ["新邮件的主题是什么？"]}},
@@ -287,7 +288,7 @@ async def test_next_task_has_no_previous_conversation_or_results(tmp_path, first
     assert second.session.timezone == "America/New_York"
     assert second.session.user_context == {"language": "zh-CN"}
     assert second.session.reference_time_utc > first.session.reference_time_utc
-    assert intent_model.requests[1].input_data["messages"] == [
+    assert intent_model.assessments[1].input_data["messages"] == [
         {"role": "user", "content": "第二项任务：写一封新邮件"}
     ]
     final = await agent.advance(second.session, "新产品发布通知")
@@ -305,7 +306,7 @@ async def test_next_task_has_no_previous_conversation_or_results(tmp_path, first
     assert planner_goal["context"]["conversation"] == conversation
     assert (
         planner_goal["context"]["time_context"]
-        == intent_model.requests[1].input_data["time_context"]
+        == intent_model.assessments[1].input_data["time_context"]
     )
     assert final.session.reference_time_utc == second.session.reference_time_utc
     assert "第一项任务" not in json.dumps(planner_goal, ensure_ascii=False)
@@ -331,7 +332,7 @@ async def test_observation_links_clarification_live_nodes_and_displayed_response
             return await super().generate(request)
 
     intent = ObservedModel(
-        FakeModelClient(
+        TaskIntentModel(
             [
                 {
                     "decision": {
@@ -407,7 +408,7 @@ async def test_failed_observation_does_not_fail_real_engine_task(tmp_path, monke
         raise OSError("observation disk offline")
 
     monkeypatch.setattr(observer, "_append", disk_failed)
-    intent = ObservedModel(FakeModelClient([ready()]), observer)
+    intent = ObservedModel(TaskIntentModel([ready()]), observer)
     executor = ObservedModel(
         FakeModelClient([graph_response(), {"draft": "仍然正常完成"}]), observer
     )

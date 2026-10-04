@@ -127,6 +127,28 @@ async def test_model_failure_and_cancellation_preserve_original_exception(tmp_pa
     assert "do not log this secret" not in json.dumps(events)
 
 
+async def test_model_error_records_safe_provider_cause_codes(tmp_path):
+    observer = Observer(tmp_path)
+    await observer.start()
+    failure = ModelCallError(
+        "MODEL_UNAVAILABLE", "credential secret", retryable=True, details={"http_status": 503}
+    )
+    cause = OSError(61, "provider body secret")
+    failure.__cause__ = cause
+    with observer.span("turn"):
+        with pytest.raises(ModelCallError) as raised:
+            await ObservedModel(FakeModelClient([failure]), observer).generate(request())
+        assert raised.value is failure
+    await observer.close()
+    events = read_events(tmp_path)
+    diagnostic = next(e["data"] for e in events if e["event_type"] == "model.error")
+    assert diagnostic["http_status"] == 503 and diagnostic["errno"] == 61
+    assert diagnostic["cause_types"] == ["ConnectionRefusedError"]
+    assert "credential secret" not in json.dumps(
+        events
+    ) and "provider body secret" not in json.dumps(events)
+
+
 async def test_queue_overflow_does_not_wait_and_is_reported(tmp_path, caplog):
     observer = Observer(tmp_path)
     await observer.start()
@@ -248,14 +270,18 @@ def test_recorded_behavior_checks_do_not_claim_business_acceptance():
             },
         },
     ]
-    assert [c["status"] for c in check_trace(events, {})] == ["pass", "pass", "pass"]
+    events.append({"event_type": "intent.routed", "trace_id": "c", "data": {"route": "respond"}})
+    assert [c["status"] for c in check_trace(events, {})] == ["pass"] * 4
     events[1]["trace_id"] = "a"
     events[1]["data"]["goal"]["context"]["memory"]["history"]["messages"] = [
         {"content": "unrelated"}
     ]
     events[2]["data"]["m1"][0]["relevance"] = "relevant"
-    assert [c["status"] for c in check_trace(events, {})] == ["fail", "fail", "fail"]
-    assert [c["status"] for c in check_trace([], {"partial": True})] == ["unknown"] * 3
+    assert [c["status"] for c in check_trace(events, {})] == ["fail", "fail", "fail", "pass"]
+    assert [c["status"] for c in check_trace([], {"partial": True})] == ["unknown"] * 4
+
+    events.append({"event_type": "execution.started", "trace_id": "c", "data": {}})
+    assert check_trace(events, {})[-1]["status"] == "fail"
 
 
 async def test_incomplete_output_is_not_shown_as_successful_completion(tmp_path):
@@ -277,7 +303,9 @@ async def test_incomplete_output_is_not_shown_as_successful_completion(tmp_path)
 
     observer = Observer(tmp_path / "observability")
     await observer.start()
-    model = FakeModelClient(
+    from intent_helpers import TaskIntentModel
+
+    model = TaskIntentModel(
         [
             {
                 "decision": {

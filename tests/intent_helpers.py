@@ -1,0 +1,28 @@
+"""Task-only routing for existing execution tests; route-specific tests script real decisions."""
+
+from dynamic_graph import FakeModelClient
+from dynamic_graph.models.client import ModelResponse
+
+
+class TaskIntentModel(FakeModelClient):
+    @property
+    def assessments(self):
+        return [r for r in self.requests if r.role == "intent"]
+
+    @property
+    def classifications(self):
+        return [r for r in self.requests if r.role == "intent_router"]
+
+    async def generate(self, request):
+        if request.role == "intent_router":
+            self.requests.append(request)
+            pending = request.input_data["pending_task"] is not None
+            return ModelResponse(
+                {
+                    "input_types": ["task_control" if pending else "task_request"],
+                    "handling": "assess",
+                    "task_relation": "continue" if pending else "new",
+                    "reason": "scripted task test",
+                }
+            )
+        return await super().generate(request)

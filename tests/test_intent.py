@@ -217,10 +217,11 @@ async def test_custom_output_schema_is_validated_by_engine_contract():
         IntentSession(), "输出 draft 字段"
     )
     assert session.goal.output_schema.document() == schema
-    with pytest.raises(ValueError):
-        await IntentRecognizer(TaskIntentModel([ready(output_schema={"type": "array"})])).advance(
-            IntentSession(), "写邮件"
-        )
+    invalid = ready(output_schema={"type": "array"})
+    model = TaskIntentModel([invalid, invalid])
+    with pytest.raises(ValidationError):
+        await IntentRecognizer(model).advance(IntentSession(), "写邮件")
+    assert len(model.assessments) == 2
 
 
 async def test_cancellation_during_assessment_propagates():
@@ -267,3 +268,28 @@ async def test_schema_repair_is_bounded_and_does_not_retry_transport_auth_failur
     with pytest.raises(ModelCallError) as caught:
         await IntentRecognizer(model).advance(IntentSession(), "写邮件")
     assert caught.value is auth and len(model.assessments) == 1
+
+
+async def test_unsupported_goal_inputs_are_repaired_at_model_boundary():
+    model = TaskIntentModel([ready(inputs={"unknown": None}), ready(inputs={})])
+    result = await IntentRecognizer(model).advance(IntentSession(), "写一个不依赖未提供数据的草稿")
+    assert result.goal.inputs == {}
+    assert len(model.assessments) == 2
+    assert model.assessments[-1].input_data["previous_response"]["decision"]["goal"]["inputs"] == {
+        "unknown": None
+    }
+    assert "Null input" in model.assessments[-1].input_data["validation_errors"][0]["message"]
+
+
+async def test_explicit_nullable_input_schema_is_preserved_in_goal():
+    schema = {
+        "type": "object",
+        "properties": {"value": {"type": ["integer", "null"]}},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+    model = TaskIntentModel([ready(inputs={"value": None}, input_schema=schema)])
+    result = await IntentRecognizer(model).advance(IntentSession(), "保留输入中的空值")
+    assert result.goal.inputs == {"value": None}
+    assert result.goal.input_schema.document() == schema
+    assert len(model.assessments) == 1

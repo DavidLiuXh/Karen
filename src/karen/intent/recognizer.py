@@ -57,9 +57,22 @@ class GoalDraft(IntentContract):
     success_criteria: list[Text] = Field(min_length=1)
     constraints: list[Text] = Field(default_factory=list)
     inputs: dict[str, JsonValue] = Field(default_factory=dict)
+    input_schema: SchemaSpec | None = None
     output_schema: SchemaSpec = Field(
         default_factory=lambda: SchemaSpec.model_validate(default_output_schema())
     )
+
+    @model_validator(mode="after")
+    def validate_engine_contract(self):
+        # Use the engine's authoritative contract at the model response boundary,
+        # so unsupported drafts enter bounded repair before building a final goal.
+        GoalSpec(
+            objective=self.objective,
+            inputs=self.inputs,
+            input_schema=self.input_schema,
+            output_schema=self.output_schema,
+        )
+        return self
 
 
 class InputRouting(IntentContract):
@@ -428,7 +441,11 @@ class IntentRecognizer:
                         if attempt:
                             raise
                         errors = [
-                            {"path": list(item["loc"]), "type": item["type"]}
+                            {
+                                "path": list(item["loc"]),
+                                "type": item["type"],
+                                "message": item["msg"],
+                            }
                             for item in error.errors(include_input=False, include_url=False)
                         ]
                         self.observer.emit(
@@ -647,6 +664,7 @@ class IntentRecognizer:
                 for index, description in enumerate(draft.success_criteria, start=1)
             ],
             inputs=draft.inputs,
+            input_schema=draft.input_schema,
             output_schema=draft.output_schema,
             context=context,
         )

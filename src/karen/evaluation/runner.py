@@ -160,8 +160,8 @@ async def ingest(memory, case):
             )
         )
     if receipts:
-        await memory.flush(receipts[-1])
-    return [memory.write_status(receipt).model_dump(mode="json") for receipt in receipts]
+        await memory.flush()
+    return [(await memory.write_status(receipt)).model_dump(mode="json") for receipt in receipts]
 
 
 async def evaluate_case(case, directory, *, client_factory=deepseek_client):

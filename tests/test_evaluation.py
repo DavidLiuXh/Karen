@@ -98,3 +98,30 @@ def test_frozen_chinese_cases_are_public_synthetic_and_have_unique_ids():
     assert len({row["id"] for row in rows}) == len(rows)
     assert {row["split"] for row in rows} == {"development", "heldout"}
     assert all(row["timezone"] and row["reference_time"] for row in rows)
+
+
+async def test_ingestion_waits_for_all_events_and_async_statuses():
+    from types import SimpleNamespace
+
+    from karen.evaluation.runner import ingest
+
+    class Memory:
+        def __init__(self):
+            self.events = []
+            self.flushed = False
+
+        def submit(self, event):
+            self.events.append(event)
+            return SimpleNamespace(event_id=event.event_id)
+
+        async def flush(self):
+            self.flushed = True
+
+        async def write_status(self, receipt):
+            assert self.flushed
+            return SimpleNamespace(model_dump=lambda **_: {"id": receipt.event_id})
+
+    memory = Memory()
+    result = await ingest(memory, longmemeval(long_row(), "oracle"))
+    assert len(result) == 2
+    assert [e.event_type for e in memory.events] == ["assistant_message", "user_message"]

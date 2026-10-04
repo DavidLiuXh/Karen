@@ -285,9 +285,11 @@ class QueryAnalysis(Contract):
     kind: Literal["relevance", "facts", "detail", "collection"] = Field(
         default="relevance",
         description=(
-            "facts=用户个人长期事实/偏好查询，包含事实列表；detail=历史原话/参数等细节；"
-            "collection=历史任务/对话的枚举与统计；relevance=其他任务的相关上下文。"
-            "个人爱好列表不是任务统计，默认查询当前有效事实，无需历史时间范围。"
+            "facts=用户持续个人属性/偏好查询，包含属性列表；detail=具体经历、对象参数/进度、"
+            "所需历史数字及其计算；"
+            "collection=仅枚举/统计 Karen 任务或对话；relevance=其他任务的相关上下文。"
+            "个人事件的数量、持续时间、旅行天数、剩余数量都不是 Karen 任务统计，使用 detail；"
+            "个人爱好列表用 facts，无需历史时间范围。"
         ),
     )
     dialogue_dependency: Literal["none", "current_task", "needed", "uncertain"] = Field(

@@ -78,7 +78,9 @@ search_text 保留当前任务已明确的对象与约束；回答澄清时不�
 即使要求列出全部爱好，也不是任务枚举；默认 time_mode=current、at=null、time_range=null、
 task_status=null、dialogue_dependency=none。仅明确询问过去状态或变化时使用历史时间口径。
 needed_fact_keys 是语义定位线索，精排需匹配事实含义，不能因键名不同排除相同类型偏好。
-原话/路径/参数等细节用 detail；collection 仅用于历史任务/对话枚举和计数，
+具体经历、对象参数/进度、原话、历史数量及基于这些数字的计算都用 detail。
+问个人活动的数量、持续时间、总量或剩余量，不是在枚举 Karen 任务，不能用 collection，
+不能要求用户补任务时间范围。collection 仅在明确枚举/统计 Karen 任务或对话时使用，
 给出明确 time_range，缺范围不得虚构。不要把用户事实列表识别为 collection。
 日期基于 current_time_utc/timezone；time_range 是有 offset 的左闭右开区间。
 time_mode 描述所需记忆的时间口径，字段约束以响应 schema 为准。

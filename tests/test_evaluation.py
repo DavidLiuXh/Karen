@@ -125,3 +125,47 @@ async def test_ingestion_waits_for_all_events_and_async_statuses():
     result = await ingest(memory, longmemeval(long_row(), "oracle"))
     assert len(result) == 2
     assert [e.event_type for e in memory.events] == ["assistant_message", "user_message"]
+
+
+@pytest.mark.parametrize("mutate", [False, True])
+async def test_run_preserves_results_but_rejects_source_changes(tmp_path, monkeypatch, mutate):
+    from karen.evaluation import runner
+    from karen.evaluation.datasets import PROTOCOL_VERSION
+
+    state = {"changed": False}
+    monkeypatch.setattr(
+        runner, "source_hash", lambda directory: "after" if state["changed"] else "before"
+    )
+    monkeypatch.setattr(runner, "revision", lambda _: "local-test")
+    monkeypatch.setattr(runner.subprocess, "check_output", lambda *args, **kwargs: "")
+
+    async def evaluate(case, directory):
+        state["changed"] = mutate
+        return {
+            "id": case["id"],
+            "suite": "synthetic",
+            "split": "development",
+            "status": "passed",
+            "checks": [],
+        }
+
+    monkeypatch.setattr(runner, "evaluate_case", evaluate)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "cases": [{"id": "synthetic", "suite": "synthetic", "split": "development"}],
+            }
+        )
+    )
+    output = tmp_path / "run"
+    if mutate:
+        with pytest.raises(RuntimeError, match="SOURCE_CHANGED_DURING_EVALUATION"):
+            await runner.run(manifest, output, concurrency=1)
+    else:
+        assert (await runner.run(manifest, output, concurrency=1))[0]["status"] == "passed"
+    metadata = json.loads((output / "run.json").read_text())
+    assert metadata["source_integrity"] == ("changed" if mutate else "stable")
+    assert len((output / "results.jsonl").read_text().splitlines()) == 1
+    assert json.loads((output / "summary.json").read_text())["synthetic/development"]["total"] == 1

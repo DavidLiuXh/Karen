@@ -335,6 +335,7 @@ async def run(manifest_path, output, *, split="all", suites=(), case_ids=(), con
                 "judge": "deepseek-chat (custom grader, not official LongMemEval gpt-4o score)",
                 "selected_ids": [c["id"] for c in cases],
                 "concurrency": concurrency,
+                "source_integrity": "running",
             },
             ensure_ascii=False,
             indent=2,
@@ -355,13 +356,25 @@ async def run(manifest_path, output, *, split="all", suites=(), case_ids=(), con
             (output / "summary.json").write_text(json.dumps(summarize(results), indent=2) + "\n")
 
     await asyncio.gather(*(evaluate(case) for case in cases))
+    metadata_path = output / "run.json"
+    metadata = json.loads(metadata_path.read_text())
+    changed = {}
+    for name, root in (("karen", project), ("dag", dag_project)):
+        final_hash = source_hash(root / "src")
+        metadata[f"{name}_final_source_sha256"] = final_hash
+        changed[name] = final_hash != metadata[f"{name}_source_sha256"]
+    metadata["source_changed_during_run"] = changed
+    metadata["source_integrity"] = "changed" if any(changed.values()) else "stable"
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n")
+    if any(changed.values()):
+        raise RuntimeError("SOURCE_CHANGED_DURING_EVALUATION; results retained, not comparable")
     return results
 
 
 def source_hash(directory):
     digest = hashlib.sha256()
     for path in sorted(Path(directory).rglob("*")):
-        if path.is_file() and path.suffix in {".py", ".txt"}:
+        if path.is_file() and path.suffix in {".py", ".txt", ".json"}:
             digest.update(str(path.relative_to(directory)).encode())
             digest.update(path.read_bytes())
     return digest.hexdigest()

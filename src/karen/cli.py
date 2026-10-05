@@ -109,7 +109,8 @@ async def converse(*, json_output: bool = False, timezone: str | None = None) ->
         engine.register_tool(tavily_search_tool())
     else:
         print("Karen：未配置 TAVILY_API_KEY，Tavily 网络搜索暂不可用。")
-    memory = create_memory(model, observer=observer)
+    memory_model = ObservedModel(deepseek_client(thinking=False), observer)
+    memory = create_memory(memory_model, observer=observer)
     try:
         await memory.start()
     except (OSError, PersistenceError, RuntimeError):

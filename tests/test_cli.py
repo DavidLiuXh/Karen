@@ -37,13 +37,48 @@ class DisplayAgent:
         return ()
 
 
+async def test_cli_uses_thinking_for_decisions_and_nonthinking_for_memory(monkeypatch):
+    clients, memory_models, agents = [], [], []
+
+    def client(*, thinking=True):
+        model = FakeModelClient()
+        model.metadata = {"thinking": thinking}
+        clients.append(model)
+        return model
+
+    def memory(model, **kwargs):
+        memory_models.append(model)
+        return MemoryStub()
+
+    actual_karen = cli.Karen
+
+    def agent(**kwargs):
+        value = actual_karen(**kwargs)
+        agents.append(value)
+        return value
+
+    async def end_input():
+        raise EOFError
+
+    monkeypatch.setattr(cli, "deepseek_client", client)
+    monkeypatch.setattr(cli, "create_memory", memory)
+    monkeypatch.setattr(cli, "Karen", agent)
+    monkeypatch.setattr(cli, "read_input", end_input)
+    assert await cli.converse() == 0
+    assert len(clients) == 2
+    assert agents[0].intent.model.client is clients[0]
+    assert agents[0].intent.model.metadata["thinking"] is True
+    assert memory_models[0].client is clients[1]
+    assert memory_models[0].metadata["thinking"] is False
+
+
 @pytest.mark.parametrize("api_key", [None, "test-key"])
 async def test_cli_registers_and_authorizes_all_available_tools(monkeypatch, capsys, api_key):
     if api_key is None:
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     else:
         monkeypatch.setenv("TAVILY_API_KEY", api_key)
-    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     agents = []
     actual_karen = cli.Karen
 
@@ -136,7 +171,7 @@ def test_custom_result_fields_are_preserved():
 @pytest.mark.parametrize("json_output", [False, True])
 async def test_conversation_displays_readable_answer_or_full_json(monkeypatch, capsys, json_output):
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     inputs = iter(["写邮件", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     result = RunResult(
@@ -177,7 +212,7 @@ async def test_failed_timezone_detection_requires_explicit_user_timezone(monkeyp
 @pytest.mark.parametrize("first_status", ["COMPLETED", "FAILED", "CANCELLED"])
 async def test_cli_continues_after_each_task(monkeypatch, capsys, first_status):
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     inputs = iter(["第一项任务", "第二项任务", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     received = []
@@ -205,7 +240,7 @@ async def test_cli_continues_after_each_task(monkeypatch, capsys, first_status):
 
 async def test_cli_returns_last_task_failure_code_on_exit(monkeypatch):
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     inputs = iter(["执行任务", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
@@ -362,7 +397,7 @@ class WaitingAgent:
 
 cli.create_memory = lambda model, **kwargs: Memory()
 cli.create_observer = lambda: cli.Observer()
-cli.deepseek_client = FakeModelClient
+cli.deepseek_client = lambda **kwargs: FakeModelClient()
 cli.Karen = lambda **kwargs: WaitingAgent()
 cli.main()
 """
@@ -516,7 +551,7 @@ async def test_cli_displays_direct_reply_without_execution_result(monkeypatch, c
     from karen.intent import InputRouting
 
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     inputs = iter(["我住在北京", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     route = InputRouting(

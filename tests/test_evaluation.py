@@ -8,6 +8,69 @@ from karen.evaluation.datasets import clamber, longmemeval, parse_date, prepare_
 from karen.evaluation.runner import check_step, summarize
 
 
+def test_frozen_grader_keeps_legacy_nonthinking_request(monkeypatch):
+    from karen.evaluation import runner
+
+    seen = {}
+
+    def chat(**kwargs):
+        seen["provider"] = kwargs
+        return "frozen-chat"
+
+    def adapter(**kwargs):
+        seen["adapter"] = kwargs
+        return "frozen-client"
+
+    monkeypatch.setattr(runner, "ChatDeepSeek", chat)
+    monkeypatch.setattr(runner, "LangChainModelClient", adapter)
+    assert runner.frozen_judge_client() == "frozen-client"
+    assert seen["provider"] == {"model": "deepseek-chat", "temperature": 0, "max_retries": 0}
+    assert seen["adapter"] == {"chat_model": "frozen-chat", "model": "deepseek-chat", "mode": "function_calling"}
+
+
+async def test_memory_and_decision_clients_share_accounting_but_keep_profiles_separate(tmp_path, monkeypatch):
+    from dynamic_graph import FakeModelClient
+    from intent_helpers import ClarityAwareModel
+    from test_context import LocalEmbeddings, MemoryModel
+
+    from karen.evaluation import runner
+
+    memory_client = MemoryModel()
+    memory_client.metadata = {"thinking": False}
+    decision_client = ClarityAwareModel([
+        {"input_types": ["question"], "handling": "respond", "task_relation": "new", "reason": "读取已知记录"},
+        {"decision": {"outcome": "reply", "answer": "你记录了35元。"}},
+    ])
+    decision_client.metadata = {"thinking": True}
+    seen = []
+
+    def factory(*, thinking=True):
+        seen.append(thinking)
+        return decision_client if thinking else memory_client
+
+    monkeypatch.setattr(runner, "memory_embeddings", LocalEmbeddings)
+    case = {
+        "id": "profile-isolation", "suite": "karen-zh", "split": "heldout", "category": "model-profiles",
+        "timezone": "UTC", "reference_time": "2026-10-04T08:00:00+00:00", "context": "",
+        "history": [{"session_id": "cost", "turn": 0, "occurred_at": "2026-10-01T08:00:00+00:00", "role": "user", "content": "这次我花了35元。"}],
+        "steps": [{"text": "我这次花了多少？", "expected": {"outcome": "complete", "contains": ["35"]}}],
+        "gold": {"answer": "按用户记录，本次花费35元。"}, "search_fixture": False,
+    }
+    result = await runner.evaluate_case(
+        case, tmp_path / "case", client_factory=factory,
+        judge_client_factory=lambda: FakeModelClient([{"passed": True, "reason": "匹配记录"}]),
+    )
+    assert result["status"] == "passed" and seen == [True, False]
+    assert result["agent_model"]["thinking"] is True
+    assert result["memory_model"]["thinking"] is False
+    for call in result["model_calls"]:
+        if call["role"].startswith("memory_"):
+            assert call["model"]["thinking"] is False
+        elif call["role"].startswith("intent"):
+            assert call["model"]["thinking"] is True
+    assert len(result["model_calls"]) == len(memory_client.requests) + len(decision_client.requests) + 1
+
+
 async def test_final_rejected_model_output_is_saved_without_changing_error_or_grading(tmp_path):
     from dynamic_graph import FakeModelClient, ModelCallError
 

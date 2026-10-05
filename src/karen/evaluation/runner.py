@@ -17,7 +17,9 @@ from dynamic_graph import (
     ModelCallError,
     ModelRequest,
 )
+from dynamic_graph.models.adapters import LangChainModelClient
 from dynamic_graph.tools import file_read_text_tool, file_write_text_tool, tavily_search_tool
+from langchain_deepseek import ChatDeepSeek
 
 from karen.agent import Karen
 from karen.context import ContextEvent, ContextMemory
@@ -31,13 +33,13 @@ from .prompts import JUDGE_SCHEMA, JUDGE_SYSTEM
 
 
 class MeteredModel:
-    def __init__(self, client):
+    def __init__(self, client, *, calls=None):
         self.client = client
-        self.calls = []
+        self.calls = calls if calls is not None else []
 
     async def generate(self, request):
         started = time.monotonic()
-        call = {"role": request.role}
+        call = {"role": request.role, "model": getattr(self.client, "metadata", {})}
         self.calls.append(call)
         try:
             response = await self.client.generate(request)
@@ -177,7 +179,12 @@ async def ingest(memory, case):
 
 
 def frozen_judge_client():
-    return deepseek_client(mode="function_calling")
+    # Keep the original request exactly, independently of product inference defaults.
+    return LangChainModelClient(
+        chat_model=ChatDeepSeek(model="deepseek-chat", temperature=0, max_retries=0),
+        model="deepseek-chat",
+        mode="function_calling",
+    )
 
 
 async def evaluate_case(
@@ -204,9 +211,12 @@ async def evaluate_case(
     try:
         intent = IntentRecognizer(meter, observer=observer)
         if case["suite"] != "clamber":
+            memory_client = client_factory(thinking=False)
+            result["memory_model"] = getattr(memory_client, "metadata", {})
+            memory_meter = MeteredModel(ObservedModel(memory_client, observer), calls=meter.calls)
             memory = ContextMemory(
                 root_dir=directory / "memory",
-                model=meter,
+                model=memory_meter,
                 embeddings=memory_embeddings(),
                 observer=observer,
             )
@@ -217,7 +227,7 @@ async def evaluate_case(
             await memory.close()
             memory = ContextMemory(
                 root_dir=directory / "memory",
-                model=meter,
+                model=memory_meter,
                 embeddings=memory_embeddings(),
                 observer=observer,
             )
@@ -367,7 +377,7 @@ async def run(manifest_path, output, *, split="all", suites=(), case_ids=(), con
                 ),
                 "dag_source_sha256": source_hash(dag_project / "src"),
                 "karen_source_sha256": source_hash(project / "src"),
-                "model": "deepseek-chat",
+                "model": "deepseek-flash (thinking enabled, low effort; memory non-thinking)",
                 "embedding": "bge-m3:latest",
                 "judge": "deepseek-chat (custom grader, not official LongMemEval gpt-4o score)",
                 "selected_ids": [c["id"] for c in cases],

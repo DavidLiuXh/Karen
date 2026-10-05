@@ -16,8 +16,9 @@ from karen.models import deepseek_client
     "mode,surplus_delimiter",
     [("json_mode", False), ("json_mode", True), ("function_calling", False)],
 )
+@pytest.mark.parametrize("thinking", [False, True])
 async def test_deepseek_backend_json_object_request_retains_strict_parsing(
-    monkeypatch, mode, surplus_delimiter
+    monkeypatch, mode, surplus_delimiter, thinking
 ):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     calls = []
@@ -28,6 +29,7 @@ async def test_deepseek_backend_json_object_request_retains_strict_parsing(
         message = {
             "role": "assistant",
             "content": json.dumps(payload, ensure_ascii=False) + ("}" if surplus_delimiter else ""),
+            "reasoning_content": "private_thinking_content",
         }
         if mode == "function_calling":
             message = {
@@ -67,7 +69,7 @@ async def test_deepseek_backend_json_object_request_retains_strict_parsing(
         monkeypatch.setattr(
             karen.models, "ChatDeepSeek", partial(ChatDeepSeek, http_async_client=http_client)
         )
-        client = deepseek_client(mode=mode)
+        client = deepseek_client(mode=mode, thinking=thinking)
         task = ModelRequest(
             role="intent",
             system_instruction="判断请求是否清晰",
@@ -83,9 +85,17 @@ async def test_deepseek_backend_json_object_request_retains_strict_parsing(
         else:
             response = await client.generate(task)
             assert response.payload == payload
+            assert "private_thinking_content" not in json.dumps(response.payload)
             assert response.usage == {"input_tokens": 10, "output_tokens": 5}
     assert len(calls) == 1
-    assert calls[0]["model"] == "deepseek-chat"
+    assert calls[0]["model"] == "deepseek-flash"
+    assert client.metadata["thinking"] is thinking
+    if thinking:
+        assert calls[0]["thinking"] == {"type": "enabled"}
+        assert calls[0]["reasoning_effort"] == "low"
+    else:
+        assert calls[0]["thinking"] == {"type": "disabled"}
+        assert "reasoning_effort" not in calls[0]
     if mode == "json_mode":
         assert calls[0]["response_format"] == {"type": "json_object"}
         assert "tools" not in calls[0]

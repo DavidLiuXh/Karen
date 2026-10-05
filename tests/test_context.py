@@ -1679,6 +1679,41 @@ async def test_detail_budget_keeps_adjacent_reply_without_repeated_query_terms(m
         assert len(encode(result.context()).encode()) <= 12 * 1024
 
 
+async def test_context_envelope_pressure_retains_priority_evidence_across_tasks(memory):
+    service, model = memory
+    for task in ("rail-estimate", "taxi-estimate"):
+        await service.flush(service.submit(event("旅行交通费用记录", request=task)))
+    original_generate = model.generate
+
+    async def generate(request):
+        response = await original_generate(request)
+        if request.role == "memory_rerank":
+            response.payload["history_reason"] = "已核查当前交通费用问题与旅行记录之间的关联。" * 20
+        return response
+
+    model.generate = generate
+    model.kind = "detail"
+    async with service.foreground():
+        service.submit(event("火车交通费用17美元。", request="rail-estimate"))
+        service.submit(event("出租车交通费用95美元。", request="taxi-estimate"))
+        for task in ("rail-estimate", "taxi-estimate"):
+            for index in range(12):
+                service.submit(
+                    event(
+                        f"交通费用附带背景{index}。" + "预订方式与路线介绍。" * 30,
+                        request=task,
+                    )
+                )
+        result = await service.recall(query("旅行交通费用差额"))
+        texts = [hit.text for hit in result.details]
+        assert "火车交通费用17美元。" in texts
+        assert "出租车交通费用95美元。" in texts
+        assert len(encode(result.context()).encode()) <= 12 * 1024
+        assert not result.coverage["complete"] and result.status == "degraded"
+        for hit in result.details:
+            assert (await service.load_event(hit.source.event_id)).payload["content"] == hit.text
+
+
 async def test_old_only_summary_cannot_poison_new_event_derivation(tmp_path):
     class Model(MemoryModel):
         previous = None

@@ -537,6 +537,7 @@ class Retriever:
                 or len((query_words & set(terms(memories[mid].text))) - entity_words) >= 2
             ]
         m1, m2, included, used = [], [], set(), 0
+        memory_groups = []
         root_counts = {"m1": 0, "m2": 0}
         for mid, relevance, rank in ranked:
             layer = memories[mid].layer
@@ -574,6 +575,8 @@ class Retriever:
                 continue
             for hit in hits:
                 (m1 if hit.memory.layer == "m1" else m2).append(hit)
+            if hits:
+                memory_groups.append({hit.memory.memory_id for hit in hits})
             included.update(extra)
             used += size
             root_counts[layer] += 1
@@ -630,6 +633,7 @@ class Retriever:
             complete=history_complete,
         )
         details, detail_status = [], None
+        detail_priority = []
         if analysis.kind == "detail" and time.monotonic() < state["deadline"]:
             refs = [source for hit in (*m1, *m2) for source in hit.memory.sources]
             scope_task = (
@@ -750,6 +754,7 @@ class Retriever:
                     degraded.append("DETAIL_BUDGET_LIMIT")
                     continue
                 details.append(hit)
+                detail_priority.append(identity)
                 used += size
                 if hit.truncated:
                     degraded.append("DETAIL_CONTEXT_TRUNCATED")
@@ -801,15 +806,38 @@ class Retriever:
             coverage=coverage,
             collection=collection,
         )
-        # The envelope also consumes space. Drop whole groups, never only a successor.
-        if len(encode(result.context()).encode()) > 12 * 1024:
+        # Account for the actual envelope. A small overflow must not erase every
+        # recalled fact and source. Keep the highest-priority raw details; memory
+        # timeline groups are removed together so successors never stand alone.
+        while len(encode(result.context()).encode()) > 12 * 1024 and detail_priority:
+            identity = detail_priority.pop()
             result = result.model_copy(
                 update={
-                    "m1": [],
-                    "m2": [],
-                    "details": [],
+                    "details": [
+                        hit
+                        for hit in result.details
+                        if (hit.source.event_id, hit.source.pointer) != identity
+                    ],
                     "status": "degraded",
-                    "degradations": [*result.degradations, "CONTEXT_BUDGET_LIMIT"],
+                    "degradations": list(
+                        dict.fromkeys([*result.degradations, "CONTEXT_BUDGET_LIMIT"])
+                    ),
+                }
+            )
+        while len(encode(result.context()).encode()) > 12 * 1024 and memory_groups:
+            removed = memory_groups.pop()
+            result = result.model_copy(
+                update={
+                    layer: [
+                        hit for hit in getattr(result, layer) if hit.memory.memory_id not in removed
+                    ]
+                    for layer in ("m1", "m2")
+                }
+                | {
+                    "status": "degraded",
+                    "degradations": list(
+                        dict.fromkeys([*result.degradations, "CONTEXT_BUDGET_LIMIT"])
+                    ),
                 }
             )
         if len(encode(result.context()).encode()) > 12 * 1024 and result.history.messages:

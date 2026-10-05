@@ -184,6 +184,7 @@ def frozen_judge_client():
         chat_model=ChatDeepSeek(model="deepseek-chat", temperature=0, max_retries=0),
         model="deepseek-chat",
         mode="function_calling",
+        enforce_output_budget=False,
     )
 
 

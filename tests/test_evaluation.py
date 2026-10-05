@@ -25,7 +25,7 @@ def test_frozen_grader_keeps_legacy_nonthinking_request(monkeypatch):
     monkeypatch.setattr(runner, "LangChainModelClient", adapter)
     assert runner.frozen_judge_client() == "frozen-client"
     assert seen["provider"] == {"model": "deepseek-chat", "temperature": 0, "max_retries": 0}
-    assert seen["adapter"] == {"chat_model": "frozen-chat", "model": "deepseek-chat", "mode": "function_calling"}
+    assert seen["adapter"] == {"chat_model": "frozen-chat", "model": "deepseek-chat", "mode": "function_calling", "enforce_output_budget": False}
 
 
 async def test_memory_and_decision_clients_share_accounting_but_keep_profiles_separate(tmp_path, monkeypatch):

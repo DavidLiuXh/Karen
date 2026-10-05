@@ -657,7 +657,7 @@ async def test_clarity_gate_retains_pending_context_and_stops_goal_creation():
             "known_referents": known or {},
             "references": [],
             "selection_criteria": criteria or [],
-            "questions": questions,
+            "questions": [{"text": text, "kind": "missing_requirement"} for text in questions],
             "reason": "Only unresolved necessary information is requested",
         }
 
@@ -701,7 +701,7 @@ async def test_direct_question_uses_clarity_gate_but_information_does_not():
                 "known_referents": {},
                 "references": [],
                 "selection_criteria": [],
-                "questions": ["你指哪一位？"],
+                "questions": [{"text": "你指哪一位？", "kind": "ambiguous_reference"}],
                 "reason": "指代不明确",
             },
         ]
@@ -867,7 +867,13 @@ async def test_clarity_review_can_reject_an_unfounded_entity_definition():
     }
     revised = {
         **original,
-        "questions": ["Neravion 是什么类群，或是否有其他拼写？"],
+        "questions": [
+            {
+                "text": "Neravion 是什么类群，或是否有其他拼写？",
+                "kind": "unknown_identity",
+                "subject": "Neravion",
+            }
+        ],
         "reason": "没有提供识别实体的具体事实",
     }
     model = RawModel([routing(), original, revised])
@@ -944,3 +950,50 @@ async def test_explicit_referent_evidence_can_come_from_provided_context():
     )
     assert result.reply == "沈清收到了信。" and not result.questions
     assert session.user_context == {"notes": {"identity": "这里她指沈清"}}
+
+
+@pytest.mark.parametrize(
+    "kind,scope,evidence,clarifies",
+    [
+        ("unknown_identity", "蓝砂", "《蓝砂》里的灰羽是谁扮演的？", False),
+        ("unknown_identity", "红河", "《蓝砂》里的灰羽是谁扮演的？", True),
+        ("unknown_identity", "蓝砂", "灰羽属于蓝砂", True),
+        ("unknown_identity", "", "", True),
+        ("ambiguous_reference", "蓝砂", "《蓝砂》里的灰羽是谁扮演的？", True),
+    ],
+)
+async def test_scoped_identity_gap_requires_grounded_location_and_keeps_real_ambiguity(
+    kind, scope, evidence, clarifies
+):
+    from dynamic_graph import FakeModelClient as RawModel
+
+    assessment = {
+        "references": [
+            {
+                "expression": "灰羽",
+                "candidates": ["片中角色", "范围外同名歌曲"],
+                "resolution": "unresolved",
+                "evidence": "《蓝砂》里的灰羽是谁扮演的？",
+            }
+        ],
+        "known_referents": {"蓝砂": "用户明确给出的作品范围"},
+        "selection_criteria": [],
+        "questions": [
+            {
+                "text": "灰羽具体指什么？",
+                "kind": kind,
+                "subject": "灰羽",
+                "lookup_scope": scope,
+                "scope_evidence": evidence,
+            }
+        ],
+        "reason": "模型不知道该名字的身份",
+    }
+    model = RawModel([routing(), assessment, assessment, ready()])
+    result = await IntentRecognizer(model).advance(IntentSession(), "《蓝砂》里的灰羽是谁扮演的？")
+    assert bool(result.questions) is clarifies
+    assert (result.goal is None) is clarifies
+    if not clarifies:
+        reference = model.requests[-1].input_data["clarity"]["references"][0]
+        assert reference["resolution"] == "explicit_identification"
+        assert reference["evidence"] == evidence

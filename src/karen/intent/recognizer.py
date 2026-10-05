@@ -150,6 +150,29 @@ class ReferenceAssessment(IntentContract):
         return self
 
 
+class ClarityQuestion(IntentContract):
+    text: Text
+    kind: Literal[
+        "unknown_identity", "ambiguous_reference", "selection_criteria", "missing_requirement"
+    ]
+    subject: str = Field(default="", description="该问题涉及的实体原名；unknown_identity 时必填。")
+    lookup_scope: str = Field(
+        default="", description="用户已明确给出的所属作品/项目名称，照抄原词；没有则为空。"
+    )
+    scope_evidence: str = Field(
+        default="",
+        description="同时包含 subject、lookup_scope 及所属关系的连续原话；没有定位范围时为空。",
+    )
+
+    @model_validator(mode="after")
+    def identity_evidence(self):
+        if self.kind == "unknown_identity" and not self.subject.strip():
+            raise ValueError("Unknown identity questions need the entity name")
+        if self.lookup_scope and not self.scope_evidence.strip():
+            raise ValueError("A lookup scope needs source evidence")
+        return self
+
+
 class ClarityAssessment(IntentContract):
     references: list[ReferenceAssessment]
     known_referents: dict[str, Text]
@@ -158,7 +181,7 @@ class ClarityAssessment(IntentContract):
         default=False,
         description="主观选择需要用户实质筛选标准为 true；不能因产物是文字建议而当成普通草稿。",
     )
-    questions: list[Text] = Field(
+    questions: list[ClarityQuestion] = Field(
         description=(
             "仅填写缺失后无法给出任何符合已知要求的有效回应/方案的必要问题。"
             "开放式推荐已有相关偏好且至少一种方案可行时为空；"
@@ -397,6 +420,33 @@ class IntentRecognizer:
                         ref = ref.model_copy(update={"evidence": previous.evidence})
                 grounded_references.append(ref)
             clarity = clarity.model_copy(update={"references": grounded_references})
+        located = {}
+        questions = []
+        for question in clarity.questions:
+            quote = question.scope_evidence
+            if (
+                question.kind == "unknown_identity"
+                and question.lookup_scope
+                and question.subject.casefold() in quote.casefold()
+                and question.lookup_scope.casefold() in quote.casefold()
+                and any(quote in text for text in source_texts)
+            ):
+                located[question.subject.casefold()] = question
+            else:
+                questions.append(question)
+        references = []
+        for ref in clarity.references:
+            location = located.get(ref.expression.casefold())
+            if location:
+                ref = ref.model_copy(
+                    update={
+                        "candidates": [f"{location.lookup_scope}中的{location.subject}"],
+                        "resolution": "explicit_identification",
+                        "evidence": location.scope_evidence,
+                    }
+                )
+            references.append(ref)
+        clarity = clarity.model_copy(update={"questions": questions, "references": references})
         unresolved = [
             ref
             for ref in clarity.references
@@ -411,7 +461,11 @@ class IntentRecognizer:
             clarity = clarity.model_copy(
                 update={
                     "questions": [
-                        f"‘{ref.expression}’指的是哪一个：{'、'.join(ref.candidates)}？"
+                        ClarityQuestion(
+                            text=f"‘{ref.expression}’指的是哪一个：{'、'.join(ref.candidates)}？",
+                            kind="ambiguous_reference",
+                            subject=ref.expression,
+                        )
                         for ref in unresolved
                     ]
                 }
@@ -422,12 +476,20 @@ class IntentRecognizer:
             and not clarity.questions
         ):
             clarity = clarity.model_copy(
-                update={"questions": ["请说明选择时最看重的因素或相关偏好。"]}
+                update={
+                    "questions": [
+                        ClarityQuestion(
+                            text="请说明选择时最看重的因素或相关偏好。", kind="selection_criteria"
+                        )
+                    ]
+                }
             )
         result = {"clarity": clarity}
         if clarity.questions:
             result["decision"] = Clarification(
-                outcome="needs_clarification", questions=clarity.questions, reason=clarity.reason
+                outcome="needs_clarification",
+                questions=[question.text for question in clarity.questions],
+                reason=clarity.reason,
             )
         return result
 

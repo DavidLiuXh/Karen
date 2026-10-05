@@ -94,6 +94,11 @@ requires_unique_resolution 指当前任务是否必须选唯一对象：真实�
 selection_criteria 记录用户明确或相关已支持记忆提供的实质筛选标准，而不是只写用途/地点。
 对主观筛选未说明关键标准时，询问选择因素，不以仅问城市或用途代替选择标准。
 只将必要且尚未解决的缺口转成 questions，清晰时 questions=[]。
+每项 questions 包含 text 和 kind：陌生实体身份为 unknown_identity，多个具体对象或代词歧义为
+ambiguous_reference，缺筛选标准为 selection_criteria，缺核心内容/必要要求为 missing_requirement。
+unknown_identity 必须填写 subject 原名；即使模型不认识该名字，也如实填写用户已给的 lookup_scope
+及包含所属关系的连续原话 scope_evidence。范围/原名照抄输入，不能自增‘系列’、年份等词。
+同名但不属于指定范围的对象、未证实的‘可能歌曲/人物’大类不属于多个具体对象歧义。
 判断的是‘用户到底要什么’，不是要求完成任务所需的外部证据、计算输入和研究结论全都已齐。
 对象和问题已明确时，缺外部资料交给执行流程收集；不能把待研究的问题反过来当成澄清要求。
 草稿、示例和通用说明使用已给的信息；不必为可省略的名称、称呼、语气或惯常默认目的继续提问。

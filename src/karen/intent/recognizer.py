@@ -191,7 +191,17 @@ class ClarityQuestion(IntentContract):
         return self
 
 
+class RequirementConflict(IntentContract):
+    first_requirement: Text = Field(description="互不兼容的第一项当前要求，连续引用用户原话。")
+    second_requirement: Text = Field(description="互不兼容的第二项当前要求，连续引用用户原话。")
+    question: Text = Field(description="简短询问应修正或采用哪项要求，不擅自替用户决定。")
+
+
 class ClarityAssessment(IntentContract):
+    requirement_conflicts: list[RequirementConflict] = Field(
+        default_factory=list,
+        description="先检查当前要求及其依赖材料是否能同时成立；只列出仍未解决的实质冲突。",
+    )
     references: list[ReferenceAssessment]
     known_referents: dict[str, Text]
     selection_criteria: list[Text]
@@ -552,6 +562,23 @@ class IntentRecognizer:
                     ]
                 }
             )
+        conflicts = [
+            conflict
+            for conflict in clarity.requirement_conflicts
+            if conflict.first_requirement != conflict.second_requirement
+            and all(
+                any(quote in text for text in source_texts)
+                for quote in (conflict.first_requirement, conflict.second_requirement)
+            )
+        ]
+        if conflicts:
+            questions = list(clarity.questions)
+            for conflict in conflicts:
+                if not any(question.text == conflict.question for question in questions):
+                    questions.append(
+                        ClarityQuestion(text=conflict.question, kind="missing_requirement")
+                    )
+            clarity = clarity.model_copy(update={"questions": questions})
         if (
             clarity.selection_criteria_required
             and not clarity.selection_criteria

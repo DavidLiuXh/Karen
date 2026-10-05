@@ -858,6 +858,69 @@ async def test_required_selection_criteria_cannot_be_omitted_by_clarity_decision
     assert result.questions and result.reply is None and result.goal is None
 
 
+async def test_grounded_requirement_conflict_blocks_goal_until_user_corrects_it():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    assessment = {
+        "requirement_conflicts": [
+            {
+                "first_requirement": "全文最多500字",
+                "second_requirement": "正文至少1000字",
+                "question": "长度要求互相冲突，请确认以哪项为准？",
+            }
+        ],
+        "references": [],
+        "known_referents": {},
+        "selection_criteria": [],
+        "questions": [],
+        "reason": "两个同时生效的长度要求不能同时满足",
+    }
+    resolved = {**assessment, "requirement_conflicts": [], "reason": "用户已明确纠正旧要求"}
+    model = RawModel(
+        [
+            routing(),
+            assessment,
+            routing(types=["task_control"], relation="continue"),
+            resolved,
+            ready(),
+        ]
+    )
+    intent = IntentRecognizer(model)
+    first = await intent.advance(IntentSession(), "写一份说明，全文最多500字，但正文至少1000字")
+    assert first.goal is None and first.questions == ("长度要求互相冲突，请确认以哪项为准？",)
+    final = await intent.advance(first, "以最多500字为准，不需要至少1000字")
+    assert final.goal and not final.questions and final.request_id == first.request_id
+    assert model.requests[-1].input_data["messages"][-1]["content"].startswith("以最多500字为准")
+
+
+@pytest.mark.parametrize("second", ["至少2000字", "全文最多500字"])
+async def test_unquoted_or_duplicate_conflict_does_not_create_a_user_question(second):
+    from dynamic_graph import FakeModelClient as RawModel
+
+    model = RawModel(
+        [
+            routing(),
+            {
+                "requirement_conflicts": [
+                    {
+                        "first_requirement": "全文最多500字",
+                        "second_requirement": second,
+                        "question": "应使用哪个长度？",
+                    }
+                ],
+                "references": [],
+                "known_referents": {},
+                "selection_criteria": [],
+                "questions": [],
+                "reason": "模拟无效冲突证据",
+            },
+            ready(),
+        ]
+    )
+    result = await IntentRecognizer(model).advance(IntentSession(), "全文最多500字")
+    assert result.goal and not result.questions
+
+
 async def test_clarity_review_can_reject_an_unfounded_entity_definition():
     from dynamic_graph import FakeModelClient as RawModel
 

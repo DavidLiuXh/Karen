@@ -28,17 +28,23 @@ Oracle 只含官方证据会话，是短历史诊断，不能报告成完整 Lon
 - https://github.com/zt991211/CLAMBER （clamber_benchmark.jsonl）
 - https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned （longmemeval_oracle.json）
 
-原始文件放在 runs/evaluation/data（不提交大数据），selection_v1.json 保存校验和和固定 ID。全量 manifest 和每次 run.json 保存输入、版本、源码哈希，不能覆盖已有运行目录。
+原始文件放在 runs/evaluation/data（不提交大数据），tests/fixtures/evaluation_selection_v1.json 保存校验和和固定 ID。全量 manifest 和每次 run.json 保存输入、版本、源码哈希，不能覆盖已有运行目录。
 
 ```bash
 uv run --env-file .env python -m karen.evaluation prepare \
   --data-dir runs/evaluation/data --output runs/evaluation/manifest-v1.json
 uv run --env-file .env python -m karen.evaluation run \
   --manifest runs/evaluation/manifest-v1.json \
-  --split development --output runs/evaluation/baseline-v1
+  --split development --output runs/evaluation/baseline-v1 --concurrency 1
 ```
 
 run 支持 --suite、--case 精确选择，--split heldout 验收留出集。每例 result.json 和汇总 results.jsonl/summary.json 包含首次结果、失败阶段、判定、模型调用/耗时、实际使用量；observability 下保存因果追踪。诊断时优先定位路由、澄清、提取、召回、评分、规划、执行哪一步失败，不直接修改最终答案。
+
+建议串行运行真实模型评测（`--concurrency 1`），减少服务并发与本地资源竞争的干扰。运行开始和结束分别校验两个项目 src 下的 Python、提示词文本和 JSON 资源哈希。`run.json` 的 `source_integrity=stable` 才能用于同版本比较；源码变化时保留所有结果并以 `SOURCE_CHANGED_DURING_EVALUATION` 报错，不能把该轮当作冻结版本验收。旧轮次没有结束校验，需在报告中明确其验证范围。
+
+产品召回采用“先融合、再精排”：粗召回最多保留 80 条候选及其版本关系，不因完整记录的字节大小提前丢弃。精排使用语义摘要、来源角色、时间与状态等元数据，整个模型请求限制 24KB；失败时沿用融合顺序并标记降级。最终上下文单独限制 12KB；m3 扩展限定在至多三个召回任务内，保留相邻用户补充和必要的助手衔接。展示时省略重复引文、截断的助手衔接有明确标记；完整原始记录留在 m3。
+
+独立变体保存在 `tests/fixtures/evaluation_variants_v1.json`；转换成相同 manifest 格式后单独运行。变体明确关闭中文天气固定搜索响应，避免把与问题无关的固定资料提供给执行器。变体用于修复后补充回归，一旦用于诊断和修复，就不能继续声称它们是未见数据。
 
 ## 修复门槛
 

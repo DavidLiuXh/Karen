@@ -1881,3 +1881,49 @@ async def test_old_only_summary_cannot_poison_new_event_derivation(tmp_path):
         assert set(summaries) == {"项目叫远星。", "本次补充进度：完成初稿。"}
     finally:
         await service.close()
+
+
+async def test_dense_source_list_does_not_crowd_out_other_relevant_evidence(memory):
+    service, model = memory
+    receipts = []
+    for i in range(12):
+        receipt = service.submit(event(f"设备使用背景说明{i}。", request="device-background"))
+        await service.flush(receipt)
+        receipts.append(receipt)
+    quoted = service.submit(event("第二种模式的处理时长是37分钟。", request="device-duration"))
+    await service.flush(quoted)
+    revision, records, _ = service.storage.snapshot()
+    by_event = {m.sources[0].event_id: m for m in records.values() if m.layer == "m2"}
+    dense = by_event[receipts[0].event_id]
+    service.storage.commit_memories(
+        receipts[0].event_id,
+        [dense.model_copy(update={"sources": [by_event[r.event_id].sources[0] for r in receipts]})],
+        revision,
+    )
+    relevant_ids = {dense.memory_id, by_event[quoted.event_id].memory_id}
+    generate = model.generate
+
+    async def rank_selected(request):
+        response = await generate(request)
+        if request.role == "memory_rerank":
+            response.payload["ranking"].sort(key=lambda r: r["memory_id"] != dense.memory_id)
+            for row in response.payload["ranking"]:
+                row["relevance"] = "relevant" if row["memory_id"] in relevant_ids else "irrelevant"
+        return response
+
+    model.generate = rank_selected
+    model.kind = "detail"
+    detail_queries = []
+    search_details = service.search_details
+
+    async def capture_details(detail_query):
+        detail_queries.append(detail_query)
+        return await search_details(detail_query)
+
+    service.search_details = capture_details
+    result = await service.recall(query("设备第二种模式的处理时长"))
+    assert len(detail_queries[0].sources) == 12
+    assert quoted.event_id in {source.event_id for source in detail_queries[0].sources}
+    assert "第二种模式的处理时长是37分钟。" in [hit.text for hit in result.details]
+    assert "DETAIL_SOURCE_BUDGET_LIMIT" in result.degradations
+    assert len(encode(result.context()).encode()) <= 12 * 1024

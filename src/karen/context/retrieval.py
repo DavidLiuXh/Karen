@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone
+from itertools import zip_longest
 from typing import TypedDict
 
 import numpy as np
@@ -645,8 +646,12 @@ class Retriever:
             ]
             source_memories.extend(hit.memory for hit in m1)
             refs, seen_sources = [], set()
-            for memory in source_memories:
-                for source in memory.sources:
+            # Give each ranked record a source before taking additional sources
+            # from a dense summary. A single record must not consume every locator.
+            for source_group in zip_longest(*(memory.sources for memory in source_memories)):
+                for source in source_group:
+                    if source is None:
+                        continue
                     identity = (source.event_id, source.pointer)
                     if identity not in seen_sources:
                         seen_sources.add(identity)
@@ -678,7 +683,9 @@ class Retriever:
             )
             detail_status = result.status
             detail_hits = list(result.hits)
-            reference_ids = {ref.event_id for ref in refs}
+            # Only successfully read anchors are already covered. Omitted or
+            # unavailable locators can still be found by bounded task expansion.
+            reference_ids = {hit.source.event_id for hit in result.hits}
             words = set(terms(analysis.search_text)) - FALLBACK_STOP_WORDS
             direct_details = sorted(
                 result.hits,

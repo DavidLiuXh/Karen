@@ -49,6 +49,26 @@ async def test_clear_request_produces_engine_goal_without_clarification():
     assert len(model.assessments) == 1
 
 
+async def test_selected_supporting_facts_reach_execution_as_internal_context():
+    facts = ["用户更换了部件。", "用户同时改变了记录方式。"]
+    model = TaskIntentModel(
+        [
+            ready(
+                objective="解释观测结果的变化",
+                success_criteria=["区分实际变化与记录方式变化"],
+                inputs={"observation": "结果改善"},
+                supporting_facts=facts,
+            )
+        ]
+    )
+    result = await IntentRecognizer(model).advance(
+        IntentSession(), "我更换了部件并改变记录方式，解释最近观测到的变化"
+    )
+    assert result.goal.context["supporting_facts"] == facts
+    assert result.goal.inputs == {"observation": "结果改善"}
+    assert "supporting_facts" not in result.goal.inputs
+
+
 def test_default_timezone_uses_local_machine_configuration():
     assert IntentSession().timezone == get_localzone_name()
 

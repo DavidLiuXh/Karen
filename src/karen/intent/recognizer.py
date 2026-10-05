@@ -33,8 +33,8 @@ from .prompts import (
     CLARITY_INSTRUCTION,
     CLARITY_REVIEW_INSTRUCTION,
     CLARITY_TASK_INSTRUCTION,
-    ENTITY_CHECK_INSTRUCTION,
     DIRECT_RESPONSE_INSTRUCTION,
+    ENTITY_CHECK_INSTRUCTION,
     GOAL_CONTEXT_INSTRUCTION,
     INTENT_SYSTEM_INSTRUCTION,
     INTENT_TASK_INSTRUCTION,
@@ -55,6 +55,10 @@ class Message(IntentContract):
 
 
 class GoalDraft(IntentContract):
+    supporting_facts: list[Text] = Field(
+        default_factory=list,
+        description="先列出与本轮目标相关、由当前输入或记忆原文支持的具体事实，再形成目标和验收条件；无相关事实时为空。",
+    )
     objective: Text
     success_criteria: list[Text] = Field(min_length=1)
     constraints: list[Text] = Field(default_factory=list)
@@ -859,6 +863,7 @@ class IntentRecognizer:
             "execution_instruction": GOAL_CONTEXT_INSTRUCTION,
             "input_routing": session.routing.model_dump(mode="json"),
             "constraints": draft.constraints,
+            "supporting_facts": draft.supporting_facts,
             "user_context": session.user_context,
             "conversation": [m.model_dump(mode="json") for m in session.messages],
         }

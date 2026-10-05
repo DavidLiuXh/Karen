@@ -10,7 +10,13 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings, ModelRequest
+from dynamic_graph import (
+    DynamicGraphEngine,
+    EngineConfig,
+    ModelBindings,
+    ModelCallError,
+    ModelRequest,
+)
 from dynamic_graph.tools import file_read_text_tool, file_write_text_tool, tavily_search_tool
 
 from karen.agent import Karen
@@ -290,6 +296,11 @@ async def evaluate_case(
             stage=stage,
             error_code=getattr(error, "code", type(error).__name__),
         )
+        if isinstance(error, ModelCallError) and error.code == "MODEL_RESPONSE_INVALID":
+            # Evaluation inputs are public/synthetic. Preserve the final rejected
+            # model output, not provider exceptions that might contain credentials.
+            result["invalid_model_response"] = error.raw_response
+            result["json_syntax"] = error.details.get("json_syntax")
         if hasattr(error, "statuses"):
             result["ingestion_failures"] = [s.model_dump(mode="json") for s in error.statuses]
     finally:

@@ -8,6 +8,37 @@ from karen.evaluation.datasets import clamber, longmemeval, parse_date, prepare_
 from karen.evaluation.runner import check_step, summarize
 
 
+async def test_final_rejected_model_output_is_saved_without_changing_error_or_grading(tmp_path):
+    from dynamic_graph import FakeModelClient, ModelCallError
+
+    from karen.evaluation.runner import evaluate_case
+
+    raw = '{"input_types":["question"],"handling":"respond"}}'
+    syntax = {"message": "Extra data", "position": len(raw) - 1}
+    invalid = ModelCallError(
+        "MODEL_RESPONSE_INVALID", "Rejected JSON", raw_response=raw,
+        details={"json_syntax": syntax, "provider_exception": "must never be persisted"},
+    )
+    client = FakeModelClient([invalid, invalid])
+    grader = FakeModelClient()
+    case = {
+        "id": "invalid-model-output", "suite": "clamber", "split": "development",
+        "category": "FD/0", "timezone": "UTC", "reference_time": "2026-10-04T08:00:00+00:00",
+        "context": "", "history": [],
+        "steps": [{"text": "查看公开项目。", "expected": {"outcome": "goal"}}], "gold": {},
+    }
+    directory = tmp_path / "case"
+    result = await evaluate_case(
+        case, directory, client_factory=lambda: client, judge_client_factory=lambda: grader
+    )
+    saved = json.loads((directory / "result.json").read_text())
+    assert result == saved
+    assert result["status"] == "error" and result["error_code"] == "MODEL_RESPONSE_INVALID"
+    assert result["invalid_model_response"] == raw and result["json_syntax"] == syntax
+    assert "must never be persisted" not in json.dumps(result)
+    assert grader.requests == [] and len(client.requests) == 2
+
+
 async def test_agent_and_frozen_judge_are_isolated_and_both_calls_are_recorded(tmp_path):
     from dynamic_graph import FakeModelClient
 

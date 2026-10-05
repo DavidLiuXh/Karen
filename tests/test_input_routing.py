@@ -1122,6 +1122,35 @@ async def test_conflict_in_material_is_not_always_a_blocking_delivery_requiremen
     assert audits[0].input_data["original_input"]["messages"][-1]["content"] == text
 
 
+@pytest.mark.parametrize("requires_unique", [False, True])
+async def test_reference_questions_obey_the_declared_need_for_a_unique_choice(requires_unique):
+    from dynamic_graph import FakeModelClient as RawModel
+
+    assessment = {
+        "references": [
+            {
+                "expression": "改善效果",
+                "candidates": ["录音", "剪辑"],
+                "resolution": "unresolved",
+                "evidence": "录音和剪辑都要改善效果",
+                "requires_unique_resolution": requires_unique,
+            }
+        ],
+        "known_referents": {},
+        "selection_criteria": [],
+        "questions": [{"text": "你指录音还是剪辑？", "kind": "ambiguous_reference"}],
+        "reason": "两个场景可分别提供建议，单次操作则需要选定一个",
+    }
+    model = RawModel([routing(), assessment, ready()])
+    result = await IntentRecognizer(model).advance(
+        IntentSession(),
+        "录音和剪辑都要改善效果。"
+        + ("今天先修改其中一个。" if requires_unique else "分别给建议。"),
+    )
+    assert bool(result.questions) is requires_unique
+    assert bool(result.goal) is not requires_unique
+
+
 async def test_clarity_review_can_reject_an_unfounded_entity_definition():
     from dynamic_graph import FakeModelClient as RawModel
 

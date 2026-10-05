@@ -584,6 +584,14 @@ class IntentRecognizer:
                 )
             references.append(ref)
         clarity = clarity.model_copy(update={"questions": questions, "references": references})
+        if clarity.references and not any(
+            ref.requires_unique_resolution for ref in clarity.references
+        ):
+            clarity = clarity.model_copy(
+                update={
+                    "questions": [q for q in clarity.questions if q.kind != "ambiguous_reference"],
+                }
+            )
         unresolved = [
             ref
             for ref in clarity.references

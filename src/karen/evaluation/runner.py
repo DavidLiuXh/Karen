@@ -114,7 +114,9 @@ async def judge(client, case, actual):
     return payload
 
 
-def create_engine(model, directory, search_fixture):
+def create_engine(model, directory, search_fixture, *, live_search=False):
+    if search_fixture and live_search:
+        raise ValueError("Choose either fixed or live search for an evaluation case")
     engine = DynamicGraphEngine(
         config=EngineConfig(runs_dir=directory / "execution"), models=ModelBindings(model, model)
     )
@@ -138,6 +140,10 @@ def create_engine(model, directory, search_fixture):
             }
 
         engine.register_tool(replace(tavily_search_tool(api_key="offline-fixture"), handler=search))
+    elif live_search:
+        # Read-only public research is part of the real agent's capability set.
+        # Absence of credentials is a setup error, never a silent file-only run.
+        engine.register_tool(tavily_search_tool())
     return engine
 
 
@@ -203,7 +209,10 @@ async def evaluate_case(case, directory, *, client_factory=deepseek_client):
             )
             await memory.start()
         engine = create_engine(
-            meter, directory, case.get("search_fixture", case["suite"] == "karen-zh")
+            meter,
+            directory,
+            case.get("search_fixture", case["suite"] == "karen-zh"),
+            live_search=case.get("live_search", False),
         )
         agent = Karen(intent=intent, engine=engine, memory=memory, observer=observer)
         session = None

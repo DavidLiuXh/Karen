@@ -56,6 +56,8 @@ run 支持 --suite、--case 精确选择，--split heldout 验收留出集。每
 
 第一扩展批次共 38 条，19 开发、19 留出；LongMemEval 完整历史 10–24 条消息。仍属于 oracle，而非含大量干扰的 S/M。所有未来记录继续列为预检排除；原始标注疑点保持原分数，不混入新批次成绩。`tests/fixtures/evaluation_expansion_selection_v1.json` 保存源、清单校验和、ID、候选数量和历史大小。旧中文回归与公开样本另行复测，不计作未见成绩。
 
+首轮扩展运行保留原来的文件工具配置。随后发现公开论文/会议推荐确实需要外部查证，文件工具无法完成这一任务；不能通过削弱目标的真实性要求来消除能力缺口。评测 case 可显式设置 `live_search=true`，注册与真实 CLI 相同的只读 Tavily 搜索；缺少配置时记 setup 错误，不静默退回文件工具。固定天气响应与实时搜索互斥。开启实时搜索的环境单独冻结清单并取得新基线，与文件工具环境分开报告；判定提示词和标签仍为协议 1，不修改原分数。工具查询和返回来源保存于每例执行/可观测记录。所有搜索只基于公开/合成数据。
+
 ```bash
 uv run --env-file .env --no-sync python -m karen.evaluation prepare-next \
   --data-dir runs/evaluation/data --previous runs/evaluation/manifest-v1.json \

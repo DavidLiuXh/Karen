@@ -94,6 +94,31 @@ def test_reporting_keeps_errors_in_denominator_and_splits_separate():
     assert summary["pass_rate_all"] == 0.25
 
 
+def test_live_search_is_explicit_and_fixture_profile_cannot_be_mixed(tmp_path, monkeypatch):
+    from dynamic_graph import FakeModelClient
+    from dynamic_graph.tools import tavily_search_tool
+
+    from karen.capabilities import all_capabilities_policy
+    from karen.evaluation import runner
+
+    searches = []
+
+    def tool(**kwargs):
+        searches.append(kwargs)
+        return tavily_search_tool(api_key="fake-search-key")
+
+    monkeypatch.setattr(runner, "tavily_search_tool", tool)
+    for name, live in [("files", False), ("live", True)]:
+        directory = tmp_path / name
+        directory.mkdir()
+        engine = runner.create_engine(FakeModelClient(), directory, False, live_search=live)
+        policy = all_capabilities_policy(engine)
+        assert any("tavily" in item for item in policy.allowed_tools) is live
+    assert searches == [{}]
+    with pytest.raises(ValueError, match="either fixed or live"):
+        runner.create_engine(FakeModelClient(), tmp_path / "mixed", True, live_search=True)
+
+
 def test_frozen_chinese_cases_are_public_synthetic_and_have_unique_ids():
     rows = read_rows(Path(__file__).parent / "fixtures/evaluation_zh.json")
     assert len({row["id"] for row in rows}) == len(rows)

@@ -181,14 +181,19 @@ class Karen:
             recalled is not None
             and session.routing.handling == "assess"
             and session.routing.task_relation == "new"
-            and session.routing.input_types == ["question"]
+            and "question" in session.routing.input_types
+            and set(session.routing.input_types) <= {"question", "task_request"}
             and (recalled.m2 or recalled.details)
         ):
             refined = await self.intent.classify(session, user_input, **kwargs)
             session = session.model_copy(
                 update={
                     "routing": session.routing.model_copy(
-                        update={"handling": refined.handling, "reason": refined.reason}
+                        update={
+                            "input_types": refined.input_types,
+                            "handling": refined.handling,
+                            "reason": refined.reason,
+                        }
                     )
                 }
             )

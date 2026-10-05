@@ -210,8 +210,9 @@ async def test_personal_question_answers_from_recalled_m1_without_execution(tmp_
 
 @pytest.mark.parametrize("needs_external_data", [False, True])
 @pytest.mark.parametrize("query_kind", ["detail", "relevance"])
+@pytest.mark.parametrize("initial_types", [["question"], ["question", "task_request"], ["task_request", "question"]])
 async def test_question_handling_is_reconsidered_with_recalled_detail_evidence(
-    tmp_path, needs_external_data, query_kind
+    tmp_path, needs_external_data, query_kind, initial_types
 ):
     backend = MemoryModel()
     backend.kind = query_kind
@@ -231,7 +232,7 @@ async def test_question_handling_is_reconsidered_with_recalled_detail_evidence(
         agent, model, _ = agent_for(
             tmp_path,
             [
-                routing(types=["question"]),
+                routing(types=initial_types),
                 routing(final_handling, types=["question"]),
                 goal if needs_external_data else reply("按你提供的报价，可节省66元。"),
             ],
@@ -250,6 +251,7 @@ async def test_question_handling_is_reconsidered_with_recalled_detail_evidence(
         evidence = requests[1].input_data["memory"]
         assert any("74元" in h["memory"]["text"] for h in evidence["m2"])
         assert turn.session.routing.handling == final_handling
+        assert turn.session.routing.input_types == ["question"]
         assert turn.session.request_id == original.request_id
         if needs_external_data:
             assert turn.result.execution_status == "COMPLETED" and executor.requests

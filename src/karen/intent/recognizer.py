@@ -852,10 +852,7 @@ class IntentRecognizer:
         memory = state.get("memory_context")
         if (
             memory
-            and (
-                memory.get("coverage", {}).get("requires_history")
-                or memory.get("history", {}).get("status") in {"ambiguous", "unavailable"}
-            )
+            and memory.get("coverage", {}).get("requires_history")
             and memory.get("history", {}).get("status") != "selected"
         ):
             from .prompts import HISTORY_CLARIFICATION

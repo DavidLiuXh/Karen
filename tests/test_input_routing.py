@@ -808,6 +808,32 @@ async def test_supporting_memory_facts_remain_internal_to_direct_response():
     assert "内部证据" not in result.reply and not result.questions
 
 
+@pytest.mark.parametrize("status", ["ambiguous", "unavailable"])
+@pytest.mark.parametrize("required", [False, True])
+async def test_optional_task_identity_does_not_block_supported_fact_reading(status, required):
+    from dynamic_graph import FakeModelClient as RawModel
+
+    model = RawModel(
+        [routing("respond", types=["question"]), reply("按记录的报价，差额是78美元。")]
+    )
+    memory = {
+        "coverage": {"query_kind": "detail", "requires_history": required},
+        "history": {"status": status, "messages": []},
+        "details": [{"text": "火车17美元，出租车95美元。"}],
+    }
+    result = await IntentRecognizer(model).advance(
+        IntentSession(),
+        "按我记录的报价能省多少？",
+        memory_context=memory,
+    )
+    assert bool(result.questions) is required
+    if required:
+        assert result.reply is None and all(r.role != "intent_response" for r in model.requests)
+    else:
+        assert result.reply == "按记录的报价，差额是78美元。"
+        assert model.requests[-1].input_data["memory"]["details"] == memory["details"]
+
+
 async def test_compatible_reference_alternatives_do_not_force_unique_selection():
     from dynamic_graph import FakeModelClient as RawModel
 

@@ -962,6 +962,58 @@ async def test_external_information_does_not_override_a_necessary_identity_quest
     assert result.questions == ("要更新哪一个私人项目？",) and not result.goal
 
 
+@pytest.mark.parametrize("distinct_identification", [False, True])
+async def test_review_cannot_resolve_ambiguity_by_relabeling_the_same_passage(
+    distinct_identification,
+):
+    from dynamic_graph import FakeModelClient as RawModel
+
+    ambiguous = "程伊告诉宋宁，她已经寄出了文件。"
+    identifying = "这里的她明确指程伊。"
+    original_ref = {
+        "expression": "她",
+        "candidates": ["程伊", "宋宁"],
+        "resolution": "unresolved",
+        "evidence": ambiguous,
+        "requires_unique_resolution": True,
+    }
+    initial = {
+        "references": [original_ref],
+        "known_referents": {"文件": "待寄出的物件"},
+        "selection_criteria": [],
+        "questions": [],
+        "reason": "原句存在两个候选",
+    }
+    reviewed = {
+        **initial,
+        "references": [
+            {
+                **original_ref,
+                "resolution": "explicit_identification",
+                "evidence": identifying if distinct_identification else ambiguous,
+            }
+        ],
+        "reason": "复核声称已消除歧义",
+    }
+    model = RawModel(
+        [
+            routing("respond", types=["question"]),
+            initial,
+            reviewed,
+            reply("程伊寄出了文件。"),
+        ]
+    )
+    session = IntentSession(
+        user_context={"provided_context": identifying} if distinct_identification else {}
+    )
+    result = await IntentRecognizer(model).advance(session, ambiguous + "谁寄出了文件？")
+    if distinct_identification:
+        assert result.reply == "程伊寄出了文件。" and not result.questions
+    else:
+        assert result.questions and not result.reply and not result.goal
+        assert model.requests[-1].role == "intent_clarity_review"
+
+
 async def test_clarity_review_can_reject_an_unfounded_entity_definition():
     from dynamic_graph import FakeModelClient as RawModel
 

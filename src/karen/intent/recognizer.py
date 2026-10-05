@@ -441,6 +441,31 @@ class IntentRecognizer:
             )
             grounded_references = []
             for ref in clarity.references:
+                ambiguous_before = next(
+                    (
+                        old
+                        for old in original_references
+                        if old.expression == ref.expression
+                        and len(old.candidates) > 1
+                        and set(old.candidates) == set(ref.candidates)
+                        and old.requires_unique_resolution
+                        and old.resolution in {"inferred", "unresolved"}
+                        and old.evidence
+                    ),
+                    None,
+                )
+                if (
+                    ref.resolution == "explicit_identification"
+                    and ambiguous_before is not None
+                    and ref.evidence in ambiguous_before.evidence
+                ):
+                    # Reinterpreting the same ambiguous passage adds no explicit
+                    # identification. Review needs a distinct source statement.
+                    ref = ref.model_copy(update={"resolution": "unresolved"})
+                    self.observer.emit(
+                        "intent.reference_resolution_rejected",
+                        data={"expression": ref.expression, "reason": "reused_ambiguous_evidence"},
+                    )
                 if ref.evidence and not any(ref.evidence in text for text in source_texts):
                     previous = next(
                         (

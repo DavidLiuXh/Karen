@@ -875,9 +875,11 @@ async def test_clarity_review_can_reject_an_unfounded_entity_definition():
     assert result.questions and result.goal is None
     audit = next(r for r in model.requests if r.role == "intent_clarity_review")
     assert audit.input_data["original_input"]["messages"][0]["content"] == "Neravion 什么时候出现？"
-    assert (
-        audit.input_data["candidate_assessment"]["known_referents"] == original["known_referents"]
-    )
+    # Entity guesses from another model call must not become evidence for review.
+    assert "candidate_assessment" not in audit.input_data
+    assert "用户所指的一个类群名称，身份需查证" not in str(audit.input_data)
+    assert "routing" not in audit.input_data["original_input"]
+    assert "routing" not in model.requests[1].input_data
     assert model.requests[1].timeout_seconds >= audit.timeout_seconds > 0
 
 

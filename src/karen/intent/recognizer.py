@@ -331,7 +331,11 @@ class IntentRecognizer:
                 + CLARITY_INSTRUCTION
             ),
             task_instruction=CLARITY_TASK_INSTRUCTION,
-            input_data=self._model_inputs(state),
+            input_data={
+                key: value
+                for key, value in self._model_inputs(state).items()
+                if key not in {"routing", "clarity"}
+            },
             output_schema=ClarityAssessment.model_json_schema(),
             max_output_tokens=2048,
         )
@@ -368,11 +372,8 @@ class IntentRecognizer:
                 replace(
                     request,
                     role="intent_clarity_review",
-                    task_instruction=CLARITY_REVIEW_INSTRUCTION,
-                    input_data={
-                        "original_input": request.input_data,
-                        "candidate_assessment": clarity.model_dump(mode="json"),
-                    },
+                    task_instruction=CLARITY_REVIEW_INSTRUCTION + CLARITY_TASK_INSTRUCTION,
+                    input_data={"original_input": request.input_data},
                     timeout_seconds=max(0, deadline - loop.time()),
                 ),
                 ClarityAssessment,

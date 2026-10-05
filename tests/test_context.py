@@ -1796,6 +1796,56 @@ async def test_context_envelope_pressure_retains_priority_evidence_across_tasks(
             assert (await service.load_event(hit.source.event_id)).payload["content"] == hit.text
 
 
+async def test_detail_recall_keeps_new_source_when_its_summary_does_not_fit(memory):
+    service, model = memory
+    old_text = "最近三个月，我完成了17次观测。"
+    new_text = "最近三个月，我已经完成了18次观测。" + "记录过程与所见现象。" * 70
+    await service.flush(service.submit(event(old_text, request="observations")))
+    newer = service.submit(event(new_text, request="observations"))
+    await service.flush(newer)
+    revision, records, _ = service.storage.snapshot()
+    newer_summary = next(m for m in records.values() if m.sources[0].event_id == newer.event_id)
+    older_summary = next(m for m in records.values() if m.text == old_text)
+    service.storage.commit_memories(
+        older_summary.sources[0].event_id,
+        [older_summary.model_copy(update={"outcome": {"background": "旧过程" * 250}})],
+        revision,
+    )
+    revision, _, _ = service.storage.snapshot()
+    service.storage.commit_memories(
+        newer.event_id,
+        [newer_summary.model_copy(update={"outcome": {"background": "过程背景" * 4000}})],
+        revision,
+    )
+    model.kind = "detail"
+    detail_queries = []
+    search_details = service.search_details
+
+    async def capture_details(detail_query):
+        detail_queries.append(detail_query)
+        return await search_details(detail_query)
+
+    service.search_details = capture_details
+    async with service.foreground():
+        for i in range(15):
+            service.submit(
+                event(
+                    ("最近三个月完成了多少次观测？背景讨论。" if i == 8 else f"观测安排补充第{i}项。")
+                    + "未来日程与交通说明。" * 50,
+                    request="observations",
+                )
+            )
+        service.submit(event("另一个对象共99次。", request="unrelated"))
+        result = await service.recall(query("最近三个月完成了多少次观测？"))
+        assert newer_summary.memory_id not in {h.memory.memory_id for h in result.m2}
+        assert newer.event_id in {source.event_id for source in detail_queries[0].sources}
+        assert new_text in [hit.text for hit in result.details]
+        assert not any("99次" in hit.text for hit in result.details)
+        assert len(encode(result.context()).encode()) <= 12 * 1024
+        assert "CONTEXT_BUDGET_LIMIT" in result.degradations
+        assert (await service.load_event(newer.event_id)).payload["content"] == new_text
+
+
 async def test_old_only_summary_cannot_poison_new_event_derivation(tmp_path):
     class Model(MemoryModel):
         previous = None

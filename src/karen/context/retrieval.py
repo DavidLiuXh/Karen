@@ -635,7 +635,24 @@ class Retriever:
         details, detail_status = [], None
         detail_priority = []
         if analysis.kind == "detail" and time.monotonic() < state["deadline"]:
-            refs = [source for hit in (*m1, *m2) for source in hit.memory.sources]
+            # Summary bodies and source locators have different budgets. A relevant
+            # summary that does not fit must still lead us to its original evidence.
+            source_memories = [
+                memories[related]
+                for mid, _, _ in ranked
+                if memories[mid].layer == "m2"
+                for related in state["bundles"][mid]
+            ]
+            source_memories.extend(hit.memory for hit in m1)
+            refs, seen_sources = [], set()
+            for memory in source_memories:
+                for source in memory.sources:
+                    identity = (source.event_id, source.pointer)
+                    if identity not in seen_sources:
+                        seen_sources.add(identity)
+                        refs.append(source)
+            if len(refs) > 12:
+                degraded.append("DETAIL_SOURCE_BUDGET_LIMIT")
             scope_task = (
                 ranking.related_request_ids[0] if len(ranking.related_request_ids) == 1 else None
             )
@@ -663,6 +680,16 @@ class Retriever:
             detail_hits = list(result.hits)
             reference_ids = {ref.event_id for ref in refs}
             words = set(terms(analysis.search_text)) - FALLBACK_STOP_WORDS
+            direct_details = sorted(
+                result.hits,
+                key=lambda hit: (
+                    hit.source.source_role == "user",
+                    len(words & set(terms(hit.text))),
+                    hit.source.occurred_at,
+                    hit.source.sequence or 0,
+                ),
+                reverse=True,
+            )
             priority_details = []
             bridge_details = []
             # A summary can cite an earlier turn while its missing detail lives in
@@ -744,7 +771,7 @@ class Retriever:
                 reverse=True,
             )
             seen_details = set()
-            for hit in [*priority_details, *bridge_details, *detail_hits]:
+            for hit in [*direct_details, *priority_details, *bridge_details, *detail_hits]:
                 identity = (hit.source.event_id, hit.source.pointer)
                 if identity in seen_details:
                     continue

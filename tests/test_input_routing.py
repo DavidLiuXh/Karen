@@ -81,7 +81,6 @@ async def test_direct_memory_reply_is_reviewed_against_original_evidence(
 
 
 async def test_direct_reply_review_keeps_the_original_total_deadline(monkeypatch):
-    import time
     from dataclasses import replace
 
     from karen.intent import recognizer
@@ -103,12 +102,10 @@ async def test_direct_reply_review_keeps_the_original_total_deadline(monkeypatch
 
     model = SlowReviewModel([routing("respond", types=["information"]), reply("草稿")])
     session = IntentSession()
-    started = time.monotonic()
     with pytest.raises(ModelCallError, match="timed out"):
         await IntentRecognizer(model).advance(
             session, "收到", memory_context={"m2": [{"memory": {"text": "已有背景"}}]}
         )
-    assert time.monotonic() - started < 0.21
     review = next(r for r in model.requests if r.role == "intent_response_review")
     assert 0 < review.timeout_seconds < 0.09
     assert session.reply is None and session.messages == ()

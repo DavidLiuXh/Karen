@@ -1249,6 +1249,34 @@ async def test_clarity_review_can_reject_an_unfounded_entity_definition():
     assert model.requests[1].timeout_seconds >= audit.timeout_seconds > 0
 
 
+async def test_clarity_and_goal_use_the_same_scoped_memory_policy():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    from karen.intent.prompts import MEMORY_CONTEXT_INSTRUCTION
+
+    memory = {
+        "m1": [{"memory": {"text": "偏好研究图像处理", "state": "active", "scope": "global"}}],
+        "m2": [],
+        "details": [],
+    }
+    clarity = {
+        "known_referents": {"领域": "已支持的相关研究偏好"},
+        "references": [],
+        "selection_criteria": ["图像处理"],
+        "questions": [],
+        "reason": "使用已知偏好作为默认标准",
+    }
+    model = RawModel([routing(), clarity, clarity, ready()])
+    result = await IntentRecognizer(model).advance(
+        IntentSession(), "推荐近期论文", memory_context=memory
+    )
+    assert result.goal is not None and not result.questions
+    for request in model.requests[1:]:
+        assert MEMORY_CONTEXT_INSTRUCTION in request.system_instruction
+        evidence = request.input_data.get("original_input", request.input_data)
+        assert evidence["memory"] == memory
+
+
 @pytest.mark.parametrize("role", ["intent_clarity", "intent"])
 @pytest.mark.parametrize("has_raw", [True, False])
 async def test_invalid_generated_json_enters_bounded_intent_repair(role, has_raw):

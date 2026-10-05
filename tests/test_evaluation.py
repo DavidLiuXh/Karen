@@ -10,6 +10,7 @@ from karen.evaluation.runner import check_step, summarize
 
 async def test_agent_and_frozen_judge_are_isolated_and_both_calls_are_recorded(tmp_path):
     from dynamic_graph import FakeModelClient
+
     from karen.evaluation.runner import evaluate_case
 
     agent = FakeModelClient(

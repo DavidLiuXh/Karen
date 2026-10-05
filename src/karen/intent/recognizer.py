@@ -202,6 +202,10 @@ class ClarityAssessment(IntentContract):
         default_factory=list,
         description="先检查当前要求及其依赖材料是否能同时成立；只列出仍未解决的实质冲突。",
     )
+    external_information_needed: list[Text] = Field(
+        default_factory=list,
+        description="对象与查证问题明确，但尚需外部检索的身份/属性/资料；不是用户必须补充的信息。",
+    )
     references: list[ReferenceAssessment]
     known_referents: dict[str, Text]
     selection_criteria: list[Text]
@@ -899,6 +903,9 @@ class IntentRecognizer:
         }
         if state.get("memory_context") is not None:
             context["memory"] = state["memory_context"]
+        clarity = state.get("clarity")
+        if clarity and clarity.external_information_needed:
+            context["information_to_verify"] = clarity.external_information_needed
         goal = GoalSpec(
             request_id=session.request_id,
             objective=draft.objective,

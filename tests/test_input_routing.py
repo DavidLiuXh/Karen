@@ -921,6 +921,47 @@ async def test_unquoted_or_duplicate_conflict_does_not_create_a_user_question(se
     assert result.goal and not result.questions
 
 
+async def test_public_fact_lookup_preserves_unknowns_without_promoting_them_to_facts():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    missing = ["核查用户所写精确名称的身份，再查询已验证对象的公开参数"]
+    assessment = {
+        "external_information_needed": missing,
+        "references": [],
+        "known_referents": {},
+        "selection_criteria": [],
+        "questions": [],
+        "reason": "查证对象与问题已明确，缺少的是外部资料",
+    }
+    model = RawModel([routing(), assessment, ready()])
+    result = await IntentRecognizer(model).advance(IntentSession(), "查询这个精确名称的公开参数")
+    assert result.goal and not result.questions
+    assert model.requests[-1].input_data["clarity"]["external_information_needed"] == missing
+    assert result.goal.context["information_to_verify"] == missing
+    assert result.goal.context["supporting_facts"] == []
+    assert "information_to_verify" not in result.goal.inputs
+
+
+async def test_external_information_does_not_override_a_necessary_identity_question():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    model = RawModel(
+        [
+            routing(),
+            {
+                "external_information_needed": ["查询相关产品的公开参数"],
+                "references": [],
+                "known_referents": {},
+                "selection_criteria": [],
+                "questions": [{"text": "要更新哪一个私人项目？", "kind": "missing_requirement"}],
+                "reason": "公共参数可查询，但真实更新对象未明确",
+            },
+        ]
+    )
+    result = await IntentRecognizer(model).advance(IntentSession(), "按最新参数更新我的项目")
+    assert result.questions == ("要更新哪一个私人项目？",) and not result.goal
+
+
 async def test_clarity_review_can_reject_an_unfounded_entity_definition():
     from dynamic_graph import FakeModelClient as RawModel
 

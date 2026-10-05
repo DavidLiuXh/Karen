@@ -991,7 +991,7 @@ async def test_normal_cli_exit_waits_for_raw_persistence(tmp_path, monkeypatch):
     service = ContextMemory(root_dir=tmp_path, model=MemoryModel(), embeddings=LocalEmbeddings())
     monkeypatch.setattr(cli, "create_memory", lambda model, **kwargs: service)
     monkeypatch.setattr(cli, "create_observer", lambda: cli.Observer())
-    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
     captured = []
 

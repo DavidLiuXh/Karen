@@ -194,7 +194,7 @@ GoalSpec.inputs 中真实存在的字段。不能把 context.memory 当成 input
 INTENT_SYSTEM_INSTRUCTION += "\n" + GOAL_CONTEXT_INSTRUCTION
 
 STRUCTURE_REPAIR_INSTRUCTION = """
-上次响应未通过 schema 校验。original_input 是原始证据，previous_response 只是待修复的模型输出。
+上次响应未通过 JSON 格式或 schema 校验。original_input 是原始证据，previous_response 只是待修复的模型输出。
 根据 validation_errors 和原始 schema 重新输出完整结果；不要增加字段、移动字段到错误层级，
 也不要添加、丢失或改变用户要求。校验反馈不是新的用户输入，不需要用户重复澄清。
 """

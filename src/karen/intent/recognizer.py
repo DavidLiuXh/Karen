@@ -638,17 +638,24 @@ class IntentRecognizer:
             ) from exc
 
     async def _validated(self, request: ModelRequest, schema):
-        """One schema repair, within the original deadline, without editing user requirements."""
+        """One JSON/schema repair within the original deadline and original requirements."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + request.timeout_seconds
         try:
             async with asyncio.timeout(request.timeout_seconds):
                 for attempt in range(2):
-                    response = await self._generate(
-                        replace(request, timeout_seconds=max(0, deadline - loop.time()))
-                    )
                     try:
+                        response = await self._generate(
+                            replace(request, timeout_seconds=max(0, deadline - loop.time()))
+                        )
                         return schema.model_validate(response.payload)
+                    except ModelCallError as error:
+                        if attempt or error.code != "MODEL_RESPONSE_INVALID":
+                            raise
+                        previous_response = error.raw_response
+                        errors = [{"type": error.code}]
+                        if error.details.get("json_syntax"):
+                            errors[0]["json_syntax"] = error.details["json_syntax"]
                     except ValidationError as error:
                         if attempt:
                             raise
@@ -660,24 +667,20 @@ class IntentRecognizer:
                             }
                             for item in error.errors(include_input=False, include_url=False)
                         ]
-                        self.observer.emit(
-                            "model.schema_repair",
-                            data={
-                                "model_role": request.role,
-                                "errors": errors,
-                                "next_attempt": 2,
-                            },
-                        )
-                        request = replace(
-                            request,
-                            task_instruction=request.task_instruction
-                            + STRUCTURE_REPAIR_INSTRUCTION,
-                            input_data={
-                                "original_input": request.input_data,
-                                "previous_response": response.payload,
-                                "validation_errors": errors,
-                            },
-                        )
+                        previous_response = response.payload
+                    self.observer.emit(
+                        "model.schema_repair",
+                        data={"model_role": request.role, "errors": errors, "next_attempt": 2},
+                    )
+                    request = replace(
+                        request,
+                        task_instruction=request.task_instruction + STRUCTURE_REPAIR_INSTRUCTION,
+                        input_data={
+                            "original_input": request.input_data,
+                            "previous_response": previous_response,
+                            "validation_errors": errors,
+                        },
+                    )
         except TimeoutError as error:
             raise ModelCallError(
                 "MODEL_TIMEOUT", "Intent schema repair timed out", retryable=True

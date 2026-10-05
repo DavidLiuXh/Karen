@@ -441,7 +441,7 @@ async def test_exhausted_transport_retries_save_raw_input_once(tmp_path):
 
 @pytest.mark.parametrize(
     "code,retryable",
-    [("MODEL_AUTH_FAILED", False), ("MODEL_UNAVAILABLE", False), ("MODEL_RESPONSE_INVALID", True)],
+    [("MODEL_AUTH_FAILED", False), ("MODEL_UNAVAILABLE", False)],
 )
 async def test_non_transport_or_non_retryable_errors_fail_without_retry(tmp_path, code, retryable):
     failure = ModelCallError(code, "failure", retryable=retryable)
@@ -902,6 +902,64 @@ async def test_clarity_review_can_reject_an_unfounded_entity_definition():
     assert "routing" not in audit.input_data["original_input"]
     assert "routing" not in model.requests[1].input_data
     assert model.requests[1].timeout_seconds >= audit.timeout_seconds > 0
+
+
+@pytest.mark.parametrize("role", ["intent_clarity", "intent"])
+@pytest.mark.parametrize("has_raw", [True, False])
+async def test_invalid_generated_json_enters_bounded_intent_repair(role, has_raw):
+    from dynamic_graph import FakeModelClient as RawModel
+
+    raw = '{"questions": [broken]}'
+    syntax = {"message": "Expecting value", "line": 1, "column": 16, "position": 15}
+    invalid = ModelCallError(
+        "MODEL_RESPONSE_INVALID",
+        "Invalid JSON",
+        raw_response=raw if has_raw else None,
+        details={"json_syntax": syntax},
+    )
+    clear = {
+        "references": [],
+        "known_referents": {},
+        "selection_criteria": [],
+        "questions": [],
+        "reason": "核心内容已完整",
+    }
+    responses = (
+        [routing(), invalid, clear, ready()]
+        if role == "intent_clarity"
+        else [routing(), clear, invalid, ready()]
+    )
+    model = RawModel(responses)
+    result = await IntentRecognizer(model).advance(
+        IntentSession(), "给客户起草进度邮件，设计已完成"
+    )
+    assert result.goal is not None and not result.questions
+    calls = [request for request in model.requests if request.role == role]
+    assert len(calls) == 2
+    assert calls[-1].input_data["previous_response"] == (raw if has_raw else None)
+    assert calls[-1].input_data["validation_errors"][0]["json_syntax"] == syntax
+    assert calls[0].timeout_seconds >= calls[-1].timeout_seconds > 0
+
+
+async def test_repeated_invalid_json_does_not_extend_the_intent_repair_limit():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    errors = [
+        ModelCallError("MODEL_RESPONSE_INVALID", "Invalid JSON", raw_response="{bad}")
+        for _ in range(2)
+    ]
+    clear = {
+        "references": [],
+        "known_referents": {},
+        "selection_criteria": [],
+        "questions": [],
+        "reason": "核心内容已完整",
+    }
+    model = RawModel([routing(), clear, *errors])
+    with pytest.raises(ModelCallError) as raised:
+        await IntentRecognizer(model).advance(IntentSession(), "给客户起草进度邮件，设计已完成")
+    assert raised.value is errors[-1]
+    assert len([request for request in model.requests if request.role == "intent"]) == 2
 
 
 async def test_review_preserves_existing_quote_for_unchanged_explicit_identification():

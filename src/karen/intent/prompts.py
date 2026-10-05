@@ -73,8 +73,8 @@ INTENT_TASK_INSTRUCTION += (
     "在 reason 中简短说明目标已足够明确，或具体缺少什么信息；只提供判断依据，不提供推理过程。"
     "响应根对象只包含 decision。ready 时 decision 包含 outcome 和 goal，"
     "supporting_facts、objective、success_criteria、constraints、inputs 都在 goal 内。"
-    "goal 的 inputs 闭合后，还须依次闭合 goal、decision 和最外层根对象；"
-    "每个对象与数组独立完整闭合，不能在结束 goal 时提前结束整个响应。"
+    "goal、decision 和根对象必须按实际嵌套分别闭合；reason 是 decision 内的同级字段。"
+    "最外层闭合一次即结束，不能少关一层，也不能额外追加右括号或第二个 JSON 值。"
     "一般任务省略 input_schema/output_schema，使用默认契约，不展开未要求的 schema。"
 )
 
@@ -227,6 +227,8 @@ STRUCTURE_REPAIR_INSTRUCTION = """
 也不要添加、丢失或改变用户要求。校验反馈不是新的用户输入，不需要用户重复澄清。
 语法位置指向结尾时，核对每一层对象/数组是否完整闭合，包含最外层根对象；
 不能只重写内部 decision、goal 或 inputs。输出完整新响应，不输出补丁或差异。
+json_syntax.message 为 Extra data 时，一个 JSON 根对象已经结束，后面仍有多余内容；
+检查多出的右括号、重复 JSON 对象或正文。不能照抄上次的结尾，也不能继续加括号。
 """
 
 

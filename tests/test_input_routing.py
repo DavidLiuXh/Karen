@@ -959,8 +959,7 @@ async def test_grounded_requirement_conflict_blocks_goal_until_user_corrects_it(
             routing(),
             assessment,
             {
-                "incompatible": True,
-                "question": "长度要求互相冲突，请确认以哪项为准？",
+                "requirement_conflicts": assessment["requirement_conflicts"],
                 "reason": "要求完成正文",
             },
             routing(types=["task_control"], relation="continue"),
@@ -1116,8 +1115,7 @@ async def test_dropped_requirement_conflict_needs_independent_source_check(incom
     }
     revised = {**initial, "requirement_conflicts": [], "reason": "复核声称要求兼容"}
     check = {
-        "incompatible": incompatible,
-        "question": "请确认采用哪个长度要求？" if incompatible else "",
+        "requirement_conflicts": [conflict] if incompatible else [],
         "reason": "仅核查原始要求及完整当前输入",
     }
     model = RawModel([routing(), initial, revised, check, ready()])
@@ -1126,7 +1124,10 @@ async def test_dropped_requirement_conflict_needs_independent_source_check(incom
     )
     assert bool(result.questions) is incompatible
     audit = next(r for r in model.requests if r.role == "intent_requirement_check")
-    assert audit.input_data["quoted_requirements"] == ["全文最多400字", "正文至少700字"]
+    assert audit.input_data["original_input"]["messages"][0]["content"] == (
+        "写介绍，全文最多400字，正文至少700字"
+    )
+    assert "quoted_requirements" not in audit.input_data
     assert "复核声称" not in str(audit.input_data)
     assert model.requests[1].timeout_seconds >= audit.timeout_seconds > 0
 
@@ -1150,8 +1151,7 @@ async def test_conflict_in_material_is_not_always_a_blocking_delivery_requiremen
         "reason": "材料中的字数范围互不兼容",
     }
     check = {
-        "incompatible": not analyze_only,
-        "question": "请确认要保留哪项要求？" if not analyze_only else "",
+        "requirement_conflicts": assessment["requirement_conflicts"] if not analyze_only else [],
         "reason": "仅分析材料的矛盾可直接交付；按材料写正文才需要修改要求",
     }
     model = RawModel(
@@ -1172,6 +1172,56 @@ async def test_conflict_in_material_is_not_always_a_blocking_delivery_requiremen
     audits = [r for r in model.requests if r.role == "intent_requirement_check"]
     assert len(audits) == 1
     assert audits[0].input_data["original_input"]["messages"][-1]["content"] == text
+
+
+async def test_overlapping_conflict_guesses_use_one_independent_whole_input_verdict():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    text = "规则是样本需有同一适用条件。材料甲和材料乙。推断唯一条件后输出结果。"
+    first = {
+        "first_requirement": "样本需有同一适用条件",
+        "second_requirement": "材料甲和材料乙",
+        "question": "材料之间是否冲突？",
+    }
+    second = {
+        "first_requirement": "规则是样本需有同一适用条件。材料甲和材料乙。",
+        "second_requirement": "推断唯一条件后输出结果",
+        "question": "是否缺少唯一条件？",
+    }
+    assessment = {
+        "requirement_conflicts": [first],
+        "known_referents": {"材料": "用户提供的两个材料"},
+        "references": [], "selection_criteria": [], "questions": [], "reason": "临时猜测",
+    }
+    model = RawModel([
+        routing(), assessment, {**assessment, "requirement_conflicts": [second]},
+        {"requirement_conflicts": [], "reason": "完整材料可同时满足要求"}, ready(),
+    ])
+    result = await IntentRecognizer(model).advance(IntentSession(), text)
+    assert result.goal and not result.questions
+    checks = [r for r in model.requests if r.role == "intent_requirement_check"]
+    assert len(checks) == 1
+    assert checks[0].input_data == {"original_input": model.requests[1].input_data}
+    assert "临时猜测" not in str(checks[0].input_data)
+
+
+async def test_requirement_review_cannot_create_a_conflict_from_unprovided_quotes():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    conflict = {"first_requirement": "最多三项", "second_requirement": "至少五项", "question": "用哪项？"}
+    assessment = {
+        "requirement_conflicts": [conflict], "references": [], "known_referents": {},
+        "selection_criteria": [], "questions": [], "reason": "数量要求矛盾",
+    }
+    review = {
+        "requirement_conflicts": [{**conflict, "second_requirement": "至少九项"}],
+        "reason": "核验引用了未提供的数值",
+    }
+    model = RawModel([routing(), assessment, review, ready()])
+    original = IntentSession()
+    with pytest.raises(ModelCallError, match="unsupported evidence"):
+        await IntentRecognizer(model).advance(original, "列出最多三项，至少五项")
+    assert original.goal is None and original.messages == ()
 
 
 @pytest.mark.parametrize("requires_unique", [False, True])

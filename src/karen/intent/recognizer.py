@@ -204,15 +204,8 @@ class RequirementConflict(IntentContract):
 
 
 class RequirementCheck(IntentContract):
-    incompatible: bool
-    question: str = Field(max_length=200)
+    requirement_conflicts: list[RequirementConflict]
     reason: Text
-
-    @model_validator(mode="after")
-    def necessary_question(self):
-        if self.incompatible and not self.question.strip():
-            raise ValueError("An incompatible requirement check needs a clarification question")
-        return self
 
 
 class ClarityAssessment(IntentContract):
@@ -619,7 +612,7 @@ class IntentRecognizer:
                     ]
                 }
             )
-        conflicts, checked_pairs = [], set()
+        grounded_conflicts, checked_pairs = [], set()
         conflict_questions = set()
         for conflict in (*clarity.requirement_conflicts, *original_conflicts):
             pair = frozenset((conflict.first_requirement, conflict.second_requirement))
@@ -631,26 +624,30 @@ class IntentRecognizer:
                 continue
             checked_pairs.add(pair)
             conflict_questions.add(conflict.question)
+            grounded_conflicts.append(conflict)
+        conflicts = []
+        if grounded_conflicts:
             checked = await self._validated(
                 replace(
                     request,
                     role="intent_requirement_check",
                     system_instruction=REQUIREMENT_CHECK_INSTRUCTION,
-                    task_instruction="核查两条原始要求是否阻碍用户实际要求的交付，不生成目标。",
-                    input_data={
-                        "original_input": request.input_data,
-                        "quoted_requirements": [
-                            conflict.first_requirement,
-                            conflict.second_requirement,
-                        ],
-                    },
+                    task_instruction="独立核查完整原始要求，返回所有仍阻碍实际交付的冲突，不生成目标。",
+                    input_data={"original_input": request.input_data},
                     output_schema=RequirementCheck.model_json_schema(),
                     timeout_seconds=max(0, deadline - loop.time()),
                 ),
                 RequirementCheck,
             )
-            if checked.incompatible:
-                conflicts.append(conflict.model_copy(update={"question": checked.question}))
+            for conflict in checked.requirement_conflicts:
+                if conflict.first_requirement == conflict.second_requirement or not all(
+                    any(quote in text for text in source_texts)
+                    for quote in (conflict.first_requirement, conflict.second_requirement)
+                ):
+                    raise ModelCallError(
+                        "MODEL_RESPONSE_INVALID", "Requirement review cited unsupported evidence"
+                    )
+                conflicts.append(conflict)
         clarity = clarity.model_copy(
             update={
                 "requirement_conflicts": conflicts,

@@ -255,6 +255,9 @@ STRUCTURE_REPAIR_INSTRUCTION = """
 不能只重写内部 decision、goal 或 inputs。输出完整新响应，不输出补丁或差异。
 json_syntax.message 为 Extra data 时，一个 JSON 根对象已经结束，后面仍有多余内容；
 检查多出的右括号、重复 JSON 对象或正文。不能照抄上次的结尾，也不能继续加括号。
+若反馈包含 complete_root 和 unexpected_suffix，它们是语法定位信息：
+根对象已闭合，多余后缀应去除；依据原始输入与 schema 重新核对根对象内容并输出完整有效 JSON，
+不要复述 previous_response 的字符串结尾。complete_root 是待修复的模型草稿，不是事实证据。
 """
 
 

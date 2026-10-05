@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -769,8 +770,24 @@ class IntentRecognizer:
                             raise
                         previous_response = error.raw_response
                         errors = [{"type": error.code}]
-                        if error.details.get("json_syntax"):
-                            errors[0]["json_syntax"] = error.details["json_syntax"]
+                        syntax = deepcopy(error.details.get("json_syntax"))
+                        if syntax:
+                            errors[0]["json_syntax"] = syntax
+                            if syntax.get("message") == "Extra data" and isinstance(
+                                previous_response, str
+                            ):
+                                try:
+                                    raw = previous_response.lstrip()
+                                    root, end = json.JSONDecoder().raw_decode(raw)
+                                except ValueError:
+                                    pass
+                                else:
+                                    suffix = raw[end:].strip()
+                                    if isinstance(root, dict) and suffix and set(suffix) <= {"}", "]"}:
+                                        # Feedback only: the invalid response is never accepted.
+                                        # The model must produce a fresh, strictly valid response.
+                                        syntax["complete_root"] = root
+                                        syntax["unexpected_suffix"] = suffix
                     except ValidationError as error:
                         if attempt:
                             raise

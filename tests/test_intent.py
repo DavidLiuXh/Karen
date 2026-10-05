@@ -379,6 +379,46 @@ async def test_schema_repair_is_bounded_and_does_not_retry_transport_auth_failur
     assert caught.value is auth and len(model.assessments) == 1
 
 
+@pytest.mark.parametrize("suffix", ["}", "]]}", '{"other":true}', "unrelated text"])
+async def test_surplus_json_feedback_never_accepts_or_discards_a_response(suffix):
+    import json
+
+    root = ready()
+    raw = "  " + json.dumps(root, ensure_ascii=False) + suffix
+    syntax = {"message": "Extra data", "position": len(raw) - len(suffix)}
+    invalid = ModelCallError(
+        "MODEL_RESPONSE_INVALID", "Invalid JSON", raw_response=raw, details={"json_syntax": syntax}
+    )
+    model = TaskIntentModel([invalid, ready(objective="经原始输入核对后的完整目标")])
+    result = await IntentRecognizer(model).advance(IntentSession(), "给客户起草进度邮件")
+    assert result.goal.objective == "经原始输入核对后的完整目标"
+    assert len(model.assessments) == 2
+    repair = model.assessments[1].input_data
+    assert repair["previous_response"] == raw
+    feedback = repair["validation_errors"][0]["json_syntax"]
+    if set(suffix) <= {"}", "]"}:
+        assert feedback["complete_root"] == root
+        assert feedback["unexpected_suffix"] == suffix
+    else:
+        assert "complete_root" not in feedback
+    assert invalid.details["json_syntax"] == syntax
+    assert repair["original_input"]["messages"][0]["content"] == "给客户起草进度邮件"
+
+
+async def test_surplus_json_feedback_still_requires_a_valid_second_response():
+    import json
+
+    invalid = ModelCallError(
+        "MODEL_RESPONSE_INVALID", "Invalid JSON",
+        raw_response=json.dumps(ready()) + "}",
+        details={"json_syntax": {"message": "Extra data"}},
+    )
+    model = TaskIntentModel([invalid, invalid, ready()])
+    with pytest.raises(ModelCallError) as caught:
+        await IntentRecognizer(model).advance(IntentSession(), "写邮件")
+    assert caught.value is invalid and len(model.assessments) == 2
+
+
 async def test_unsupported_goal_inputs_are_repaired_at_model_boundary():
     model = TaskIntentModel([ready(inputs={"unknown": None}), ready(inputs={})])
     result = await IntentRecognizer(model).advance(IntentSession(), "写一个不依赖未提供数据的草稿")

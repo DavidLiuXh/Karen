@@ -182,7 +182,6 @@ class Karen:
             and session.routing.handling == "assess"
             and session.routing.task_relation == "new"
             and session.routing.input_types == ["question"]
-            and recalled.coverage.get("query_kind") == "detail"
             and (recalled.m2 or recalled.details)
         ):
             refined = await self.intent.classify(session, user_input, **kwargs)

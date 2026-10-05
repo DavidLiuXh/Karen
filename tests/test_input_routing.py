@@ -133,11 +133,12 @@ async def test_personal_question_answers_from_recalled_m1_without_execution(tmp_
 
 
 @pytest.mark.parametrize("needs_external_data", [False, True])
+@pytest.mark.parametrize("query_kind", ["detail", "relevance"])
 async def test_question_handling_is_reconsidered_with_recalled_detail_evidence(
-    tmp_path, needs_external_data
+    tmp_path, needs_external_data, query_kind
 ):
     backend = MemoryModel()
-    backend.kind = "detail"
+    backend.kind = query_kind
     memory = ContextMemory(
         root_dir=tmp_path / "context", model=backend, embeddings=LocalEmbeddings()
     )

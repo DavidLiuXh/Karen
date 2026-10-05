@@ -385,20 +385,18 @@ class Retriever:
             # m2 links to m1; adding every other event to an m1 would flood context.
             for old in memory.supersedes + memory.corrects:
                 reverse.setdefault(old, []).append(mid)
-        bundles, primary, unique, size = {}, [], set(), 0
+        bundles, primary, unique = {}, [], set()
         for mid in roots:
             bundle = relation_bundle(
                 mid, eligible, reverse, timeline=analysis.time_mode == "timeline"
             )
             extra = set(bundle) - unique
-            added = sum(len(encode(eligible[m].context()).encode()) for m in extra)
-            if len(unique | extra) > 80 or size + added > 24 * 1024:
+            if len(unique | extra) > 80:
                 degraded.append("CANDIDATE_BUDGET_LIMIT")
                 continue
             primary.append(mid)
             bundles[mid] = bundle
             unique.update(extra)
-            size += added
         anchors = []
         if analysis.uses_external_history:
             anchors = await self.service.recent(query, analysis)
@@ -454,7 +452,7 @@ class Retriever:
             "current_task_messages": state["query"].current_task_messages,
             "analysis": analysis.model_dump(mode="json"),
             "primary_ids": list(primary),
-            "memories": [state["memories"][mid].context() for mid in sorted(records)],
+            "memories": [state["memories"][mid].ranking_context() for mid in sorted(records)],
             "history_candidates": anchors,
         }
         # Bound the whole request, including raw locating clues, not just memories.
@@ -463,7 +461,9 @@ class Retriever:
             primary.pop()
             records = {mid for root in primary for mid in state["bundles"][root]}
             inputs["primary_ids"] = primary
-            inputs["memories"] = [state["memories"][mid].context() for mid in sorted(records)]
+            inputs["memories"] = [
+                state["memories"][mid].ranking_context() for mid in sorted(records)
+            ]
             degraded.append("RERANK_INPUT_BUDGET_LIMIT")
         while len(encode(inputs).encode()) > 24 * 1024 and inputs["history_candidates"]:
             inputs["history_candidates"].pop()
@@ -660,6 +660,7 @@ class Retriever:
             reference_ids = {ref.event_id for ref in refs}
             words = set(terms(analysis.search_text)) - FALLBACK_STOP_WORDS
             priority_details = []
+            bridge_details = []
             # A summary can cite an earlier turn while its missing detail lives in
             # a later turn of that same task. Expand only positively selected tasks.
             scopes = list(
@@ -706,7 +707,29 @@ class Retriever:
                     )
                     # Follow-up replies often carry the requested value without
                     # repeating the subject. Keep adjacent user evidence together.
-                    priority_details.extend(novel_user_hits[max(0, anchor - 1) : anchor + 2])
+                    neighbors = novel_user_hits[max(0, anchor - 1) : anchor + 2]
+                    priority_details.extend(neighbors)
+                    first = neighbors[0].source.sequence
+                    last = neighbors[-1].source.sequence
+                    for hit in expanded.hits:
+                        sequence = hit.source.sequence
+                        if (
+                            hit.source.source_role == "assistant"
+                            and first is not None
+                            and last is not None
+                            and sequence is not None
+                            and first < sequence < last
+                        ):
+                            preview = hit.text[:600]
+                            bridge_details.append(
+                                hit.model_copy(
+                                    update={
+                                        "text": preview,
+                                        "source": hit.source.model_copy(update={"quote": preview}),
+                                        "truncated": hit.truncated or preview != hit.text,
+                                    }
+                                )
+                            )
                 if expanded.status != "complete":
                     detail_status = expanded.status
             detail_hits.sort(
@@ -717,7 +740,7 @@ class Retriever:
                 reverse=True,
             )
             seen_details = set()
-            for hit in [*priority_details, *detail_hits]:
+            for hit in [*priority_details, *bridge_details, *detail_hits]:
                 identity = (hit.source.event_id, hit.source.pointer)
                 if identity in seen_details:
                     continue
@@ -728,6 +751,8 @@ class Retriever:
                     continue
                 details.append(hit)
                 used += size
+                if hit.truncated:
+                    degraded.append("DETAIL_CONTEXT_TRUNCATED")
             details.sort(key=lambda hit: (hit.source.occurred_at, hit.source.sequence or 0))
             if detail_status != "complete":
                 degraded.append("DETAIL_SEARCH_" + detail_status.upper())

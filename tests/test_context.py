@@ -1502,6 +1502,27 @@ async def test_processing_diagnostics_do_not_crowd_out_memory_evidence(memory):
     assert "verification_reason" not in requests[-1].input_data["memories"][0]
 
 
+async def test_large_processing_payloads_do_not_remove_coarse_recall_candidates(memory):
+    service, backend = memory
+    for name in ("远星", "星海"):
+        await service.flush(service.submit(event(f"{name}活动共七天。", request=name)))
+    revision, records, _ = service.storage.snapshot()
+    summaries = [m for m in records.values() if m.layer == "m2"]
+    for summary in summaries:
+        service.storage.commit_memories(
+            summary.sources[0].event_id,
+            [summary.model_copy(update={"outcome": {"details": "过程详情" * 12000}})],
+            revision,
+        )
+        revision, _, _ = service.storage.snapshot()
+    backend.kind = "detail"
+    await service.recall(query("远星和星海各持续多久"))
+    ranking = [r for r in backend.requests if r.role == "memory_rerank"][-1]
+    assert {m["request_id"] for m in ranking.input_data["memories"]} == {"远星", "星海"}
+    assert len(encode(ranking.input_data).encode()) <= 24 * 1024
+    assert all(m["sources"] and m["recorded_at"] for m in ranking.input_data["memories"])
+
+
 @pytest.mark.parametrize(
     "syntax", [None, {"message": "Expecting value", "line": 1, "column": 27, "position": 26}]
 )
@@ -1632,6 +1653,8 @@ async def test_detail_budget_keeps_adjacent_reply_without_repeated_query_terms(m
     duration_reply = "共七天。" + "期间按日程安排开展其他体验。" * 40
     async with service.foreground():
         service.submit(event("星海活动在岛上举行。", request="selected-activity"))
+        bridge_text = "好的，接下来仍围绕星海活动补充具体时间。" + "背景解释。" * 150
+        service.submit(event(bridge_text, request="selected-activity", kind="assistant_message"))
         service.submit(event(duration_reply, request="selected-activity"))
         for i in range(20):
             service.submit(
@@ -1650,6 +1673,9 @@ async def test_detail_budget_keeps_adjacent_reply_without_repeated_query_terms(m
             "content"
         ] == duration_reply
         assert not any("十二天" in hit.text for hit in result.details)
+        bridge = next(hit for hit in result.details if hit.text.startswith("好的，接下来"))
+        assert bridge.truncated and bridge.text == bridge_text[:600]
+        assert (await service.load_event(bridge.source.event_id)).payload["content"] == bridge_text
         assert len(encode(result.context()).encode()) <= 12 * 1024
 
 

@@ -276,6 +276,38 @@ class StoredMemory(Contract):
             },
         )
 
+    def ranking_context(self) -> dict[str, JsonValue]:
+        """Rank semantic summaries with provenance and temporal/version boundaries."""
+        data = self.model_dump(
+            mode="json",
+            include={
+                "memory_id",
+                "layer",
+                "text",
+                "subject",
+                "fact_key",
+                "value",
+                "scope",
+                "state",
+                "verification_state",
+                "assertion_type",
+                "recorded_at",
+                "valid_from",
+                "valid_to",
+                "supersedes",
+                "corrects",
+                "conflict_group_id",
+                "related_memory_ids",
+                "request_id",
+                "event_kind",
+            },
+        )
+        data["sources"] = [
+            source.model_dump(mode="json", include={"event_id", "source_role", "occurred_at"})
+            for source in self.sources
+        ]
+        return data
+
 
 class RecallQuery(Contract):
     text: str = Field(min_length=1)

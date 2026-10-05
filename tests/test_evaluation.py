@@ -8,6 +8,54 @@ from karen.evaluation.datasets import clamber, longmemeval, parse_date, prepare_
 from karen.evaluation.runner import check_step, summarize
 
 
+async def test_agent_and_frozen_judge_are_isolated_and_both_calls_are_recorded(tmp_path):
+    from dynamic_graph import FakeModelClient
+    from karen.evaluation.runner import evaluate_case
+
+    agent = FakeModelClient(
+        [
+            {
+                "input_types": ["task_request"],
+                "handling": "assess",
+                "task_relation": "new",
+                "reason": "缺少目标文件",
+            },
+            {
+                "references": [],
+                "known_referents": {},
+                "selection_criteria": [],
+                "questions": [{"text": "你指哪个文件？", "kind": "missing_requirement"}],
+                "reason": "需要文件定位",
+            },
+        ]
+    )
+    grader = FakeModelClient([{"passed": True, "reason": "必要澄清符合参考"}])
+    case = {
+        "id": "isolated-grader",
+        "suite": "clamber",
+        "split": "development",
+        "category": "FD/1",
+        "timezone": "UTC",
+        "reference_time": "2026-10-04T08:00:00+00:00",
+        "context": "",
+        "history": [],
+        "steps": [{"text": "修改那个文件。", "expected": {"outcome": "clarification"}}],
+        "gold": {"clarifying_question": "请提供唯一的文件路径（评分专用）。"},
+    }
+    result = await evaluate_case(
+        case, tmp_path / "case", client_factory=lambda: agent, judge_client_factory=lambda: grader
+    )
+    assert result["status"] == "passed"
+    assert len(grader.requests) == 1 and grader.requests[0].role == "evaluation_judge"
+    assert grader.requests[0].input_data["reference"] == case["gold"]["clarifying_question"]
+    assert all("评分专用" not in str(request.input_data) for request in agent.requests)
+    assert [call["role"] for call in result["model_calls"]] == [
+        "intent_router",
+        "intent_clarity",
+        "evaluation_judge",
+    ]
+
+
 def long_row():
     return {
         "question_id": "example",

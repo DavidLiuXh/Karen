@@ -170,11 +170,18 @@ async def ingest(memory, case):
     return [(await memory.write_status(receipt)).model_dump(mode="json") for receipt in receipts]
 
 
-async def evaluate_case(case, directory, *, client_factory=deepseek_client):
+def frozen_judge_client():
+    return deepseek_client(mode="function_calling")
+
+
+async def evaluate_case(
+    case, directory, *, client_factory=deepseek_client, judge_client_factory=frozen_judge_client
+):
     directory.mkdir()
     observer = Observer(directory / "observability")
     await observer.start()
-    meter = MeteredModel(ObservedModel(client_factory(), observer))
+    client = client_factory()
+    meter = MeteredModel(ObservedModel(client, observer))
     memory = None
     started = time.monotonic()
     result = {
@@ -185,6 +192,7 @@ async def evaluate_case(case, directory, *, client_factory=deepseek_client):
         "status": "error",
         "steps": [],
         "checks": [],
+        "agent_model": getattr(client, "metadata", {}),
     }
     stage = "setup"
     try:
@@ -263,7 +271,16 @@ async def evaluate_case(case, directory, *, client_factory=deepseek_client):
             result["checks"].extend(check_step(step["expected"], actual))
         stage = "grading"
         # Do not spend judge calls on cases already failing a hard contract.
-        result["judge"] = None if result["checks"] else await judge(meter, case, actual)
+        result["judge"] = None
+        if not result["checks"]:
+            # The frozen grader retains its original transport when the agent backend changes.
+            judge_client = judge_client_factory()
+            result["judge_model"] = getattr(judge_client, "metadata", {})
+            judge_meter = MeteredModel(judge_client)
+            try:
+                result["judge"] = await judge(judge_meter, case, actual)
+            finally:
+                meter.calls.extend(judge_meter.calls)
         if result["judge"] and not result["judge"]["passed"]:
             result["checks"].append(result["judge"]["reason"])
         result["status"] = "failed" if result["checks"] else "passed"

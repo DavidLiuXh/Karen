@@ -5,9 +5,13 @@ from langchain_deepseek import ChatDeepSeek
 from langchain_ollama import OllamaEmbeddings
 
 
-def deepseek_client(*, model: str = "deepseek-chat") -> LangChainModelClient:
+def deepseek_client(
+    *, model: str = "deepseek-chat", mode: str = "json_mode"
+) -> LangChainModelClient:
     chat = ChatDeepSeek(model=model, temperature=0, max_retries=0)
-    return LangChainModelClient(chat_model=chat, model=model, mode="function_calling")
+    return LangChainModelClient(
+        chat_model=chat, model=model, mode=mode, allow_json_mode=mode == "json_mode"
+    )
 
 
 def memory_embeddings() -> OllamaEmbeddings:

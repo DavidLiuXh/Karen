@@ -879,7 +879,19 @@ async def test_clarity_review_can_reject_an_unfounded_entity_definition():
         ],
         "reason": "没有提供识别实体的具体事实",
     }
-    model = RawModel([routing(), original, revised])
+    model = RawModel(
+        [
+            routing(),
+            original,
+            revised,
+            {
+                "recognized": False,
+                "canonical_name": "Neravion",
+                "definition": "",
+                "reason": "无法独立识别",
+            },
+        ]
+    )
     result = await IntentRecognizer(model).advance(IntentSession(), "Neravion 什么时候出现？")
     assert result.questions and result.goal is None
     audit = next(r for r in model.requests if r.role == "intent_clarity_review")
@@ -1000,3 +1012,49 @@ async def test_scoped_identity_gap_requires_grounded_location_and_keeps_real_amb
         reference = model.requests[-1].input_data["clarity"]["references"][0]
         assert reference["resolution"] == "explicit_identification"
         assert reference["evidence"] == evidence
+
+
+@pytest.mark.parametrize(
+    "recognized,canonical_name,clarifies",
+    [(True, "Solenara", False), (False, "Solenara", True), (True, "Solenaria", True)],
+)
+async def test_disputed_entity_definition_needs_exact_independent_recognition(
+    recognized, canonical_name, clarifies
+):
+    from dynamic_graph import FakeModelClient as RawModel
+
+    initial = {
+        "references": [],
+        "known_referents": {"Solenara": "一种公开协议的名称"},
+        "selection_criteria": [],
+        "questions": [],
+        "reason": "已识别对象",
+    }
+    reviewed = {
+        **initial,
+        "questions": [
+            {"text": "Solenara 是什么？", "kind": "unknown_identity", "subject": "Solenara"}
+        ],
+        "reason": "复核未识别该名称",
+    }
+    model = RawModel(
+        [
+            routing(),
+            initial,
+            reviewed,
+            {
+                "recognized": recognized,
+                "canonical_name": canonical_name,
+                "definition": "一种公开协议的完整定义" if recognized else "",
+                "reason": "独立核验精确名称",
+            },
+            ready(),
+        ]
+    )
+    result = await IntentRecognizer(model).advance(IntentSession(), "Solenara 的覆盖范围是什么？")
+    assert bool(result.questions) is clarifies
+    assert (result.goal is None) is clarifies
+    audit = next(request for request in model.requests if request.role == "intent_entity_check")
+    assert audit.input_data["subject"] == "Solenara"
+    assert audit.input_data["proposed_definition"] == "一种公开协议的名称"
+    assert model.requests[1].timeout_seconds >= audit.timeout_seconds > 0

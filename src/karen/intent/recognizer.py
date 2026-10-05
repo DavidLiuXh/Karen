@@ -33,6 +33,7 @@ from .prompts import (
     CLARITY_INSTRUCTION,
     CLARITY_REVIEW_INSTRUCTION,
     CLARITY_TASK_INSTRUCTION,
+    ENTITY_CHECK_INSTRUCTION,
     DIRECT_RESPONSE_INSTRUCTION,
     GOAL_CONTEXT_INSTRUCTION,
     INTENT_SYSTEM_INSTRUCTION,
@@ -147,6 +148,19 @@ class ReferenceAssessment(IntentContract):
             raise ValueError("Multiple candidates cannot be resolved as unique")
         if self.resolution == "explicit_identification" and not self.evidence.strip():
             raise ValueError("Explicit identification needs source evidence")
+        return self
+
+
+class EntityRecognition(IntentContract):
+    recognized: bool
+    canonical_name: str
+    definition: str
+    reason: Text
+
+    @model_validator(mode="after")
+    def concrete_recognition(self):
+        if self.recognized and (not self.canonical_name.strip() or not self.definition.strip()):
+            raise ValueError("Recognition needs an exact canonical name and concrete definition")
         return self
 
 
@@ -391,6 +405,12 @@ class IntentRecognizer:
         )
         if clarity.known_referents:
             original_references = clarity.references
+            original_definitions = dict(clarity.known_referents)
+            originally_unknown = {
+                question.subject.casefold()
+                for question in clarity.questions
+                if question.kind == "unknown_identity"
+            }
             clarity = await self._validated(
                 replace(
                     request,
@@ -420,6 +440,64 @@ class IntentRecognizer:
                         ref = ref.model_copy(update={"evidence": previous.evidence})
                 grounded_references.append(ref)
             clarity = clarity.model_copy(update={"references": grounded_references})
+            checks = {}
+            recognized_entities = {}
+            pending_questions = []
+            for question in clarity.questions:
+                subject = question.subject.casefold()
+                proposed = next(
+                    (
+                        value
+                        for name, value in original_definitions.items()
+                        if name.casefold() == subject
+                    ),
+                    None,
+                )
+                if (
+                    question.kind == "unknown_identity"
+                    and not question.lookup_scope
+                    and subject not in originally_unknown
+                    and proposed
+                ):
+                    if subject not in checks:
+                        checks[subject] = await self._validated(
+                            replace(
+                                request,
+                                role="intent_entity_check",
+                                system_instruction=ENTITY_CHECK_INSTRUCTION,
+                                task_instruction="核验精确名称与定义，返回结构化结果。",
+                                input_data={
+                                    "subject": question.subject,
+                                    "proposed_definition": proposed,
+                                },
+                                output_schema=EntityRecognition.model_json_schema(),
+                                timeout_seconds=max(0, deadline - loop.time()),
+                            ),
+                            EntityRecognition,
+                        )
+                    checked = checks[subject]
+                    if checked.recognized and checked.canonical_name.casefold() == subject:
+                        recognized_entities[subject] = checked.definition
+                        continue
+                pending_questions.append(question)
+            references = [
+                ref.model_copy(
+                    update={
+                        "candidates": [recognized_entities[ref.expression.casefold()]],
+                        "resolution": "unique_candidate",
+                    }
+                )
+                if ref.expression.casefold() in recognized_entities
+                else ref
+                for ref in clarity.references
+            ]
+            clarity = clarity.model_copy(
+                update={
+                    "questions": pending_questions,
+                    "references": references,
+                    "known_referents": {**clarity.known_referents, **recognized_entities},
+                }
+            )
         located = {}
         questions = []
         for question in clarity.questions:

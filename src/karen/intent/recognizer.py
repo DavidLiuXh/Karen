@@ -683,6 +683,15 @@ class IntentRecognizer:
                 questions=[question.text for question in clarity.questions],
                 reason=clarity.reason,
             )
+        elif clarity.external_information_needed and state["session"].routing.handling == "respond":
+            session = state["session"]
+            routing = session.routing.model_copy(
+                update={"handling": "assess", "reason": "清晰度检查发现需要核查外部资料。"}
+            )
+            result["session"] = session.model_copy(update={"routing": routing})
+            self.observer.emit(
+                "intent.routing_refined", data={"routing": routing, "basis": "external_information"}
+            )
         return result
 
     async def classify(

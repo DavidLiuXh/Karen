@@ -1003,7 +1003,8 @@ async def test_unquoted_or_duplicate_conflict_does_not_create_a_user_question(se
     assert result.goal and not result.questions
 
 
-async def test_public_fact_lookup_preserves_unknowns_without_promoting_them_to_facts():
+@pytest.mark.parametrize("initial_handling", ["assess", "respond"])
+async def test_public_fact_lookup_preserves_unknowns_without_promoting_them_to_facts(initial_handling):
     from dynamic_graph import FakeModelClient as RawModel
 
     missing = ["核查用户所写精确名称的身份，再查询已验证对象的公开参数"]
@@ -1015,9 +1016,10 @@ async def test_public_fact_lookup_preserves_unknowns_without_promoting_them_to_f
         "questions": [],
         "reason": "查证对象与问题已明确，缺少的是外部资料",
     }
-    model = RawModel([routing(), assessment, ready()])
+    model = RawModel([routing(initial_handling, types=["question"]), assessment, ready()])
     result = await IntentRecognizer(model).advance(IntentSession(), "查询这个精确名称的公开参数")
     assert result.goal and not result.questions
+    assert result.routing.handling == "assess"
     assert model.requests[-1].input_data["clarity"]["external_information_needed"] == missing
     assert result.goal.context["information_to_verify"] == missing
     assert result.goal.context["supporting_facts"] == []

@@ -132,6 +132,57 @@ async def test_personal_question_answers_from_recalled_m1_without_execution(tmp_
         await memory.close()
 
 
+@pytest.mark.parametrize("needs_external_data", [False, True])
+async def test_question_handling_is_reconsidered_with_recalled_detail_evidence(
+    tmp_path, needs_external_data
+):
+    backend = MemoryModel()
+    backend.kind = "detail"
+    memory = ContextMemory(
+        root_dir=tmp_path / "context", model=backend, embeddings=LocalEmbeddings()
+    )
+    await memory.start()
+    try:
+        await memory.flush(
+            memory.submit(event("地铁单次费用8元；出租车报价74元。", request="costs"))
+        )
+        final_handling = "assess" if needs_external_data else "respond"
+        goal = ready()
+        goal["decision"]["goal"]["objective"] = "查证当前实际交通费用"
+        goal["decision"]["goal"]["success_criteria"] = ["输出当前费用"]
+        executor = FakeModelClient([graph_response(), {"draft": "当前报价已经查证。"}])
+        agent, model, _ = agent_for(
+            tmp_path,
+            [
+                routing(types=["question"]),
+                routing(final_handling, types=["question"]),
+                goal if needs_external_data else reply("按你提供的报价，可节省66元。"),
+            ],
+            memory=memory,
+            executor=executor,
+        )
+        query = (
+            "查证今天实际交通费用，然后比较差价。"
+            if needs_external_data
+            else "乘地铁比出租车节省多少？"
+        )
+        original = IntentSession(timezone="UTC")
+        turn = await agent.advance(original, query)
+        requests = [r for r in model.requests if r.role == "intent_router"]
+        assert len(requests) == 2 and "memory" not in requests[0].input_data
+        evidence = requests[1].input_data["memory"]
+        assert any("74元" in h["memory"]["text"] for h in evidence["m2"])
+        assert turn.session.routing.handling == final_handling
+        assert turn.session.request_id == original.request_id
+        if needs_external_data:
+            assert turn.result.execution_status == "COMPLETED" and executor.requests
+        else:
+            assert turn.response == "按你提供的报价，可节省66元。"
+            assert turn.result is None and executor.requests == []
+    finally:
+        await memory.close()
+
+
 async def test_mixed_information_and_task_keep_both_parts_in_goal_and_memory(tmp_path):
     backend = MemoryModel()
     memory = ContextMemory(

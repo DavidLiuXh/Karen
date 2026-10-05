@@ -684,7 +684,9 @@ class IntentRecognizer:
             )
         return result
 
-    async def classify(self, session: IntentSession, user_input: str) -> InputRouting:
+    async def classify(
+        self, session: IntentSession, user_input: str, *, memory_context: dict | None = None
+    ) -> InputRouting:
         message = Message(role="user", content=user_input)
         pending = bool(session.questions) and not session.completed
         with self.observer.span("intent.classify"):
@@ -700,6 +702,7 @@ class IntentRecognizer:
                     }
                     if pending
                     else None,
+                    **({"memory": memory_context} if memory_context is not None else {}),
                 },
                 output_schema=InputRouting.model_json_schema(),
             )

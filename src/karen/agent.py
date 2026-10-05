@@ -177,6 +177,23 @@ class Karen:
                 )
             )
         kwargs = {"memory_context": recalled.context()} if recalled else {}
+        if (
+            recalled is not None
+            and session.routing.handling == "assess"
+            and session.routing.task_relation == "new"
+            and session.routing.input_types == ["question"]
+            and recalled.coverage.get("query_kind") == "detail"
+            and (recalled.m2 or recalled.details)
+        ):
+            refined = await self.intent.classify(session, user_input, **kwargs)
+            session = session.model_copy(
+                update={
+                    "routing": session.routing.model_copy(
+                        update={"handling": refined.handling, "reason": refined.reason}
+                    )
+                }
+            )
+            self.observer.emit("intent.routing_refined", data={"routing": session.routing})
         session = await self.intent.advance(session, user_input, routing=session.routing, **kwargs)
         if session.goal is None:
             if session.reply is not None:

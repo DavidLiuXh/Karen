@@ -1409,6 +1409,88 @@ async def test_invalid_source_quote_is_repaired_and_never_cached_as_evidence(tmp
         await service.close()
 
 
+async def test_invalid_coexist_match_explains_conflicting_slots_before_atomic_repair(tmp_path):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            self.requests.append(request)
+            data = request.input_data
+            if request.role == "memory_extract":
+                current = next(e for e in data["events"] if e["event_id"] == data["new_event_id"])
+                text = current["payload"]["content"]
+                key = {"我会录音": "skill.audio", "我会剪辑": "skill.video"}.get(
+                    text, "skill.media"
+                )
+                evidence = [
+                    {"event_id": current["event_id"], "pointer": "/payload/content", "quote": text}
+                ]
+                return ModelResponse(
+                    {
+                        "facts": [
+                            {
+                                "candidate_id": "skill",
+                                "fact_key": key,
+                                "value": text,
+                                "text": text,
+                                "evidence": evidence,
+                            }
+                        ],
+                        "summaries": [
+                            {"text": text, "event_kind": "statement", "evidence": evidence}
+                        ],
+                    }
+                )
+            if request.role == "memory_verify":
+                combined = data["candidates"][0]["fact_key"] == "skill.media"
+                if combined and "validation_error" in data:
+                    feedback = data["validation_error"]
+                    assert feedback["code"] == "INVALID_COEXISTING_FACT"
+                    assert feedback["candidate_id"] == "skill"
+                    assert {m["fact_key"] for m in feedback["matched_facts"]} == {
+                        "skill.audio",
+                        "skill.video",
+                    }
+                    operation, verification, matched = "ignore", "uncertain", []
+                else:
+                    operation, verification = (
+                        ("coexist", "supported") if combined else ("new", "supported")
+                    )
+                    matched = [m["memory_id"] for m in data["existing"]] if combined else []
+                return ModelResponse(
+                    {
+                        "decisions": [
+                            {
+                                "candidate_id": "skill",
+                                "verification": verification,
+                                "operation": operation,
+                                "matched_ids": matched,
+                                "reason": "两项独立技能的合并表述不更新同一属性",
+                            }
+                        ]
+                    }
+                )
+            raise AssertionError(request.role)
+
+    model = Model()
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        for text in ["我会录音", "我会剪辑"]:
+            await service.flush(service.submit(event(text)))
+        receipt = service.submit(event("我会录音和剪辑"))
+        await service.flush(receipt)
+        _, stored, _ = service.storage.snapshot()
+        facts = [m for m in stored.values() if m.layer == "m1"]
+        assert {m.fact_key for m in facts} == {"skill.audio", "skill.video"}
+        assert all(m.state == "active" for m in facts)
+        assert any(m.layer == "m2" and m.text == "我会录音和剪辑" for m in stored.values())
+        status = await service.write_status(receipt)
+        assert status.derived == "committed" and status.attempts == 0
+    finally:
+        await service.close()
+
+
 @pytest.mark.parametrize("operation,succeeds", [("coexist", True), ("new", False)])
 async def test_compatible_values_in_same_fact_slot_keep_both_active(tmp_path, operation, succeeds):
     class Model(MemoryModel):

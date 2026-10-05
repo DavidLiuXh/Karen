@@ -32,10 +32,10 @@ class ExtractionState(TypedDict, total=False):
     model_info: dict
 
 
-class EvidenceValidationError(ValueError):
-    def __init__(self, code, evidence):
+class MemoryValidationError(ValueError):
+    def __init__(self, code, **details):
         super().__init__(code)
-        self.feedback = {"code": code, "invalid_evidence": evidence.model_dump(mode="json")}
+        self.feedback = {"code": code, **details}
 
 
 class Extractor:
@@ -177,7 +177,9 @@ class Extractor:
                     try:
                         sources.append(await self.io(self.storage.source, evidence, allowed))
                     except ValueError as error:
-                        raise EvidenceValidationError(str(error), evidence) from error
+                        raise MemoryValidationError(
+                            str(error), invalid_evidence=evidence.model_dump(mode="json")
+                        ) from error
                 if candidate in extraction.facts and direct_fact_evidence(event, sources):
                     eligible.append(candidate)
                 elif candidate in extraction.summaries:
@@ -340,7 +342,20 @@ class Extractor:
                 or digest(old.value) == digest(candidate.value)
                 for old in matched
             ):
-                raise ValueError("INVALID_COEXISTING_FACT")
+                raise MemoryValidationError(
+                    "INVALID_COEXISTING_FACT",
+                    candidate_id=candidate.candidate_id,
+                    matched_facts=[
+                        {
+                            "memory_id": old.memory_id,
+                            "fact_key": old.fact_key,
+                            "state": old.state,
+                            "value": old.value,
+                            "same_value": digest(old.value) == digest(candidate.value),
+                        }
+                        for old in matched
+                    ],
+                )
             if decision.operation in {"replace", "correct"} and any(
                 max(s.occurred_at for s in old.sources) > event.occurred_at for old in matched
             ):

@@ -1624,3 +1624,40 @@ async def test_detail_context_preserves_original_sequence_when_timestamps_match(
     assert [hit.text for hit in result.details] == ["这项活动叫远星。", "共七天。"]
     assert [hit.source.sequence for hit in result.details] == [first.sequence, second.sequence]
     assert {hit.request_id for hit in result.details} == {"task-1"}
+
+
+async def test_old_only_summary_cannot_poison_new_event_derivation(tmp_path):
+    class Model(MemoryModel):
+        previous = None
+
+        async def generate(self, request):
+            result = await super().generate(request)
+            if request.role == "memory_extract":
+                current = request.input_data["new_event_id"]
+                if self.previous is not None:
+                    result.payload["summaries"].append(
+                        {
+                            "text": "重复旧摘要",
+                            "event_kind": "statement",
+                            "evidence": [
+                                {
+                                    "event_id": self.previous,
+                                    "pointer": "/payload/content",
+                                    "quote": "不匹配的旧原文",
+                                }
+                            ],
+                        }
+                    )
+                self.previous = current
+            return result
+
+    service = ContextMemory(root_dir=tmp_path, model=Model(), embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        await service.flush(service.submit(event("项目叫远星。")))
+        await service.flush(service.submit(event("本次补充进度：完成初稿。")))
+        _, records, _ = service.storage.snapshot()
+        summaries = [m.text for m in records.values() if m.layer == "m2"]
+        assert set(summaries) == {"项目叫远星。", "本次补充进度：完成初稿。"}
+    finally:
+        await service.close()

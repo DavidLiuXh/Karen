@@ -166,12 +166,11 @@ class Extractor:
             if len(ids) != len(set(ids)):
                 raise ValueError("DUPLICATE_CANDIDATE_ID")
             eligible = []
+            summaries = []
             for candidate in (*extraction.facts, *extraction.summaries):
-                # Old fact echoes cannot be new evidence; discard them before
+                # Old facts and summaries cannot be new evidence; discard them before
                 # validating quotes that will never be used for this event.
-                if candidate in extraction.facts and not any(
-                    e.event_id == event_id for e in candidate.evidence
-                ):
+                if not any(e.event_id == event_id for e in candidate.evidence):
                     continue
                 sources = []
                 for evidence in candidate.evidence:
@@ -181,7 +180,9 @@ class Extractor:
                         raise EvidenceValidationError(str(error), evidence) from error
                 if candidate in extraction.facts and direct_fact_evidence(event, sources):
                     eligible.append(candidate)
-            return extraction.model_copy(update={"facts": eligible})
+                elif candidate in extraction.summaries:
+                    summaries.append(candidate)
+            return extraction.model_copy(update={"facts": eligible, "summaries": summaries})
 
         extraction = None
         if job["extraction"]:

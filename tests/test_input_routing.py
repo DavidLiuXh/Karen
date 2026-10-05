@@ -14,6 +14,7 @@ from test_personal_facts import HobbyModel
 
 from karen import IntentRecognizer, IntentSession, Karen
 from karen.context import ContextMemory
+from karen.context.storage import encode
 from karen.intent import InputRouting
 from karen.intent.recognizer import Message
 from karen.observability import ObservedModel, Observer
@@ -263,7 +264,9 @@ async def test_resource_clarification_chain_executes_with_pending_writes_and_old
             assert final.memory_result.history.messages == []
             assert final.memory_result.coverage["dialogue_dependency"] == "current_task"
             assert not final.memory_result.coverage["requires_history"]
-            assert "CANDIDATE_BUDGET_LIMIT" in final.memory_result.degradations
+            assert final.memory_result.status == "degraded"
+            assert not final.memory_result.coverage["complete"]
+            assert len(encode(final.memory_result.context()).encode()) <= 12 * 1024
             if rerank_fails:
                 assert "RERANK_FAILED_FUSION_ORDER" in final.memory_result.degradations
             rank_requests = [r for r in backend.requests if r.role == "memory_rerank"]

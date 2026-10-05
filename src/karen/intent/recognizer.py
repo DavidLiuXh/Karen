@@ -31,6 +31,7 @@ from ..observability import Observer
 from ..prompts import RESPONSE_INSTRUCTION
 from .prompts import (
     CLARITY_INSTRUCTION,
+    CLARITY_REVIEW_INSTRUCTION,
     CLARITY_TASK_INSTRUCTION,
     DIRECT_RESPONSE_INSTRUCTION,
     GOAL_CONTEXT_INSTRUCTION,
@@ -135,6 +136,10 @@ class ReferenceAssessment(IntentContract):
     candidates: list[Text] = Field(min_length=1)
     resolution: Literal["unique_candidate", "explicit_identification", "inferred", "unresolved"]
     evidence: str
+    requires_unique_resolution: bool = Field(
+        default=True,
+        description="只有唯一操作或真实单次事件的唯一指代才为 true；资料查询可分别列出多个版本/记录时为 false，单数用法不要求唯一答案。",
+    )
 
     @model_validator(mode="after")
     def valid_resolution(self):
@@ -149,6 +154,10 @@ class ClarityAssessment(IntentContract):
     references: list[ReferenceAssessment]
     known_referents: dict[str, Text]
     selection_criteria: list[Text]
+    selection_criteria_required: bool = Field(
+        default=False,
+        description="主观选择需要用户实质筛选标准为 true；不能因产物是文字建议而当成普通草稿。",
+    )
     questions: list[Text] = Field(
         description=(
             "仅填写缺失后无法给出任何符合已知要求的有效回应/方案的必要问题。"
@@ -326,8 +335,19 @@ class IntentRecognizer:
             output_schema=ClarityAssessment.model_json_schema(),
             max_output_tokens=2048,
         )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + request.timeout_seconds
         clarity = await self._validated(request, ClarityAssessment)
         source_texts = [m.content for m in state["session"].messages]
+        context_values = [state["session"].user_context]
+        while context_values:
+            value = context_values.pop()
+            if isinstance(value, str):
+                source_texts.append(value)
+            elif isinstance(value, dict):
+                context_values.extend(value.values())
+            elif isinstance(value, list):
+                context_values.extend(value)
         memory = state.get("memory_context") or {}
         for layer in ("m1", "m2"):
             source_texts.extend(
@@ -342,10 +362,45 @@ class IntentRecognizer:
             for message in memory.get("history", {}).get("messages", [])
             if message.get("content")
         )
+        if clarity.known_referents:
+            original_references = clarity.references
+            clarity = await self._validated(
+                replace(
+                    request,
+                    role="intent_clarity_review",
+                    task_instruction=CLARITY_REVIEW_INSTRUCTION,
+                    input_data={
+                        "original_input": request.input_data,
+                        "candidate_assessment": clarity.model_dump(mode="json"),
+                    },
+                    timeout_seconds=max(0, deadline - loop.time()),
+                ),
+                ClarityAssessment,
+            )
+            grounded_references = []
+            for ref in clarity.references:
+                if ref.evidence and not any(ref.evidence in text for text in source_texts):
+                    previous = next(
+                        (
+                            old
+                            for old in original_references
+                            if old.expression == ref.expression
+                            and old.resolution == ref.resolution
+                            and set(ref.candidates) <= set(old.candidates)
+                            and old.evidence
+                            and any(old.evidence in text for text in source_texts)
+                        ),
+                        None,
+                    )
+                    if previous is not None:
+                        ref = ref.model_copy(update={"evidence": previous.evidence})
+                grounded_references.append(ref)
+            clarity = clarity.model_copy(update={"references": grounded_references})
         unresolved = [
             ref
             for ref in clarity.references
             if len(ref.candidates) > 1
+            and ref.requires_unique_resolution
             and (
                 ref.resolution != "explicit_identification"
                 or not any(ref.evidence in text for text in source_texts)
@@ -359,6 +414,14 @@ class IntentRecognizer:
                         for ref in unresolved
                     ]
                 }
+            )
+        if (
+            clarity.selection_criteria_required
+            and not clarity.selection_criteria
+            and not clarity.questions
+        ):
+            clarity = clarity.model_copy(
+                update={"questions": ["请说明选择时最看重的因素或相关偏好。"]}
             )
         result = {"clarity": clarity}
         if clarity.questions:

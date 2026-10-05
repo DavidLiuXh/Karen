@@ -667,7 +667,9 @@ async def test_clarity_gate_retains_pending_context_and_stops_goal_creation():
             clarity(["你说的产品编号对应哪个产品？"]),
             routing(types=["task_control"], relation="continue"),
             clarity(["采用哪一个版本？"], known={"产品": "离线音频转码器"}),
+            clarity(["采用哪一个版本？"], known={"产品": "离线音频转码器"}),
             routing(types=["task_control"], relation="continue"),
+            clarity([], known={"产品": "离线音频转码器版本2"}),
             clarity([], known={"产品": "离线音频转码器版本2"}),
             ready(),
         ]
@@ -801,3 +803,142 @@ async def test_supporting_memory_facts_remain_internal_to_direct_response():
     assert result.reply == "你共借了五本。"
     assert result.messages[-1].content == result.reply
     assert "内部证据" not in result.reply and not result.questions
+
+
+async def test_compatible_reference_alternatives_do_not_force_unique_selection():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    model = RawModel(
+        [
+            routing("respond", types=["question"]),
+            {
+                "references": [
+                    {
+                        "expression": "两个版本里的主演",
+                        "candidates": ["早期版", "新版"],
+                        "resolution": "unresolved",
+                        "evidence": "",
+                        "requires_unique_resolution": False,
+                    }
+                ],
+                "known_referents": {},
+                "selection_criteria": [],
+                "questions": [],
+                "reason": "可以分别回答两个版本",
+            },
+            reply("早期版是甲，新版是乙。"),
+        ]
+    )
+    result = await IntentRecognizer(model).advance(
+        IntentSession(), "这个作品两个版本里的主演分别是谁？"
+    )
+    assert result.reply == "早期版是甲，新版是乙。" and not result.questions
+
+
+async def test_required_selection_criteria_cannot_be_omitted_by_clarity_decision():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    model = RawModel(
+        [
+            routing("respond", types=["question"]),
+            {
+                "references": [],
+                "known_referents": {},
+                "selection_criteria": [],
+                "selection_criteria_required": True,
+                "questions": [],
+                "reason": "缺少实质选择标准",
+            },
+        ]
+    )
+    result = await IntentRecognizer(model).advance(IntentSession(), "给我推荐些值得看的纪录片")
+    assert result.questions and result.reply is None and result.goal is None
+
+
+async def test_clarity_review_can_reject_an_unfounded_entity_definition():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    original = {
+        "references": [],
+        "known_referents": {"Neravion": "用户所指的一个类群名称，身份需查证"},
+        "selection_criteria": [],
+        "questions": [],
+        "reason": "候选把猜测当成识别",
+    }
+    revised = {
+        **original,
+        "questions": ["Neravion 是什么类群，或是否有其他拼写？"],
+        "reason": "没有提供识别实体的具体事实",
+    }
+    model = RawModel([routing(), original, revised])
+    result = await IntentRecognizer(model).advance(IntentSession(), "Neravion 什么时候出现？")
+    assert result.questions and result.goal is None
+    audit = next(r for r in model.requests if r.role == "intent_clarity_review")
+    assert audit.input_data["original_input"]["messages"][0]["content"] == "Neravion 什么时候出现？"
+    assert (
+        audit.input_data["candidate_assessment"]["known_referents"] == original["known_referents"]
+    )
+    assert model.requests[1].timeout_seconds >= audit.timeout_seconds > 0
+
+
+async def test_review_preserves_existing_quote_for_unchanged_explicit_identification():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    known = {
+        "references": [
+            {
+                "expression": "那个文件",
+                "candidates": ["甲目录文件", "乙目录文件"],
+                "resolution": "explicit_identification",
+                "evidence": "那个文件指甲目录文件",
+            }
+        ],
+        "known_referents": {"文件": "用户指名的文件"},
+        "selection_criteria": [],
+        "questions": [],
+        "reason": "用户已消除歧义",
+    }
+    reviewed = {
+        **known,
+        "references": [{**known["references"][0], "evidence": "复核说明：用户已消除歧义"}],
+    }
+    model = RawModel(
+        [routing("respond", types=["question"]), known, reviewed, reply("对象是甲目录文件。")]
+    )
+    result = await IntentRecognizer(model).advance(
+        IntentSession(), "那个文件指甲目录文件。你知道对象是哪一个了吗？"
+    )
+    assert result.reply == "对象是甲目录文件。" and not result.questions
+    response = model.requests[-1]
+    assert response.input_data["clarity"]["references"][0]["evidence"] == "那个文件指甲目录文件"
+
+
+async def test_explicit_referent_evidence_can_come_from_provided_context():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    model = RawModel(
+        [
+            routing("respond", types=["question"]),
+            {
+                "references": [
+                    {
+                        "expression": "她",
+                        "candidates": ["周宁", "沈清"],
+                        "resolution": "explicit_identification",
+                        "evidence": "这里她指沈清",
+                    }
+                ],
+                "known_referents": {},
+                "selection_criteria": [],
+                "questions": [],
+                "reason": "上下文已明确",
+            },
+            reply("沈清收到了信。"),
+        ]
+    )
+    session = IntentSession(user_context={"notes": {"identity": "这里她指沈清"}})
+    result = await IntentRecognizer(model).advance(
+        session, "周宁告诉沈清，她收到了信。是谁收到了信？"
+    )
+    assert result.reply == "沈清收到了信。" and not result.questions
+    assert session.user_context == {"notes": {"identity": "这里她指沈清"}}

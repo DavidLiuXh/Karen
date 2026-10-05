@@ -906,6 +906,11 @@ async def test_grounded_requirement_conflict_blocks_goal_until_user_corrects_it(
         [
             routing(),
             assessment,
+            {
+                "incompatible": True,
+                "question": "长度要求互相冲突，请确认以哪项为准？",
+                "reason": "要求完成正文",
+            },
             routing(types=["task_control"], relation="continue"),
             resolved,
             ready(),
@@ -1072,6 +1077,49 @@ async def test_dropped_requirement_conflict_needs_independent_source_check(incom
     assert audit.input_data["quoted_requirements"] == ["全文最多400字", "正文至少700字"]
     assert "复核声称" not in str(audit.input_data)
     assert model.requests[1].timeout_seconds >= audit.timeout_seconds > 0
+
+
+@pytest.mark.parametrize("analyze_only", [False, True])
+async def test_conflict_in_material_is_not_always_a_blocking_delivery_requirement(analyze_only):
+    from dynamic_graph import FakeModelClient as RawModel
+
+    assessment = {
+        "requirement_conflicts": [
+            {
+                "first_requirement": "全文最多300字",
+                "second_requirement": "正文至少600字",
+                "question": "请确认要保留哪项要求？",
+            }
+        ],
+        "references": [],
+        "known_referents": {"正文": "全文的主要内容"},
+        "selection_criteria": [],
+        "questions": [],
+        "reason": "材料中的字数范围互不兼容",
+    }
+    check = {
+        "incompatible": not analyze_only,
+        "question": "请确认要保留哪项要求？" if not analyze_only else "",
+        "reason": "仅分析材料的矛盾可直接交付；按材料写正文才需要修改要求",
+    }
+    model = RawModel(
+        [
+            routing("respond" if analyze_only else "assess", types=["question"]),
+            assessment,
+            assessment,
+            check,
+            reply("是的，两项字数要求矛盾。"),
+        ]
+    )
+    text = "全文最多300字，正文至少600字。" + (
+        "请判断这两项要求是否矛盾，只解释即可。" if analyze_only else "按这两项要求写正文。"
+    )
+    result = await IntentRecognizer(model).advance(IntentSession(), text)
+    assert bool(result.questions) is not analyze_only
+    assert result.reply == ("是的，两项字数要求矛盾。" if analyze_only else None)
+    audits = [r for r in model.requests if r.role == "intent_requirement_check"]
+    assert len(audits) == 1
+    assert audits[0].input_data["original_input"]["messages"][-1]["content"] == text
 
 
 async def test_clarity_review_can_reject_an_unfounded_entity_definition():

@@ -215,7 +215,7 @@ class RequirementCheck(IntentContract):
 class ClarityAssessment(IntentContract):
     requirement_conflicts: list[RequirementConflict] = Field(
         default_factory=list,
-        description="先检查当前要求及其依赖材料是否能同时成立；只列出仍未解决的实质冲突。",
+        description="只列出阻碍用户实际要求的交付的未解决冲突；仅分析矛盾时材料的冲突不是交付阻碍。",
     )
     external_information_needed: list[Text] = Field(
         default_factory=list,
@@ -436,9 +436,9 @@ class IntentRecognizer:
             for message in memory.get("history", {}).get("messages", [])
             if message.get("content")
         )
+        original_conflicts = clarity.requirement_conflicts
         if clarity.known_referents:
             original_references = clarity.references
-            original_conflicts = clarity.requirement_conflicts
             original_definitions = dict(clarity.known_referents)
             originally_unknown = {
                 question.subject.casefold()
@@ -455,40 +455,6 @@ class IntentRecognizer:
                 ),
                 ClarityAssessment,
             )
-            conflicts = list(clarity.requirement_conflicts)
-            checked_pairs = {
-                frozenset((c.first_requirement, c.second_requirement)) for c in conflicts
-            }
-            for conflict in original_conflicts:
-                pair = frozenset((conflict.first_requirement, conflict.second_requirement))
-                if (
-                    len(pair) != 2
-                    or pair in checked_pairs
-                    or not all(any(quote in text for text in source_texts) for quote in pair)
-                ):
-                    continue
-                checked_pairs.add(pair)
-                checked = await self._validated(
-                    replace(
-                        request,
-                        role="intent_requirement_check",
-                        system_instruction=REQUIREMENT_CHECK_INSTRUCTION,
-                        task_instruction="核查两条原始要求与完整输入是否兼容，不生成目标。",
-                        input_data={
-                            "original_input": request.input_data,
-                            "quoted_requirements": [
-                                conflict.first_requirement,
-                                conflict.second_requirement,
-                            ],
-                        },
-                        output_schema=RequirementCheck.model_json_schema(),
-                        timeout_seconds=max(0, deadline - loop.time()),
-                    ),
-                    RequirementCheck,
-                )
-                if checked.incompatible:
-                    conflicts.append(conflict.model_copy(update={"question": checked.question}))
-            clarity = clarity.model_copy(update={"requirement_conflicts": conflicts})
             grounded_references = []
             for ref in clarity.references:
                 ambiguous_before = next(
@@ -641,15 +607,44 @@ class IntentRecognizer:
                     ]
                 }
             )
-        conflicts = [
-            conflict
-            for conflict in clarity.requirement_conflicts
-            if conflict.first_requirement != conflict.second_requirement
-            and all(
-                any(quote in text for text in source_texts)
-                for quote in (conflict.first_requirement, conflict.second_requirement)
+        conflicts, checked_pairs = [], set()
+        conflict_questions = set()
+        for conflict in (*clarity.requirement_conflicts, *original_conflicts):
+            pair = frozenset((conflict.first_requirement, conflict.second_requirement))
+            if (
+                len(pair) != 2
+                or pair in checked_pairs
+                or not all(any(quote in text for text in source_texts) for quote in pair)
+            ):
+                continue
+            checked_pairs.add(pair)
+            conflict_questions.add(conflict.question)
+            checked = await self._validated(
+                replace(
+                    request,
+                    role="intent_requirement_check",
+                    system_instruction=REQUIREMENT_CHECK_INSTRUCTION,
+                    task_instruction="核查两条原始要求是否阻碍用户实际要求的交付，不生成目标。",
+                    input_data={
+                        "original_input": request.input_data,
+                        "quoted_requirements": [
+                            conflict.first_requirement,
+                            conflict.second_requirement,
+                        ],
+                    },
+                    output_schema=RequirementCheck.model_json_schema(),
+                    timeout_seconds=max(0, deadline - loop.time()),
+                ),
+                RequirementCheck,
             )
-        ]
+            if checked.incompatible:
+                conflicts.append(conflict.model_copy(update={"question": checked.question}))
+        clarity = clarity.model_copy(
+            update={
+                "requirement_conflicts": conflicts,
+                "questions": [q for q in clarity.questions if q.text not in conflict_questions],
+            }
+        )
         if conflicts:
             questions = list(clarity.questions)
             for conflict in conflicts:

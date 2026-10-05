@@ -70,8 +70,16 @@ class GoalDraft(IntentContract):
     inputs: dict[str, JsonValue] = Field(default_factory=dict)
     input_schema: SchemaSpec | None = None
     output_schema: SchemaSpec = Field(
-        default_factory=lambda: SchemaSpec.model_validate(default_output_schema())
+        default_factory=lambda: SchemaSpec.model_validate(default_output_schema()),
+        description="未指定或 null 时使用引擎默认 answer/evidence/limitations 格式；自定义 schema 的根为 object。",
     )
+
+    @field_validator("output_schema", mode="before", json_schema_input_type=SchemaSpec | None)
+    @classmethod
+    def default_output_contract(cls, value):
+        # Optional model-facing schema selection becomes a concrete engine schema
+        # at this boundary. Other schema values still undergo full validation.
+        return default_output_schema() if value is None else value
 
     @model_validator(mode="after")
     def validate_engine_contract(self):

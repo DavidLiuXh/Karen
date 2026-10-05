@@ -333,6 +333,29 @@ async def test_custom_output_schema_is_validated_by_engine_contract():
     assert len(model.assessments) == 2
 
 
+@pytest.mark.parametrize("stage", ["intent", "intent_goal_review"])
+async def test_optional_null_output_schema_uses_the_engine_default(stage):
+    import jsonschema
+    from dynamic_graph.contracts import default_output_schema
+    from dynamic_graph.models.client import ModelResponse
+
+    class Model(TaskIntentModel):
+        async def generate(self, request):
+            if request.role == stage:
+                self.requests.append(request)
+                return ModelResponse(ready(output_schema=None))
+            return await super().generate(request)
+
+    model = Model([ready()])
+    session = await IntentRecognizer(model).advance(
+        IntentSession(), "写一封通知邮件", memory_context={"m2": [{"text": "已提供通知内容"}]}
+    )
+    assert session.goal.output_schema.document() == default_output_schema()
+    assert not session.questions
+    request = next(r for r in model.requests if r.role == stage)
+    jsonschema.validate(ready(output_schema=None), request.output_schema)
+
+
 async def test_cancellation_during_assessment_propagates():
     entered = asyncio.Event()
 

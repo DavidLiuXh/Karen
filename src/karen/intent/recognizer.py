@@ -38,6 +38,7 @@ from .prompts import (
     GOAL_CONTEXT_INSTRUCTION,
     INTENT_SYSTEM_INSTRUCTION,
     INTENT_TASK_INSTRUCTION,
+    REQUIREMENT_CHECK_INSTRUCTION,
     ROUTING_INSTRUCTION,
     STRUCTURE_REPAIR_INSTRUCTION,
 )
@@ -194,7 +195,21 @@ class ClarityQuestion(IntentContract):
 class RequirementConflict(IntentContract):
     first_requirement: Text = Field(description="互不兼容的第一项当前要求，连续引用用户原话。")
     second_requirement: Text = Field(description="互不兼容的第二项当前要求，连续引用用户原话。")
-    question: Text = Field(description="简短询问应修正或采用哪项要求，不擅自替用户决定。")
+    question: Text = Field(
+        max_length=200, description="只用一个简短问题询问应修正或采用哪项要求，不展开题目解析。"
+    )
+
+
+class RequirementCheck(IntentContract):
+    incompatible: bool
+    question: str = Field(max_length=200)
+    reason: Text
+
+    @model_validator(mode="after")
+    def necessary_question(self):
+        if self.incompatible and not self.question.strip():
+            raise ValueError("An incompatible requirement check needs a clarification question")
+        return self
 
 
 class ClarityAssessment(IntentContract):
@@ -423,6 +438,7 @@ class IntentRecognizer:
         )
         if clarity.known_referents:
             original_references = clarity.references
+            original_conflicts = clarity.requirement_conflicts
             original_definitions = dict(clarity.known_referents)
             originally_unknown = {
                 question.subject.casefold()
@@ -439,6 +455,40 @@ class IntentRecognizer:
                 ),
                 ClarityAssessment,
             )
+            conflicts = list(clarity.requirement_conflicts)
+            checked_pairs = {
+                frozenset((c.first_requirement, c.second_requirement)) for c in conflicts
+            }
+            for conflict in original_conflicts:
+                pair = frozenset((conflict.first_requirement, conflict.second_requirement))
+                if (
+                    len(pair) != 2
+                    or pair in checked_pairs
+                    or not all(any(quote in text for text in source_texts) for quote in pair)
+                ):
+                    continue
+                checked_pairs.add(pair)
+                checked = await self._validated(
+                    replace(
+                        request,
+                        role="intent_requirement_check",
+                        system_instruction=REQUIREMENT_CHECK_INSTRUCTION,
+                        task_instruction="核查两条原始要求与完整输入是否兼容，不生成目标。",
+                        input_data={
+                            "original_input": request.input_data,
+                            "quoted_requirements": [
+                                conflict.first_requirement,
+                                conflict.second_requirement,
+                            ],
+                        },
+                        output_schema=RequirementCheck.model_json_schema(),
+                        timeout_seconds=max(0, deadline - loop.time()),
+                    ),
+                    RequirementCheck,
+                )
+                if checked.incompatible:
+                    conflicts.append(conflict.model_copy(update={"question": checked.question}))
+            clarity = clarity.model_copy(update={"requirement_conflicts": conflicts})
             grounded_references = []
             for ref in clarity.references:
                 ambiguous_before = next(
@@ -852,7 +902,7 @@ class IntentRecognizer:
         memory = state.get("memory_context")
         if (
             memory
-            and memory.get("coverage", {}).get("requires_history")
+            and (memory.get("coverage", {}).get("requires_history"))
             and memory.get("history", {}).get("status") != "selected"
         ):
             from .prompts import HISTORY_CLARIFICATION

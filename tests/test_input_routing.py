@@ -1040,6 +1040,40 @@ async def test_review_cannot_resolve_ambiguity_by_relabeling_the_same_passage(
         assert model.requests[-1].role == "intent_clarity_review"
 
 
+@pytest.mark.parametrize("incompatible", [False, True])
+async def test_dropped_requirement_conflict_needs_independent_source_check(incompatible):
+    from dynamic_graph import FakeModelClient as RawModel
+
+    conflict = {
+        "first_requirement": "全文最多400字",
+        "second_requirement": "正文至少700字",
+        "question": "两个长度要求不能同时满足，采用哪项？",
+    }
+    initial = {
+        "requirement_conflicts": [conflict],
+        "references": [],
+        "known_referents": {"正文": "主要介绍文本"},
+        "selection_criteria": [],
+        "questions": [],
+        "reason": "已发现当前要求冲突",
+    }
+    revised = {**initial, "requirement_conflicts": [], "reason": "复核声称要求兼容"}
+    check = {
+        "incompatible": incompatible,
+        "question": "请确认采用哪个长度要求？" if incompatible else "",
+        "reason": "仅核查原始要求及完整当前输入",
+    }
+    model = RawModel([routing(), initial, revised, check, ready()])
+    result = await IntentRecognizer(model).advance(
+        IntentSession(), "写介绍，全文最多400字，正文至少700字"
+    )
+    assert bool(result.questions) is incompatible
+    audit = next(r for r in model.requests if r.role == "intent_requirement_check")
+    assert audit.input_data["quoted_requirements"] == ["全文最多400字", "正文至少700字"]
+    assert "复核声称" not in str(audit.input_data)
+    assert model.requests[1].timeout_seconds >= audit.timeout_seconds > 0
+
+
 async def test_clarity_review_can_reject_an_unfounded_entity_definition():
     from dynamic_graph import FakeModelClient as RawModel
 

@@ -36,6 +36,7 @@ from .prompts import (
     DIRECT_RESPONSE_INSTRUCTION,
     ENTITY_CHECK_INSTRUCTION,
     GOAL_CONTEXT_INSTRUCTION,
+    GOAL_REVIEW_INSTRUCTION,
     INTENT_SYSTEM_INSTRUCTION,
     INTENT_TASK_INSTRUCTION,
     MEMORY_CONTEXT_INSTRUCTION,
@@ -943,7 +944,23 @@ class IntentRecognizer:
             input_data=inputs,
             output_schema=Assessment.model_json_schema(),
         )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + request.timeout_seconds
         assessment = await self._validated(request, Assessment)
+        memory = state.get("memory_context") or {}
+        if isinstance(assessment.decision, Ready) and any(
+            memory.get(layer) for layer in ("m1", "m2", "details")
+        ):
+            assessment = await self._validated(
+                replace(
+                    request,
+                    role="intent_goal_review",
+                    task_instruction=GOAL_REVIEW_INSTRUCTION,
+                    input_data={**inputs, "draft": assessment.model_dump(mode="json")},
+                    timeout_seconds=max(0, deadline - loop.time()),
+                ),
+                Assessment,
+            )
         return {"decision": assessment.decision}
 
     @staticmethod

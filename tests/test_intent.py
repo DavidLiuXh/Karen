@@ -69,6 +69,95 @@ async def test_selected_supporting_facts_reach_execution_as_internal_context():
     assert "supporting_facts" not in result.goal.inputs
 
 
+async def test_recalled_uses_are_reviewed_before_goal_creation():
+    from dynamic_graph import ModelResponse
+
+    original = ready(
+        objective="改善录音效果",
+        supporting_facts=["实际用过录音功能", "曾询问视频剪辑功能"],
+        success_criteria=["解释录音参数"],
+        constraints=[],
+        inputs={},
+    )
+    revised = ready(
+        objective="分别改善录音与视频剪辑效果",
+        supporting_facts=original["decision"]["goal"]["supporting_facts"],
+        success_criteria=["解释录音参数", "说明探索视频剪辑时的适用参数"],
+        constraints=[],
+        inputs={},
+    )
+
+    class ReviewModel(TaskIntentModel):
+        async def generate(self, request):
+            if request.role == "intent_goal_review":
+                self.requests.append(request)
+                draft_goal = request.input_data["draft"]["decision"]["goal"]
+                assert draft_goal["objective"] == original["decision"]["goal"]["objective"]
+                assert draft_goal["supporting_facts"] == original["decision"]["goal"]["supporting_facts"]
+                return ModelResponse(revised)
+            return await super().generate(request)
+
+    memory = {"m2": [{"memory": {"text": "录音实际体验；询问如何剪辑视频。"}}]}
+    model = ReviewModel([original])
+    session = IntentSession()
+    result = await IntentRecognizer(model).advance(
+        session, "如何改善这个设备的使用效果？", memory_context=memory
+    )
+    assert result.goal.objective == "分别改善录音与视频剪辑效果"
+    assert len(result.goal.success_criteria) == 2
+    draft_request = next(r for r in model.requests if r.role == "intent")
+    review_request = next(r for r in model.requests if r.role == "intent_goal_review")
+    assert review_request.input_data["memory"] == memory
+    assert review_request.input_data["messages"] == draft_request.input_data["messages"]
+    assert 0 < review_request.timeout_seconds < draft_request.timeout_seconds
+    assert "待审查的模型产物，不能当成新证据" in review_request.task_instruction
+    assert session.goal is None and session.messages == ()
+
+
+@pytest.mark.parametrize("has_memory,is_ready", [(False, True), (True, False)])
+async def test_goal_review_does_not_run_without_evidence_or_for_clarification(has_memory, is_ready):
+    model = TaskIntentModel([ready() if is_ready else clarify()])
+    await IntentRecognizer(model).advance(
+        IntentSession(), "写邮件", memory_context={"m1": [{"text": "背景"}]} if has_memory else {}
+    )
+    assert not any(r.role == "intent_goal_review" for r in model.requests)
+
+
+async def test_goal_review_has_only_the_remaining_assessment_deadline(monkeypatch):
+    import time
+    from dataclasses import replace
+
+    from karen.intent import recognizer
+
+    request_factory = recognizer.ModelRequest
+    monkeypatch.setattr(
+        recognizer,
+        "ModelRequest",
+        lambda **kwargs: replace(request_factory(**kwargs), timeout_seconds=0.15),
+    )
+
+    class SlowReviewModel(TaskIntentModel):
+        async def generate(self, request):
+            if request.role == "intent":
+                await asyncio.sleep(0.09)
+            if request.role == "intent_goal_review":
+                self.requests.append(request)
+                await asyncio.sleep(0.1)
+            return await super().generate(request)
+
+    model = SlowReviewModel([ready()])
+    session = IntentSession()
+    started = time.monotonic()
+    with pytest.raises(ModelCallError, match="timed out"):
+        await IntentRecognizer(model).advance(
+            session, "写邮件", memory_context={"m2": [{"text": "有关背景"}]}
+        )
+    assert time.monotonic() - started < 0.21
+    review = next(r for r in model.requests if r.role == "intent_goal_review")
+    assert 0 < review.timeout_seconds < 0.09
+    assert session.goal is None and session.messages == ()
+
+
 def test_default_timezone_uses_local_machine_configuration():
     assert IntentSession().timezone == get_localzone_name()
 

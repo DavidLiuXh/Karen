@@ -1266,7 +1266,7 @@ async def test_clarity_and_goal_use_the_same_scoped_memory_policy():
         "questions": [],
         "reason": "使用已知偏好作为默认标准",
     }
-    model = RawModel([routing(), clarity, clarity, ready()])
+    model = RawModel([routing(), clarity, clarity, ready(), ready()])
     result = await IntentRecognizer(model).advance(
         IntentSession(), "推荐近期论文", memory_context=memory
     )

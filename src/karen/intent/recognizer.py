@@ -413,7 +413,9 @@ class IntentRecognizer:
                 if key not in {"routing", "clarity"}
             },
             output_schema=ClarityAssessment.model_json_schema(),
-            max_output_tokens=2048,
+            # Thinking and the final structured answer share this budget.
+            # Reviews retain this cap and the original shared deadline.
+            max_output_tokens=8192,
         )
         loop = asyncio.get_running_loop()
         deadline = loop.time() + request.timeout_seconds

@@ -132,3 +132,81 @@ def prepare(data_dir, chinese_path, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     return manifest
+
+
+def prepare_next(data_dir, previous_manifests, destination):
+    """Freeze a disjoint expansion batch using IDs, never answers or outcomes.
+
+    Four CLAMBER and two oracle records per category broaden the first diagnostic
+    sample. Hash ordering is reproducible and does not favor short histories.
+    """
+    destination = Path(destination)
+    if destination.exists():
+        raise FileExistsError("A frozen manifest must not be overwritten")
+    used, memory_families, previous = set(), set(), {}
+    for filename in previous_manifests:
+        path = Path(filename)
+        contents = path.read_bytes()
+        manifest = json.loads(contents)
+        if manifest["protocol_version"] != PROTOCOL_VERSION:
+            raise ValueError("Unsupported previous evaluation protocol")
+        used.update(case["id"] for case in manifest["cases"])
+        memory_families.update(
+            case["id"].removesuffix("_abs")
+            for case in manifest["cases"]
+            if case.get("suite", "").startswith("longmemeval-")
+        )
+        for name, digest in manifest.get("sources_sha256", {}).items():
+            if name in previous and previous[name] != digest:
+                raise ValueError(f"Previous manifests disagree on source: {name}")
+            previous[name] = digest
+    if not used:
+        raise ValueError("Previous manifests must contain cases")
+    cases, sources, excluded, counts = [], {}, [], {}
+    for name, adapter, count in [
+        ("clamber.jsonl", clamber, 4),
+        ("longmemeval_oracle.json", lambda row, _: longmemeval(row, "oracle"), 2),
+    ]:
+        path = Path(data_dir) / name
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if previous.get(name) != digest:
+            raise ValueError(f"Source changed since previous selection: {name}")
+        sources[name] = digest
+        groups = defaultdict(list)
+        for index, row in enumerate(read_rows(path)):
+            try:
+                case = adapter(row, index)
+            except ValueError as error:
+                excluded.append(
+                    {"source": name, "id": row.get("question_id", index), "reason": str(error)}
+                )
+                continue
+            if case["id"] not in used and not (
+                case["suite"].startswith("longmemeval-")
+                and case["id"].removesuffix("_abs") in memory_families
+            ):
+                groups[case["category"]].append(case)
+        for category, candidates in sorted(groups.items()):
+            counts[f"{name}/{category}"] = len(candidates)
+            ordered = sorted(
+                candidates,
+                key=lambda case: hashlib.sha256(
+                    f"karen-expansion-v1:{case['id']}".encode()
+                ).hexdigest(),
+            )
+            for index, case in enumerate(ordered[:count]):
+                cases.append({**case, "split": "development" if index % 2 == 0 else "heldout"})
+    manifest = {
+        "protocol_version": PROTOCOL_VERSION,
+        "selection_rule": "karen-expansion-v1: sha256(ID), 4 CLAMBER / 2 oracle per category",
+        "previous_manifest_sha256": [
+            hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in previous_manifests
+        ],
+        "sources_sha256": sources,
+        "eligible_remaining_by_category": counts,
+        "excluded_invalid_records": excluded,
+        "cases": cases,
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+    return manifest

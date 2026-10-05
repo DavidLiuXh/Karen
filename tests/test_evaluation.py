@@ -1,9 +1,10 @@
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
-from karen.evaluation.datasets import clamber, longmemeval, parse_date, read_rows
+from karen.evaluation.datasets import clamber, longmemeval, parse_date, prepare_next, read_rows
 from karen.evaluation.runner import check_step, summarize
 
 
@@ -98,6 +99,68 @@ def test_frozen_chinese_cases_are_public_synthetic_and_have_unique_ids():
     assert len({row["id"] for row in rows}) == len(rows)
     assert {row["split"] for row in rows} == {"development", "heldout"}
     assert all(row["timezone"] and row["reference_time"] for row in rows)
+
+
+def test_expansion_is_disjoint_reproducible_and_preserves_entire_histories(tmp_path):
+    clamber_path = tmp_path / "clamber.jsonl"
+    clamber_path.write_text(
+        "\n".join(
+            json.dumps(
+                dict(
+                    question=f"Question {i}",
+                    context="",
+                    require_clarification=1,
+                    category="FD",
+                    clarifying_question="Which?",
+                )
+            )
+            for i in range(8)
+        )
+    )
+    memory_path = tmp_path / "longmemeval_oracle.json"
+    rows = [{**long_row(), "question_id": f"memory-{i}"} for i in range(6)]
+    future = {**long_row(), "question_id": "future", "question_date": "2026-09-01"}
+    memory_path.write_text(
+        json.dumps([*rows, {**long_row(), "question_id": "memory-0_abs"}, future])
+    )
+    previous = tmp_path / "previous.json"
+    previous.write_text(
+        json.dumps(
+            {
+                "protocol_version": "1",
+                "sources_sha256": {
+                    p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                    for p in [clamber_path, memory_path]
+                },
+                "cases": [
+                    {"id": "clamber-0000", "suite": "clamber"},
+                    {"id": "memory-0", "suite": "longmemeval-oracle"},
+                ],
+            }
+        )
+    )
+    first = prepare_next(tmp_path, [previous], tmp_path / "first.json")
+    second = prepare_next(tmp_path, [previous], tmp_path / "second.json")
+    assert first == second
+    assert len(first["cases"]) == 6
+    assert not {c["id"] for c in first["cases"]} & {
+        "clamber-0000",
+        "memory-0",
+        "memory-0_abs",
+        "future",
+    }
+    assert len([c for c in first["cases"] if c["split"] == "heldout"]) == 3
+    assert all(len(c["history"]) == 2 for c in first["cases"] if c["history"])
+    assert first["eligible_remaining_by_category"] == {
+        "clamber.jsonl/FD/1": 7,
+        "longmemeval_oracle.json/knowledge-update": 5,
+    }
+    assert first["excluded_invalid_records"][0]["id"] == "future"
+    with pytest.raises(FileExistsError):
+        prepare_next(tmp_path, [previous], tmp_path / "first.json")
+    memory_path.write_text("[]")
+    with pytest.raises(ValueError, match="Source changed"):
+        prepare_next(tmp_path, [previous], tmp_path / "third.json")
 
 
 async def test_ingestion_waits_for_all_events_and_async_statuses():

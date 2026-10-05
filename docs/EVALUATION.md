@@ -49,3 +49,18 @@ run 支持 --suite、--case 精确选择，--split heldout 验收留出集。每
 ## 修复门槛
 
 先保存完整开发基线，再按机制归类问题。通用修复不得读取评测 ID、参考答案、题面关键词白名单，或为某例加特殊分支。修复需有验证可观察行为与边界的离线测试，并对相应开发例真实复测；每个问题在对应项目单独本地提交。留出首次验收结果完整保留；若需据此继续修复，它就变成开发证据，不能再称未见留出。必要时补独立变体进行后续验收。
+
+## 后续未见批次
+
+`prepare-next` 从公开数据中排除所有 `--previous` 清单的 ID，并排除 LongMemEval 已使用问题的同源 `_abs` / 非 `_abs` 版本，防止同一证据历史被当作新的独立样本。验证原始文件 SHA256 不变后，各类别按 `sha256("karen-expansion-v1:" + ID)` 排序，选择 CLAMBER 四条、oracle 两条，交替分为开发与留出。选择不读取模型结果、不按历史长度优先、不修改评分协议。后续批次应把所有已使用清单都传入 `--previous`。
+
+第一扩展批次共 38 条，19 开发、19 留出；LongMemEval 完整历史 10–24 条消息。仍属于 oracle，而非含大量干扰的 S/M。所有未来记录继续列为预检排除；原始标注疑点保持原分数，不混入新批次成绩。`tests/fixtures/evaluation_expansion_selection_v1.json` 保存源、清单校验和、ID、候选数量和历史大小。旧中文回归与公开样本另行复测，不计作未见成绩。
+
+```bash
+uv run --env-file .env --no-sync python -m karen.evaluation prepare-next \
+  --data-dir runs/evaluation/data --previous runs/evaluation/manifest-v1.json \
+  --output runs/evaluation/manifest-expansion-v1.json
+uv run --env-file .env --no-sync python -m karen.evaluation run \
+  --manifest runs/evaluation/manifest-expansion-v1.json --split development \
+  --output runs/evaluation/expansion-baseline-v1 --concurrency 3
+```

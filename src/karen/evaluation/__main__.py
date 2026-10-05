@@ -3,7 +3,7 @@
 import argparse
 import asyncio
 
-from .datasets import prepare
+from .datasets import prepare, prepare_next
 from .runner import run
 
 
@@ -14,6 +14,10 @@ def main():
     build.add_argument("--data-dir", required=True)
     build.add_argument("--chinese", default="tests/fixtures/evaluation_zh.json")
     build.add_argument("--output", required=True)
+    expand = commands.add_parser("prepare-next")
+    expand.add_argument("--data-dir", required=True)
+    expand.add_argument("--previous", action="append", required=True)
+    expand.add_argument("--output", required=True)
     execute = commands.add_parser("run")
     execute.add_argument("--manifest", required=True)
     execute.add_argument("--output", required=True)
@@ -25,6 +29,9 @@ def main():
     if args.command == "prepare":
         manifest = prepare(args.data_dir, args.chinese, args.output)
         print(f"Frozen {len(manifest['cases'])} cases")
+    elif args.command == "prepare-next":
+        manifest = prepare_next(args.data_dir, args.previous, args.output)
+        print(f"Frozen {len(manifest['cases'])} unseen cases")
     else:
         results = asyncio.run(
             run(

@@ -697,9 +697,16 @@ class Retriever:
                     if hit.source.event_id not in reference_ids and hit.source.source_role == "user"
                 ]
                 if novel_user_hits:
-                    priority_details.append(
-                        max(novel_user_hits, key=lambda hit: len(words & set(terms(hit.text))))
+                    novel_user_hits.sort(
+                        key=lambda hit: (hit.source.occurred_at, hit.source.sequence or 0)
                     )
+                    anchor = max(
+                        range(len(novel_user_hits)),
+                        key=lambda index: len(words & set(terms(novel_user_hits[index].text))),
+                    )
+                    # Follow-up replies often carry the requested value without
+                    # repeating the subject. Keep adjacent user evidence together.
+                    priority_details.extend(novel_user_hits[max(0, anchor - 1) : anchor + 2])
                 if expanded.status != "complete":
                     detail_status = expanded.status
             detail_hits.sort(
@@ -715,7 +722,7 @@ class Retriever:
                 if identity in seen_details:
                     continue
                 seen_details.add(identity)
-                size = len(encode(hit.model_dump(mode="json")).encode())
+                size = len(encode(hit.context()).encode())
                 if used + size > 11 * 1024:
                     degraded.append("DETAIL_BUDGET_LIMIT")
                     continue

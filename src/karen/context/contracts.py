@@ -394,6 +394,13 @@ class DetailHit(Contract):
     request_id: str
     truncated: bool = False
 
+    def context(self) -> dict[str, JsonValue]:
+        """Keep provenance without repeating a quote already present in the text."""
+        data = self.model_dump(mode="json")
+        if self.source.quote in self.text:
+            data["source"].pop("quote")
+        return data
+
 
 class DetailSearchResult(Contract):
     status: Literal["complete", "partial", "needs_scope", "unavailable"]
@@ -428,4 +435,5 @@ class RecallResult(Contract):
         for layer in ("m1", "m2"):
             for hit, original in zip(data[layer], getattr(self, layer), strict=True):
                 hit["memory"] = original.memory.context()
+        data["details"] = [hit.context() for hit in self.details]
         return data

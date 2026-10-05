@@ -1626,6 +1626,33 @@ async def test_detail_context_preserves_original_sequence_when_timestamps_match(
     assert {hit.request_id for hit in result.details} == {"task-1"}
 
 
+async def test_detail_budget_keeps_adjacent_reply_without_repeated_query_terms(memory):
+    service, model = memory
+    await service.flush(service.submit(event("星海活动记录", request="selected-activity")))
+    duration_reply = "共七天。" + "期间按日程安排开展其他体验。" * 40
+    async with service.foreground():
+        service.submit(event("星海活动在岛上举行。", request="selected-activity"))
+        service.submit(event(duration_reply, request="selected-activity"))
+        for i in range(20):
+            service.submit(
+                event(
+                    f"星海活动后续资料第{i}项。" + "交通与景点信息。" * 40,
+                    request="selected-activity",
+                )
+            )
+        service.submit(event("另一个活动共十二天。", request="unrelated-activity"))
+        model.kind = "detail"
+        result = await service.recall(query("星海活动持续多久"))
+        assert duration_reply in [hit.text for hit in result.details]
+        duration_hit = next(hit for hit in result.details if hit.text == duration_reply)
+        assert duration_hit.source.quote == duration_reply[:1000]
+        assert (await service.load_event(duration_hit.source.event_id)).payload[
+            "content"
+        ] == duration_reply
+        assert not any("十二天" in hit.text for hit in result.details)
+        assert len(encode(result.context()).encode()) <= 12 * 1024
+
+
 async def test_old_only_summary_cannot_poison_new_event_derivation(tmp_path):
     class Model(MemoryModel):
         previous = None

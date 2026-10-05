@@ -35,6 +35,7 @@ from .prompts import (
     CLARITY_REVIEW_INSTRUCTION,
     CLARITY_TASK_INSTRUCTION,
     DIRECT_RESPONSE_INSTRUCTION,
+    DIRECT_RESPONSE_REVIEW_INSTRUCTION,
     ENTITY_CHECK_INSTRUCTION,
     GOAL_CONTEXT_INSTRUCTION,
     GOAL_REVIEW_INSTRUCTION,
@@ -875,14 +876,29 @@ class IntentRecognizer:
         return updated
 
     async def _respond(self, state: IntentState) -> dict:
+        inputs = self._model_inputs(state)
         request = ModelRequest(
             role="intent_response",
             system_instruction=DIRECT_RESPONSE_INSTRUCTION,
             task_instruction="直接回应本轮输入；必要信息缺失时提出简短澄清。" + CLARITY_INSTRUCTION,
-            input_data=self._model_inputs(state),
+            input_data=inputs,
             output_schema=DirectAssessment.model_json_schema(),
         )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + request.timeout_seconds
         assessment = await self._validated(request, DirectAssessment)
+        memory = state.get("memory_context") or {}
+        if any(memory.get(layer) for layer in ("m1", "m2", "details")):
+            assessment = await self._validated(
+                replace(
+                    request,
+                    role="intent_response_review",
+                    task_instruction=DIRECT_RESPONSE_REVIEW_INSTRUCTION,
+                    input_data={"original_input": inputs, "draft": assessment.model_dump(mode="json")},
+                    timeout_seconds=max(0, deadline - loop.time()),
+                ),
+                DirectAssessment,
+            )
         return {"decision": assessment.decision}
 
     @staticmethod

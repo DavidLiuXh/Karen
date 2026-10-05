@@ -11,7 +11,7 @@ class ClarityAwareModel(FakeModelClient):
     """
 
     async def generate(self, request):
-        if request.role == "intent_goal_review":
+        if request.role in {"intent_goal_review", "intent_response_review"}:
             self.requests.append(request)
             return ModelResponse(request.input_data["draft"])
         if request.role == "intent_clarity":

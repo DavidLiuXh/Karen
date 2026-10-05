@@ -38,6 +38,82 @@ def clarify(text):
     return {"decision": {"outcome": "needs_clarification", "questions": [text]}}
 
 
+@pytest.mark.parametrize(
+    "question,memory,draft,reviewed",
+    [
+        (
+            "两种方案相差多少钱？",
+            {"details": [
+                {"text": "方案甲报价13元。", "source": {"source_role": "user"}},
+                {"text": "市场上方案甲可能19元。", "source": {"source_role": "assistant"}},
+                {"text": "方案乙报价29元。", "source": {"source_role": "user"}},
+            ]},
+            reply("按市场估价，差10元。"),
+            reply("按你记录的报价，29−13=16元。"),
+        ),
+        (
+            "怎样改善这个设备的使用效果？",
+            {"m2": [
+                {"memory": {"text": "用户曾用设备录制语音。"}},
+                {"memory": {"text": "用户此前询问该设备的视频剪辑功能。"}},
+            ]},
+            reply("录音时注意降低环境噪声。"),
+            reply("录音时降低环境噪声；你也问过视频剪辑，可分别调整画面与音轨。"),
+        ),
+    ],
+)
+async def test_direct_memory_reply_is_reviewed_against_original_evidence(
+    question, memory, draft, reviewed
+):
+    from dynamic_graph import FakeModelClient as RawModel
+
+    clear = {"known_referents": {}, "references": [], "selection_criteria": [], "questions": [], "reason": "输入清晰"}
+    model = RawModel([routing("respond", types=["question"]), clear, draft, reviewed])
+    session = IntentSession()
+    result = await IntentRecognizer(model).advance(session, question, memory_context=memory)
+    assert result.reply == reviewed["decision"]["answer"]
+    assert result.goal is None and result.questions == () and session.messages == ()
+    review = model.requests[-1]
+    assert review.role == "intent_response_review"
+    assert review.input_data["original_input"]["memory"] == memory
+    assert review.input_data["draft"]["decision"]["answer"] == draft["decision"]["answer"]
+    assert model.requests[-2].timeout_seconds >= review.timeout_seconds > 0
+
+
+async def test_direct_reply_review_keeps_the_original_total_deadline(monkeypatch):
+    import time
+    from dataclasses import replace
+
+    from karen.intent import recognizer
+
+    request_factory = recognizer.ModelRequest
+    monkeypatch.setattr(
+        recognizer, "ModelRequest",
+        lambda **kwargs: replace(request_factory(**kwargs), timeout_seconds=0.15),
+    )
+
+    class SlowReviewModel(FakeModelClient):
+        async def generate(self, request):
+            if request.role == "intent_response":
+                await asyncio.sleep(0.09)
+            if request.role == "intent_response_review":
+                self.requests.append(request)
+                await asyncio.sleep(0.1)
+            return await super().generate(request)
+
+    model = SlowReviewModel([routing("respond", types=["information"]), reply("草稿")])
+    session = IntentSession()
+    started = time.monotonic()
+    with pytest.raises(ModelCallError, match="timed out"):
+        await IntentRecognizer(model).advance(
+            session, "收到", memory_context={"m2": [{"memory": {"text": "已有背景"}}]}
+        )
+    assert time.monotonic() - started < 0.21
+    review = next(r for r in model.requests if r.role == "intent_response_review")
+    assert 0 < review.timeout_seconds < 0.09
+    assert session.reply is None and session.messages == ()
+
+
 def agent_for(tmp_path, responses, *, memory=None, observer=None, executor=None):
     model = FakeModelClient(responses)
     if observer:
@@ -125,7 +201,7 @@ async def test_personal_question_answers_from_recalled_m1_without_execution(tmp_
         )
         turn = await agent.advance(IntentSession(timezone="Asia/Shanghai"), "我有哪些爱好？")
         assert turn.response and turn.result is None and turn.session.goal is None
-        recalled = model.requests[-1].input_data["memory"]
+        recalled = next(r for r in model.requests if r.role == "intent_response").input_data["memory"]
         assert len(recalled["m1"]) == 2 and recalled["collection"] is None
         assert recalled["history"]["messages"] == [] and executor.requests == []
     finally:
@@ -866,7 +942,8 @@ async def test_optional_task_identity_does_not_block_supported_fact_reading(stat
     from dynamic_graph import FakeModelClient as RawModel
 
     model = RawModel(
-        [routing("respond", types=["question"]), reply("按记录的报价，差额是78美元。")]
+        [routing("respond", types=["question"]), reply("按记录的报价，差额是78美元。"),
+         reply("按记录的报价，差额是78美元。")]
     )
     memory = {
         "coverage": {"query_kind": "detail", "requires_history": required},
@@ -883,7 +960,7 @@ async def test_optional_task_identity_does_not_block_supported_fact_reading(stat
         assert result.reply is None and all(r.role != "intent_response" for r in model.requests)
     else:
         assert result.reply == "按记录的报价，差额是78美元。"
-        assert model.requests[-1].input_data["memory"]["details"] == memory["details"]
+        assert model.requests[-1].input_data["original_input"]["memory"]["details"] == memory["details"]
 
 
 async def test_compatible_reference_alternatives_do_not_force_unique_selection():

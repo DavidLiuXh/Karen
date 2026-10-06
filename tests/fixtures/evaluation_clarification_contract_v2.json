@@ -1,0 +1,244 @@
+[
+  {
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification-contract",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "gold": {
+      "clarifying_question": null
+    },
+    "id": "contract-partial-mail-v2",
+    "steps": [
+      {
+        "text": "帮我写一封邮件，只起草不要发送。",
+        "expected": {
+          "outcome": "clarification"
+        }
+      },
+      {
+        "text": "给客户，中文。",
+        "expected": {
+          "outcome": "clarification",
+          "relation": "continue"
+        }
+      },
+      {
+        "text": "告诉他设计已经完成，请他周五前确认。",
+        "expected": {
+          "outcome": "goal",
+          "relation": "continue",
+          "goal_contains": [
+            "设计",
+            "周五"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification-contract",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "gold": {
+      "clarifying_question": null
+    },
+    "id": "contract-invalid-answer-v2",
+    "steps": [
+      {
+        "text": "帮我修改电脑里的那份报价单，将其中唯一的总金额改为750元。",
+        "expected": {
+          "outcome": "clarification"
+        }
+      },
+      {
+        "text": "还不清楚是哪份。",
+        "expected": {
+          "outcome": "clarification",
+          "relation": "continue"
+        }
+      },
+      {
+        "text": "文件是/tmp/quote.txt，只修改总金额，其他内容保留。",
+        "expected": {
+          "outcome": "goal",
+          "relation": "continue",
+          "goal_contains": [
+            "/tmp/quote.txt",
+            "750"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification-contract",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "gold": {
+      "clarifying_question": null
+    },
+    "id": "contract-cancel-v2",
+    "steps": [
+      {
+        "text": "帮我写一封邮件。",
+        "expected": {
+          "outcome": "clarification"
+        }
+      },
+      {
+        "text": "算了，取消这封邮件。",
+        "expected": {
+          "outcome": "reply",
+          "handling": "cancel",
+          "relation": "continue"
+        }
+      }
+    ]
+  },
+  {
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification-contract",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "gold": {
+      "clarifying_question": null
+    },
+    "id": "contract-switch-v2",
+    "steps": [
+      {
+        "text": "帮我写一封邮件。",
+        "expected": {
+          "outcome": "clarification"
+        }
+      },
+      {
+        "text": "不用写邮件了，查一下上海2026-10-08的天气。",
+        "expected": {
+          "outcome": "goal",
+          "relation": "new",
+          "goal_contains": [
+            "上海",
+            "2026-10-08"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification-contract",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "gold": {
+      "clarifying_question": null
+    },
+    "id": "contract-contradiction-v2",
+    "steps": [
+      {
+        "text": "帮我排明天的两场面谈，甲必须10点到11点，乙也必须10点到11点，都要由我本人参加完整的一小时，不能同时参加。",
+        "expected": {
+          "outcome": "clarification"
+        }
+      },
+      {
+        "text": "乙改为11点到12点，甲保持不变。",
+        "expected": {
+          "outcome": "goal",
+          "relation": "continue",
+          "goal_contains": [
+            "11",
+            "12"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification-contract",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "gold": {
+      "clarifying_question": null
+    },
+    "id": "contract-analyze-contradiction-v2",
+    "steps": [
+      {
+        "text": "我明天两场面谈各自都必须完整占用10点到11点这一小时，都必须本人完整参加且不能同时参加。请说明这个安排是否可行及原因。",
+        "expected": {
+          "outcome": "complete"
+        }
+      }
+    ]
+  },
+  {
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification-contract",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "gold": {
+      "clarifying_question": null
+    },
+    "id": "contract-closed-incompatible-v2",
+    "steps": [
+      {
+        "text": "Use only these rules: starts with B, or has exactly four letters. Every example must satisfy the same one rule. The examples are Berry and kite. Infer their one common rule, then label Boat YES or NO. Return only that label.",
+        "expected": {
+          "outcome": "clarification"
+        }
+      }
+    ]
+  },
+  {
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification-contract",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "gold": {
+      "clarifying_question": null
+    },
+    "id": "contract-closed-compatible-v2",
+    "steps": [
+      {
+        "text": "Use only these rules: starts with c, or ends with t. Every example must satisfy the same one rule. The examples are cat and car. Infer their one common rule, then label cup YES or NO. Return only that label.",
+        "expected": {
+          "outcome": "complete"
+        }
+      }
+    ]
+  }
+]

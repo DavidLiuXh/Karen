@@ -233,8 +233,8 @@ class ClarityReview(IntentContract):
 
 class QuestionUpdate(IntentContract):
     question_id: Text
-    status: Literal["pending", "answered", "withdrawn"]
-    evidence_quote: str = Field(default="", description="已回答或撤销时，逐字引用本任务中的用户回答/纠正；待回答时为空。")
+    status: Literal["pending", "answered", "withdrawn", "not_required"]
+    evidence_quote: str = Field(default="", description="已回答/撤销引用提问后的用户原话；不再必要引用支持可行交付的本任务用户原话；待回答时为空。")
     reason: Text = Field(max_length=500)
 
 
@@ -242,7 +242,7 @@ class ClarificationItem(IntentContract):
     question_id: Text
     text: Text
     asked_after: int = Field(ge=0)
-    status: Literal["pending", "answered", "withdrawn"] = "pending"
+    status: Literal["pending", "answered", "withdrawn", "not_required"] = "pending"
     evidence_quote: str = ""
     answer_message_index: int | None = None
 
@@ -747,7 +747,8 @@ class IntentRecognizer:
                     raise ValueError("PENDING_QUESTION_HAS_ANSWER")
                 continue
             matches = [index for index, message in enumerate(session.messages)
-                       if index > item.asked_after and message.role == "user"
+                       if (update.status == "not_required" or index > item.asked_after)
+                       and message.role == "user"
                        and update.evidence_quote.strip() and update.evidence_quote in message.content]
             if not matches:
                 raise ValueError("UNSUPPORTED_QUESTION_ANSWER")

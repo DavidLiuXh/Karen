@@ -158,3 +158,35 @@ async def test_partial_answer_never_calls_execution_engine(tmp_path):
     assert second.session.questions == ("邮件内容是什么？",)
     assert second.result is None and second.response is None and executor.requests == []
     assert not (tmp_path / "runs").exists()
+
+
+async def test_overclarification_can_be_retracted_without_inventing_user_consent():
+    model = FakeModelClient([
+        routing(), clarity(gap("项目名称是什么？"), gap("项目进度是什么？")),
+        routing(types=["task_control"], relation="continue"),
+        clarity(updates=[update("q1", "not_required", "只起草，不要发送"),
+                         update("q2", "answered", "设计已完成")]), ready(),
+    ])
+    intent = IntentRecognizer(model)
+    first = await intent.advance(IntentSession(), "给客户起草进度邮件，只起草，不要发送")
+    final = await intent.advance(first, "设计已完成")
+    assert final.goal and not final.questions
+    item = final.clarification_items[0]
+    assert item.status == "not_required" and item.evidence_quote == "只起草，不要发送"
+    assert item.answer_message_index == 0
+    assert final.clarification_items[1].status == "answered"
+    assert first.clarification_items[0].status == "pending"
+
+
+async def test_unnecessary_question_retraction_still_needs_user_evidence():
+    invalid = clarity(updates=[update("q1", "not_required", "项目名称是什么？")])
+    model = FakeModelClient([
+        routing(), clarity(gap("项目名称是什么？")),
+        routing(types=["task_control"], relation="continue"), invalid, invalid,
+    ])
+    intent = IntentRecognizer(model)
+    first = await intent.advance(IntentSession(), "起草邮件")
+    with pytest.raises(ModelCallError) as error:
+        await intent.advance(first, "先不要写")
+    assert error.value.code == "MODEL_RESPONSE_INVALID"
+    assert first.clarification_items[0].status == "pending"

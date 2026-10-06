@@ -1264,6 +1264,45 @@ async def test_rerank_fallback_does_not_use_only_generic_shared_words(memory):
     assert "RERANK_FAILED_FUSION_ORDER" in result.degradations
 
 
+async def test_fusion_fallback_matches_original_quotes_when_summary_is_translated(tmp_path):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            result = await super().generate(request)
+            if request.role == "memory_extract":
+                result.payload["summaries"][0]["text"] = "用户昨天收到了新窑炉。"
+            return result
+
+    model = Model()
+    model.kind, model.fail_rank = "detail", True
+    service = ContextMemory(root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        original = "I got my ceramic kiln delivered yesterday."
+        await service.flush(service.submit(event(original)))
+        result = await service.recall(query("ceramic kiln delivery date"))
+        assert [h.memory.text for h in result.m2] == ["用户昨天收到了新窑炉。"]
+        assert [h.text for h in result.details] == [original]
+        assert all(h.relevance == "unverified" for h in result.m2)
+        assert "RERANK_FAILED_FUSION_ORDER" in result.degradations
+        unrelated = await service.recall(query("ceramic workshop registration"))
+        assert unrelated.m1 == [] and unrelated.m2 == []
+    finally:
+        await service.close()
+
+
+async def test_detail_recall_does_not_return_the_excluded_current_question(memory):
+    service, model = memory
+    question = "ceramic kiln delivery date?"
+    receipt = service.submit(event(question))
+    await service.flush(receipt)
+    model.kind = "detail"
+    result = await service.recall(query(question).model_copy(
+        update={"exclude_event_ids": [receipt.event_id]}
+    ))
+    assert result.m1 == [] and result.m2 == []
+    assert result.details == []
+
+
 async def test_assistant_echo_keeps_summary_without_reverifying_personal_facts(tmp_path):
     class Model(MemoryModel):
         fail_verify = False

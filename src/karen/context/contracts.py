@@ -415,6 +415,7 @@ class MemoryHit(Contract):
 class DetailQuery(Contract):
     text: str
     sources: list[SourceRef] = Field(default_factory=list)
+    exclude_event_ids: list[str] = Field(default_factory=list)
     request_id: str | None = None
     conversation_id: str | None = None
     time_range: TimeRange | None = None

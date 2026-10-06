@@ -527,15 +527,24 @@ class Retriever:
                 if len(word) >= 2 and word not in FALLBACK_STOP_WORDS
             }
             entity_words = {word for entity in analysis.entities for word in terms(entity)}
+            evidence_text = {
+                mid: " ".join([
+                    memories[mid].text,
+                    *(source.quote for source in memories[mid].sources
+                      if source.event_id not in query.exclude_event_ids),
+                ])
+                for mid in state["primary"]
+            }
+            evidence_words = {mid: set(terms(text)) for mid, text in evidence_text.items()}
             ranked = [
                 (mid, "unverified", None)
                 for mid in state["primary"]
                 if memories[mid].fact_key in keywords
                 or (
-                    any(entity and entity in memories[mid].text for entity in analysis.entities)
-                    and bool((query_words & set(terms(memories[mid].text))) - entity_words)
+                    any(entity and entity in evidence_text[mid] for entity in analysis.entities)
+                    and bool((query_words & evidence_words[mid]) - entity_words)
                 )
-                or len((query_words & set(terms(memories[mid].text))) - entity_words) >= 2
+                or len((query_words & evidence_words[mid]) - entity_words) >= 2
             ]
         m1, m2, included, used = [], [], set(), 0
         memory_groups = []
@@ -673,6 +682,7 @@ class Retriever:
             result = await self.service.search_details(
                 DetailQuery(
                     text=analysis.search_text,
+                    exclude_event_ids=query.exclude_event_ids,
                     sources=refs[:12],
                     request_id=scope_task,
                     time_range=detail_range,
@@ -725,6 +735,7 @@ class Retriever:
                         # Replies can omit the entity and query vocabulary entirely.
                         # The verified task boundary supplies the search scope.
                         text="",
+                        exclude_event_ids=query.exclude_event_ids,
                         request_id=scope,
                         time_range=detail_range,
                     )

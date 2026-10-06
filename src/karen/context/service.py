@@ -488,7 +488,10 @@ class ContextMemory:
                 event_ids.append(event.event_id)
             event_ids = list(dict.fromkeys(event_ids))
         words = terms(query.text)
+        excluded = set(query.exclude_event_ids)
         for event_id in event_ids:
+            if event_id in excluded:
+                continue
             if scanned >= 200 or read_bytes >= 2 * 1024 * 1024 or time.monotonic() - start >= 2:
                 partial = True
                 break

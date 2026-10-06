@@ -2043,3 +2043,51 @@ async def test_distinct_user_uses_survive_verbose_assistant_guidance(memory):
     assert all(h.memory.sources[0].source_role == "user" for h in result.m2[:2])
     assert len(encode(result.context()).encode()) <= 12 * 1024
     assert all("fusion_rank" not in h and "vector_score" not in h for h in result.context()["m2"])
+
+
+@pytest.mark.parametrize("code", ["MODEL_RESPONSE_INVALID", "MODEL_RESPONSE_TRUNCATED"])
+@pytest.mark.parametrize("recovers", [True, False])
+async def test_content_repair_reduces_scope_and_does_not_repeat_the_same_job(tmp_path, code, recovers):
+    class Model(MemoryModel):
+        calls = []
+
+        async def generate(self, request):
+            if request.role == "memory_extract":
+                new = next(e for e in request.input_data["events"]
+                           if e["event_id"] == request.input_data["new_event_id"])
+                if new["payload"].get("content") == "新的设备观察。":
+                    self.calls.append(request)
+                    if len(self.calls) == 1 or not recovers:
+                        raise ModelCallError(code, "Invalid content", retryable=True,
+                                             raw_response="{" + "broken" * 1000,
+                                             usage={"input_tokens": 10, "output_tokens": 20})
+            return await super().generate(request)
+
+    model = Model()
+    service = ContextMemory(root_dir=tmp_path, model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        for index in range(6):
+            await service.flush(service.submit(event(f"设备背景{index}。")))
+        receipt = service.submit(event("新的设备观察。"))
+        if recovers:
+            await service.flush(receipt)
+            assert (await service.write_status(receipt)).derived == "committed"
+        else:
+            with pytest.raises(MemoryFlushError):
+                await service.flush(receipt)
+            status = await service.write_status(receipt)
+            assert status.derived == "failed" and status.attempts == 1 and status.error_code == code
+        assert len(model.calls) == 2
+        first, repaired = model.calls
+        assert len(first.input_data["events"]) == 7 and len(repaired.input_data["events"]) == 4
+        assert repaired.input_data["events"][-1]["event_id"] == receipt.event_id
+        assert repaired.input_data["previous_response_truncated"]
+        assert repaired.max_output_tokens == first.max_output_tokens == 8192
+        assert 0 < repaired.timeout_seconds <= first.timeout_seconds
+        assert (await service.load_event(receipt.event_id)).payload["content"] == "新的设备观察。"
+        following = service.submit(event("其他设备的独立记录。", request="other-device"))
+        await service.flush(following)
+        assert (await service.write_status(following)).derived == "committed"
+    finally:
+        await service.close()

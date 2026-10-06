@@ -103,33 +103,63 @@ class Extractor:
                         result = await validate(result)
                     return result, response.response_metadata.get("model")
                 except ModelCallError as error:
-                    if error.code != "MODEL_RESPONSE_INVALID" or attempt:
+                    if error.code not in {"MODEL_RESPONSE_INVALID", "MODEL_RESPONSE_TRUNCATED"}:
                         raise
+                    if attempt:
+                        # Content repair is exhausted. Do not rerun the identical
+                        # extraction job as though this were a transport outage.
+                        raise ModelCallError(error.code, "Memory content repair exhausted",
+                            usage=error.usage, provider_request_id=error.provider_request_id,
+                            details=error.details) from error
                     payload = error.raw_response
                     feedback = {"code": error.code}
                     if error.details.get("json_syntax"):
                         feedback["json_syntax"] = error.details["json_syntax"]
                 except ValidationError as error:
                     if attempt:
-                        raise
+                        raise ModelCallError("MODEL_RESPONSE_INVALID",
+                            "Memory schema repair exhausted",
+                            details={"validation": [{"path": list(e["loc"]), "type": e["type"]}
+                                     for e in error.errors(include_input=False, include_url=False)]},
+                        ) from error
                     feedback = [
                         {"path": list(e["loc"]), "type": e["type"]}
                         for e in error.errors(include_input=False, include_url=False)
                     ]
                 except ValueError as error:
-                    if payload is None or attempt:
+                    if payload is None:
                         raise
                     # validate callbacks emit contract codes, never provider exception text.
                     feedback = getattr(error, "feedback", {"code": str(error)})
+                    if attempt:
+                        raise ModelCallError("MODEL_RESPONSE_INVALID",
+                            "Memory evidence repair exhausted", details={"validation": feedback},
+                        ) from error
+                repair_inputs = dict(inputs)
+                # Only the new event is extracted. On content failure, reduce
+                # preceding locating context instead of resubmitting twelve full
+                # events and a potentially huge failed response. Source validation
+                # still checks original persisted events; no partial output is accepted.
+                if role == "memory_extract" and len(inputs.get("events", [])) > 4:
+                    new_id = inputs["new_event_id"]
+                    earlier = [e for e in inputs["events"] if e["event_id"] != new_id]
+                    current = [e for e in inputs["events"] if e["event_id"] == new_id]
+                    repair_inputs["events"] = [*earlier[-3:], *current]
+                previous = encode(payload) if isinstance(payload, (dict, list)) else payload
+                if isinstance(previous, str) and len(previous) > 4096:
+                    payload = previous[:4096]
+                    repair_inputs["previous_response_truncated"] = True
                 self.observer.emit(
                     "memory.model_repair",
-                    data={"model_role": role, "validation_error": feedback, "next_attempt": 2},
+                    data={"model_role": role, "validation_error": feedback, "next_attempt": 2,
+                          "original_events": len(inputs.get("events", [])),
+                          "repair_events": len(repair_inputs.get("events", []))},
                 )
                 request = replace(
                     request,
                     task_instruction=instruction + REPAIR,
                     input_data={
-                        **inputs,
+                        **repair_inputs,
                         "previous_response": payload,
                         "validation_error": feedback,
                     },

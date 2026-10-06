@@ -21,6 +21,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    RootModel,
     StringConstraints,
     ValidationError,
     field_validator,
@@ -154,6 +155,19 @@ class DirectAssessment(IntentContract):
         description="先列出当前输入或记忆原文支持且与问题相关的事实，再形成 decision；无相关事实时为空。",
     )
     decision: Annotated[Reply | Clarification, Field(discriminator="outcome")]
+
+
+class AcceptedDraft(IntentContract):
+    accepted: Literal[True]
+    evidence_coverage: list[EvidenceUse]
+
+
+class GoalReview(RootModel[AcceptedDraft | Assessment]):
+    pass
+
+
+class ReplyReview(RootModel[AcceptedDraft | DirectAssessment]):
+    pass
 
 
 class ReferenceAssessment(IntentContract):
@@ -727,7 +741,9 @@ class IntentRecognizer:
                         )
                         result = schema.model_validate(response.payload)
                         if validate is not None:
-                            validate(result)
+                            checked = validate(result)
+                            if checked is not None:
+                                result = checked
                         return result
                     except ModelCallError as error:
                         if attempt or error.code not in {"MODEL_RESPONSE_INVALID", "MODEL_RESPONSE_TRUNCATED"}:
@@ -866,9 +882,10 @@ class IntentRecognizer:
                     task_instruction=DIRECT_RESPONSE_REVIEW_INSTRUCTION,
                     input_data={"original_input": inputs, "draft": assessment.model_dump(mode="json")},
                     timeout_seconds=max(0, deadline - loop.time()),
+                    output_schema=ReplyReview.model_json_schema(),
                 ),
-                DirectAssessment,
-                validate=lambda result: self._check_evidence_coverage(inputs, result),
+                ReplyReview,
+                validate=lambda result: self._resolve_review(inputs, assessment, result),
             )
             self.observer.emit("intent.evidence_coverage", data={
                 "stage": "reply", "coverage": assessment.evidence_coverage,
@@ -941,6 +958,22 @@ class IntentRecognizer:
                 key = f"{source['event_id']}:{source.get('pointer', '')}"
                 items[key] = {"evidence_id": key, "text": hit.get("text", ""), "layer": "m3"}
         return list(items.values())
+
+    @staticmethod
+    def _resolve_review(inputs, draft, review):
+        result = review.root
+        if isinstance(result, AcceptedDraft):
+            if isinstance(draft.decision, Ready):
+                goal = draft.decision.goal.model_copy(update={
+                    "evidence_coverage": result.evidence_coverage,
+                })
+                result = draft.model_copy(update={
+                    "decision": draft.decision.model_copy(update={"goal": goal}),
+                })
+            else:
+                result = draft.model_copy(update={"evidence_coverage": result.evidence_coverage})
+        IntentRecognizer._check_evidence_coverage(inputs, result)
+        return result
 
     @staticmethod
     def _check_evidence_coverage(inputs: dict, assessment) -> None:
@@ -1016,9 +1049,10 @@ class IntentRecognizer:
                     task_instruction=GOAL_REVIEW_INSTRUCTION,
                     input_data={**inputs, "draft": assessment.model_dump(mode="json")},
                     timeout_seconds=max(0, deadline - loop.time()),
+                    output_schema=GoalReview.model_json_schema(),
                 ),
-                Assessment,
-                validate=lambda result: self._check_evidence_coverage(inputs, result),
+                GoalReview,
+                validate=lambda result: self._resolve_review(inputs, assessment, result),
             )
             self.observer.emit("intent.evidence_coverage", data={
                 "stage": "goal", "coverage": assessment.decision.goal.evidence_coverage

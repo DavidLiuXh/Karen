@@ -81,3 +81,33 @@ def test_supporting_facts_alone_do_not_prove_goal_coverage():
     fixed = deepcopy(draft)
     fixed["decision"]["goal"]["success_criteria"] = ["说明录制语音时的改进方法"]
     IntentRecognizer._check_evidence_coverage(inputs, Assessment.model_validate(fixed))
+
+
+@pytest.mark.parametrize("kind", ["reply", "goal"])
+async def test_accepted_review_preserves_draft_and_still_checks_deliverable_coverage(kind):
+    if kind == "reply":
+        draft = reply("你录制语音时可以降低环境噪声。")
+        handling = "respond"
+    else:
+        draft = {"decision": {"outcome": "ready", "goal": {
+            "objective": "改善录制语音时的设备效果", "success_criteria": ["提供具体改进方案"],
+            "inputs": {"device": "用户已有设备"},
+        }}}
+        handling = "assess"
+    model = FakeModelClient([
+        {"input_types": ["question"], "handling": handling, "task_relation": "new", "reason": "已有记录"},
+        clear(), draft,
+        {"accepted": True, "evidence_coverage": [use(quote="草稿中不存在的文字")]},
+        {"accepted": True, "evidence_coverage": [use()]},
+    ])
+    original = deepcopy(draft)
+    result = await IntentRecognizer(model).advance(IntentSession(), "设备如何改进？", memory_context=memory())
+    assert draft == original
+    if kind == "reply":
+        assert result.reply == draft["decision"]["answer"]
+    else:
+        assert result.goal.objective == draft["decision"]["goal"]["objective"]
+        assert result.goal.inputs == draft["decision"]["goal"]["inputs"]
+    repairs = [r for r in model.requests if r.role.endswith("_review")]
+    assert len(repairs) == 2
+    assert repairs[-1].input_data["validation_errors"] == [{"type": "COVERAGE_QUOTE_NOT_IN_DELIVERABLE"}]

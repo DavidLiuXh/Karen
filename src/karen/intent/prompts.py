@@ -261,6 +261,16 @@ GOAL_REVIEW_INSTRUCTION += EVIDENCE_COVERAGE_INSTRUCTION
 DIRECT_RESPONSE_INSTRUCTION += EVIDENCE_COVERAGE_INSTRUCTION
 INTENT_SYSTEM_INSTRUCTION += EVIDENCE_COVERAGE_INSTRUCTION
 
+COMPACT_REVIEW_INSTRUCTION = """
+本次是复核。若草稿准确完整，无需重写，返回 {"accepted":true,"evidence_coverage":[...]}；
+覆盖报告仍逐条核对原草稿的实际交付文字。不能以 accepted 跳过证据或需求核验。
+若需修正事实、范围、覆盖或必要澄清，按同一 schema 的完整 Assessment 分支返回替代稿，
+不能返回 accepted=false、混合确认与替代稿、局部补丁或只改 supporting_facts。
+复核已有输入、草稿与已定位的证据缺口，不重复完整分析过程或生成新的需求。
+"""
+DIRECT_RESPONSE_REVIEW_INSTRUCTION += COMPACT_REVIEW_INSTRUCTION
+GOAL_REVIEW_INSTRUCTION += COMPACT_REVIEW_INSTRUCTION
+
 
 CLARITY_REVIEW_INSTRUCTION = """只核查 issues_to_check 中已定位的疑点，不重新扩展任务。
 original_input 是原始证据，issues_to_check 是待核验的猜测，不是正确结论。

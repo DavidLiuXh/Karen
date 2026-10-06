@@ -399,6 +399,27 @@ async def test_schema_repair_is_bounded_and_does_not_retry_transport_auth_failur
     assert caught.value is auth and len(model.assessments) == 1
 
 
+@pytest.mark.parametrize("recovers", [True, False])
+async def test_truncated_intent_gets_one_compact_regeneration_within_original_budget(recovers):
+    error = ModelCallError("MODEL_RESPONSE_TRUNCATED", "Output limit reached",
+                           retryable=False, raw_response="{" + "unfinished" * 2000)
+    model = TaskIntentModel([error, ready() if recovers else error, ready()])
+    if recovers:
+        result = await IntentRecognizer(model).advance(IntentSession(), "给客户起草进度邮件")
+        assert result.goal is not None
+    else:
+        with pytest.raises(ModelCallError) as caught:
+            await IntentRecognizer(model).advance(IntentSession(), "给客户起草进度邮件")
+        assert caught.value.code == "MODEL_RESPONSE_TRUNCATED"
+    assert len(model.assessments) == 2
+    first, repaired = model.assessments
+    assert repaired.max_output_tokens == first.max_output_tokens
+    assert 0 < repaired.timeout_seconds <= first.timeout_seconds
+    assert repaired.input_data["previous_response_truncated"] is True
+    assert len(repaired.input_data["previous_response"]) <= 4096
+    assert repaired.input_data["original_input"] == first.input_data
+
+
 @pytest.mark.parametrize("suffix", ["}", "]]}", '{"other":true}', "unrelated text"])
 async def test_surplus_json_feedback_never_accepts_or_discards_a_response(suffix):
     import json

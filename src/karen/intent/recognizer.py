@@ -60,7 +60,7 @@ class Message(IntentContract):
 class EvidenceUse(IntentContract):
     evidence_id: Text
     disposition: Literal["covered", "context_only", "not_applicable"]
-    reason: Text = Field(max_length=300)
+    reason: Text
     output_quote: str = Field(default="", max_length=500)
 
 
@@ -177,7 +177,7 @@ class ReferenceAssessment(IntentContract):
 
 class ClarityQuestion(IntentContract):
     resolution_source: Literal["user", "external_lookup", "default_or_omit"]
-    blocking_reason: Text = Field(max_length=300,
+    blocking_reason: Text = Field(
         description="具体说明缺口会改变哪个答案、操作对象或交付要求，以及为何不能从已有证据解决。")
     text: Text
     kind: Literal[
@@ -417,7 +417,6 @@ class IntentRecognizer:
         )
         loop = asyncio.get_running_loop()
         deadline = loop.time() + request.timeout_seconds
-        clarity = await self._validated(request, ClarityAssessment)
         source_texts = [m.content for m in state["session"].messages]
         context_values = [state["session"].user_context]
         while context_values:
@@ -442,6 +441,14 @@ class IntentRecognizer:
             for message in memory.get("history", {}).get("messages", [])
             if message.get("content")
         )
+        def check_reference_quotes(result):
+            for ref in result.references:
+                if (len(ref.candidates) > 1 and ref.requires_unique_resolution
+                        and ref.resolution == "explicit_identification"
+                        and not any(ref.evidence in text for text in source_texts)):
+                    raise ValueError("UNSUPPORTED_REFERENCE_EVIDENCE")
+
+        clarity = await self._validated(request, ClarityAssessment, validate=check_reference_quotes)
         original_references = clarity.references
         located_expressions = {
             q.subject.casefold() for q in clarity.questions
@@ -723,7 +730,7 @@ class IntentRecognizer:
                             validate(result)
                         return result
                     except ModelCallError as error:
-                        if attempt or error.code != "MODEL_RESPONSE_INVALID":
+                        if attempt or error.code not in {"MODEL_RESPONSE_INVALID", "MODEL_RESPONSE_TRUNCATED"}:
                             raise
                         previous_response = error.raw_response
                         errors = [{"type": error.code}]
@@ -775,7 +782,11 @@ class IntentRecognizer:
                         task_instruction=request.task_instruction + STRUCTURE_REPAIR_INSTRUCTION,
                         input_data={
                             "original_input": request.input_data,
-                            "previous_response": previous_response,
+                            "previous_response": (previous_response[:4096]
+                                if isinstance(previous_response, str) and len(previous_response) > 4096
+                                else previous_response),
+                            "previous_response_truncated": isinstance(previous_response, str)
+                                and len(previous_response) > 4096,
                             "validation_errors": errors,
                         },
                     )

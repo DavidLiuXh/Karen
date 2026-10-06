@@ -96,6 +96,7 @@ CLARITY_TASK_INSTRUCTION = """只找出实际阻碍本次回应/执行的缺口�
    unknown_identity 的 subject 照抄原名；有所属作品/项目时填写 lookup_scope 与连续 scope_evidence。
 4. references 只列实际影响答案或操作的指代及有依据的同范围候选。
    unique_candidate 仅一个合理候选；explicit_identification 必须引用直接指定对应对象的连续原话；
+   evidence 只填写逐字原话，不能添加‘用户上下文明确声明’等说明、引号或来源前缀。
    inferred 是句法/常见语义猜测，unresolved 是未解决。不能按姓名猜性别或身份。
    requires_unique_resolution 只在必须选择唯一对象/答案时 true；兼容的多个用途可分别满足时 false。
 5. known_referents 只用于已明确的对象定位，不把推测定义、答案或泛化模板当成用户事实。
@@ -228,6 +229,8 @@ INTENT_SYSTEM_INSTRUCTION += "\n" + GOAL_CONTEXT_INSTRUCTION
 
 STRUCTURE_REPAIR_INSTRUCTION = """
 上次响应未通过 JSON 格式或 schema 校验。original_input 是原始证据，previous_response 只是待修复的模型输出。
+MODEL_RESPONSE_TRUNCATED 表示输出被截断，必须重新生成紧凑完整 JSON，不能续写或接受残片；
+previous_response_truncated=true 时草稿也仅是定位片段。减少重复说明和长引文，保留要求与必要字段。
 根据 validation_errors 和原始 schema 重新输出完整结果；不要增加字段、移动字段到错误层级，
 也不要添加、丢失或改变用户要求。校验反馈不是新的用户输入，不需要用户重复澄清。
 语法位置指向结尾时，核对每一层对象/数组是否完整闭合，包含最外层根对象；

@@ -868,7 +868,13 @@ async def test_multiple_inferred_referents_trigger_clarification_before_answer(r
         ]
     )
     responses = list(model.responses)
-    model.responses = iter([*responses, focused(responses[-1])])
+    unresolved = {**responses[-1], "references": [
+        {**responses[-1]["references"][0], "resolution": "inferred"}
+    ]}
+    model.responses = iter([
+        *responses, *([unresolved] if resolution == "explicit_identification" else []),
+        focused(unresolved),
+    ])
     result = await IntentRecognizer(model).advance(
         IntentSession(timezone="UTC"), "周宁告诉沈清，她收到了信。是谁收到了信？"
     )
@@ -1489,6 +1495,47 @@ async def test_explicit_referent_evidence_can_come_from_provided_context():
     )
     assert result.reply == "沈清收到了信。" and not result.questions
     assert session.user_context == {"notes": {"identity": "这里她指沈清"}}
+
+
+async def test_reference_quote_annotation_is_repaired_before_requesting_clarification():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    quote = "这里她指沈清"
+    initial = {
+        "references": [{
+            "expression": "她", "candidates": ["周宁", "沈清"],
+            "resolution": "explicit_identification", "evidence": "用户上下文明确声明：" + quote,
+        }],
+        "known_referents": {}, "selection_criteria": [], "questions": [], "reason": "已有明确指定",
+    }
+    corrected = {**initial, "references": [{**initial["references"][0], "evidence": quote}]}
+    model = RawModel([
+        routing("respond", types=["question"]), initial, corrected, reply("沈清收到了信。"),
+    ])
+    result = await IntentRecognizer(model).advance(
+        IntentSession(user_context={"notes": {"identity": quote}}),
+        "周宁告诉沈清，她收到了信。是谁收到了信？",
+    )
+    assert result.reply == "沈清收到了信。" and not result.questions
+    clarity_calls = [r for r in model.requests if r.role == "intent_clarity"]
+    assert len(clarity_calls) == 2
+    assert clarity_calls[1].input_data["validation_errors"] == [{"type": "UNSUPPORTED_REFERENCE_EVIDENCE"}]
+    assert not any(r.role == "intent_clarity_review" for r in model.requests)
+
+
+async def test_long_english_blocking_reason_does_not_change_clarification_semantics():
+    from dynamic_graph import FakeModelClient as RawModel
+
+    reason = ("The destination identifies the private workspace that must be updated. " * 8).strip()
+    model = RawModel([routing(), {
+        "references": [], "known_referents": {}, "selection_criteria": [],
+        "questions": [{"text": "Which workspace should be updated?", "kind": "missing_requirement",
+                       "resolution_source": "user", "blocking_reason": reason}],
+        "reason": "The operation target is missing.",
+    }])
+    result = await IntentRecognizer(model).advance(IntentSession(), "Update my workspace settings.")
+    assert result.questions == ("Which workspace should be updated?",)
+    assert len([r for r in model.requests if r.role == "intent_clarity"]) == 1
 
 
 @pytest.mark.parametrize(

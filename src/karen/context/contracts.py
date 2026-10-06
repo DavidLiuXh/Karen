@@ -261,9 +261,32 @@ class StoredMemory(Contract):
     prompt_version: str = "1"
     revision: int = 0
 
+    def anchor_source(self) -> SourceRef | None:
+        """m2 evidence is validated through its new event, so the last sequence is its anchor."""
+        return max(self.sources, key=lambda s: (s.sequence or 0, s.occurred_at), default=None)
+
+    def evidence_context(self) -> list[dict[str, JsonValue]]:
+        anchor = self.anchor_source()
+        if anchor is None:
+            return []
+        users = sorted(
+            (s for s in self.sources if s.source_role == "user" and s != anchor),
+            key=lambda s: (s.sequence or 0, s.occurred_at), reverse=True,
+        )
+        selected = [anchor, *users[:2]]
+        data = []
+        for source in selected:
+            item = source.model_dump(mode="json")
+            limit = 800 if source == anchor else 400
+            quote = source.quote.encode()[:limit].decode("utf-8", errors="ignore")
+            item["quote"] = quote
+            item["quote_truncated"] = quote != source.quote
+            data.append(item)
+        return data
+
     def context(self) -> dict[str, JsonValue]:
         """Keep evidence and temporal semantics; leave processing diagnostics in the store."""
-        return self.model_dump(
+        data = self.model_dump(
             mode="json",
             exclude={
                 "verification_reason",
@@ -278,12 +301,17 @@ class StoredMemory(Contract):
                 "artifact_refs",
             },
         )
+        data["sources"] = self.evidence_context()
+        data["sources_complete"] = len(data["sources"]) == len(self.sources)
+        if self.layer == "m2":
+            text = self.text.encode()[:1200].decode("utf-8", errors="ignore")
+            data["text"] = text
+            data["text_truncated"] = text != self.text
+        return data
 
     def ranking_context(self) -> dict[str, JsonValue]:
         """Rank semantic summaries with provenance and temporal/version boundaries."""
-        data = self.model_dump(
-            mode="json",
-            include={
+        data = {key: value for key, value in self.context().items() if key in {
                 "memory_id",
                 "layer",
                 "text",
@@ -303,12 +331,8 @@ class StoredMemory(Contract):
                 "related_memory_ids",
                 "request_id",
                 "event_kind",
-            },
-        )
-        data["sources"] = [
-            source.model_dump(mode="json", include={"event_id", "source_role", "occurred_at"})
-            for source in self.sources
-        ]
+                "sources", "sources_complete", "text_truncated",
+            }}
         return data
 
 

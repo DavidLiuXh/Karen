@@ -2045,6 +2045,54 @@ async def test_distinct_user_uses_survive_verbose_assistant_guidance(memory):
     assert all("fusion_rank" not in h and "vector_score" not in h for h in result.context()["m2"])
 
 
+async def test_overlapping_summaries_keep_later_user_values_before_reranking(memory):
+    service, model = memory
+    receipts = []
+    for index in range(10):
+        receipt = service.submit(event(
+            f"设备处理时长的旧说明{index}。" + "重复操作步骤和参数介绍。" * 120,
+            request="device", kind="assistant_message",
+        ))
+        await service.flush(receipt)
+        receipts.append(receipt)
+    for text in ("设备第一种模式需要19分钟。", "设备第二种模式需要46分钟。"):
+        receipt = service.submit(event(text, request="device"))
+        await service.flush(receipt)
+        receipts.append(receipt)
+    revision, records, _ = service.storage.snapshot()
+    by_event = {m.sources[0].event_id: m for m in records.values() if m.layer == "m2"}
+    changes = []
+    for index, receipt in enumerate(receipts):
+        record = by_event[receipt.event_id]
+        changes.append(record.model_copy(update={
+            "text": "旧操作说明。" * 600 + record.text,
+            "sources": [by_event[r.event_id].sources[0] for r in receipts[:index + 1]],
+        }))
+    service.storage.commit_memories(receipts[-1].event_id, changes, revision)
+    model.kind = "detail"
+    generate = model.generate
+    ranking_input = {}
+
+    async def capture_ranking(request):
+        if request.role == "memory_rerank":
+            ranking_input.update(request.input_data)
+        return await generate(request)
+
+    model.generate = capture_ranking
+    result = await service.recall(query("设备两种模式的处理时长相差多少？"))
+    user_ids = {by_event[r.event_id].memory_id for r in receipts[-2:]}
+    assert user_ids <= set(ranking_input["primary_ids"])
+    projected = encode(ranking_input)
+    assert "19分钟" in projected and "46分钟" in projected
+    context = result.context()
+    assert user_ids <= {hit["memory"]["memory_id"] for hit in context["m2"]}
+    assert "19分钟" in encode(context) and "46分钟" in encode(context)
+    assert len(encode(context).encode()) <= 12 * 1024
+    _, stored, _ = service.storage.snapshot()
+    assert stored[changes[-1].memory_id].sources == changes[-1].sources
+    assert stored[changes[-1].memory_id].text == changes[-1].text
+
+
 @pytest.mark.parametrize("code", ["MODEL_RESPONSE_INVALID", "MODEL_RESPONSE_TRUNCATED"])
 @pytest.mark.parametrize("recovers", [True, False])
 async def test_content_repair_reduces_scope_and_does_not_repeat_the_same_job(tmp_path, code, recovers):

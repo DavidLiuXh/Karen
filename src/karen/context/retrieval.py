@@ -459,7 +459,12 @@ class Retriever:
         # Bound the whole request, including raw locating clues, not just memories.
         primary = list(primary)
         while len(encode(inputs).encode()) > 24 * 1024 and primary:
-            primary.pop()
+            # Preserve original fusion order among retained roots. Remove repeated
+            # assistant background before a distinct new user observation.
+            removed = next((mid for mid in reversed(primary)
+                            if state["memories"][mid].anchor_source().source_role != "user"),
+                           primary[-1])
+            primary.remove(removed)
             records = {mid for root in primary for mid in state["bundles"][root]}
             inputs["primary_ids"] = primary
             inputs["memories"] = [
@@ -555,7 +560,7 @@ class Retriever:
             # rewrite the agreed fusion order on rerank failure.
             ranked.sort(key=lambda row: (
                 row[1] != "relevant",
-                any(s.source_role != "user" for s in memories[row[0]].sources),
+                memories[row[0]].anchor_source().source_role != "user",
             ))
         for mid, relevance, rank in ranked:
             layer = memories[mid].layer
@@ -591,6 +596,11 @@ class Retriever:
             if used + size > memory_budget:
                 degraded.append("CONTEXT_BUDGET_LIMIT")
                 continue
+            for hit in hits:
+                projected = hit.memory.context()
+                if (projected.get("text_truncated") or not projected["sources_complete"]
+                        or any(s["quote_truncated"] for s in projected["sources"])):
+                    degraded.append("MEMORY_CONTEXT_TRUNCATED")
             for hit in hits:
                 (m1 if hit.memory.layer == "m1" else m2).append(hit)
             if hits:
@@ -665,7 +675,14 @@ class Retriever:
             refs, seen_sources = [], set()
             # Give each ranked record a source before taking additional sources
             # from a dense summary. A single record must not consume every locator.
-            for source_group in zip_longest(*(memory.sources for memory in source_memories)):
+            source_groups = []
+            for memory in source_memories:
+                anchor = memory.anchor_source()
+                others = sorted((s for s in memory.sources if s != anchor), key=lambda s: (
+                    s.source_role != "user", -(s.sequence or 0),
+                ))
+                source_groups.append([anchor, *others])
+            for source_group in zip_longest(*source_groups):
                 for source in source_group:
                     if source is None:
                         continue

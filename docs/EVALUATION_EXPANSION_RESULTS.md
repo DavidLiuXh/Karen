@@ -1,5 +1,31 @@
 # 第二批公开评测与修复记录
 
+
+## 最新完整成绩（2026-10-06）
+
+CLAMBER 和 LongMemEval 已在最新产品代码与配置下完整重跑。以下四组最近一次完整运行使用同一产品源码和模型配置；这是固定样本成绩，不是公开数据集全集成绩。
+
+| 测试集 | 最近整组成绩 | 未通过的原因 | 运行目录 |
+| --- | ---: | --- | --- |
+| CLAMBER（意图与澄清） | **15/24，62.5%** | 8 条澄清判定不符合冻结标准，1 条超时 | expansion-clamber-v14 |
+| LongMemEval oracle（记忆与回答） | **11/14，78.6%** | 1 条记忆提取格式失败，1 条执行响应截断，1 条个性化回答覆盖不足 | expansion-longmemeval-v14 |
+| Karen 中文回归 | **12/12，100%** | 全部通过 | expansion-zh-regression-v13 |
+| 独立变体 | **11/12，91.7%** | 1 条共同条件本可满足，却要求用户澄清 | expansion-variants-v13 |
+
+当前只有中文回归组最近一轮全部通过，另外三组尚未全部通过。CLAMBER 和 LongMemEval 的上述成绩是最新代码的整组实测，已经不是旧轮次或四条记忆样本的局部复测。
+
+本次重跑使用原固定 24 条 CLAMBER 和 14 条 LongMemEval，保留原标签、参考答案与评分协议；两组全部产生结果，运行前后源码一致。产品使用 DeepSeek Flash：意图和执行启用低强度思考，记忆保持非思考；清晰度及记忆提取/核验输出 cap 为 8192，执行 cap 为 16384。运行期间没有修改代码或配置。
+
+LongMemEval 的三条未通过：
+
+- `f4f1d8a4_abs`：记忆提取返回非法结构化响应，既有修复与重试后仍失败，未进入最终回答。
+- `75832dbd`：资料推荐任务在执行阶段触发 MODEL_RESPONSE_TRUNCATED，任务未完成。
+- `caf03d32`：建议仍以通用内容为主，没有充分结合用户已有的炖牛肉经验与慢炖锅酸奶兴趣。
+
+CLAMBER 的八条判定失败中，六条按原标准应澄清却生成目标，两条按原标准不应澄清却澄清；这些分数包含之前记录的策略/标签分歧，不人工改判。另有 `clamber-2050` 超时。
+
+后文保留历史轮次和修复过程，当前成绩以上表为准。
+
 本轮继续使用 CLAMBER、LongMemEval oracle 中未进入首轮的记录，先冻结选择清单和既有评分标准，再观察失败、作通用修复和本地提交。原始结果和失败均保留，未修改标签或通过条件。首轮记录见 [EVALUATION_RESULTS.md](EVALUATION_RESULTS.md)，运行方式见 [EVALUATION.md](EVALUATION.md)。
 
 ## 样本与运行环境
@@ -224,3 +250,14 @@ v12 CLAMBER 与独立变体已经结束并校验 stable：分别为 **13/24**（
 caf03d32 追踪明确区分了前后问题：v12 某些用途被精排排除；v13 已将直接相关用途判为 relevant，但其较后记录仍被最终上下文预算丢弃。共享优先级提示改进了精排相关性，却没有解决上下文装配时长记录与重复说明挤占证据的机制。该缺口与共同条件推理波动仍待后续通用修复，不借输出 cap 调整或评分解释计为通过。公开 CLAMBER 最新完整轮次仍为 v12 的 13/24；没有改标签或与其他轮次拼接成绩。
 
 最终本地回归 **Karen 310 passed；DynamicAgentGraph 311 passed、10 skipped**，Ruff 与 diff 检查通过。报告与原始结果保留全部失败。本阶段完成了输出预算和错误分类修复及其真实验证，公开评测尚未全通过。
+
+
+## v14 最新代码完整重跑
+
+用户要求用最新代码和配置完整重跑 CLAMBER、LongMemEval。本轮只执行评测，不修改产品。使用 `manifest-expansion-live-v1.json`，分别选择 clamber 全部 24 条与 longmemeval-oracle 全部 14 条，包含原开发与已见留出；不按失败或成功挑选用例。每条 LongMemEval 仍完整写入历史、等待派生与索引、关闭并重启记忆模块后回答。原判定协议和参考答案保持不变。
+
+两个运行均已结束并校验 stable，开始/结束 Karen SHA256 同为 `131dd9eb6301e58918ed16c043419323e130ffe4e7d12af1a5fcbc756025c804`，DynamicAgentGraph 同为 `a0891a78dd583d011a835682d830f77f259f90db1b4609046c7766bfbad20355`。运行开始 Karen 本地 HEAD 为 `a74204a`。每组结果 ID 与冻结选择完全一致，没有缺少、重复或拼接用例。
+
+CLAMBER **15/24**：15 passed、8 failed、1 error（MODEL_TIMEOUT）。LongMemEval **11/14**：11 passed、2 failed、1 error；两条 failed 分别为执行节点截断与回答覆盖不足，error 为 MemoryFlushError，底层非法结构化输出。没有评分调用失败。旧轮次与单例复测的成功没有代入本轮成绩。
+
+原始记录在 `runs/evaluation/expansion-clamber-v14`、`runs/evaluation/expansion-longmemeval-v14`：run.json 是版本及完整性记录，summary.json/results.jsonl 是完整成绩，每例 result.json 与 observability 保存全过程。当前的十二条中文和十二条独立变体成绩来自 v13，已核对它们与 v14 使用相同源码哈希、产品模型配置、Embedding 和评分器。没有在这次重跑重复离线代码测试，也没有修复、推送或创建 PR。

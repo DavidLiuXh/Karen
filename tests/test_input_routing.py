@@ -16,7 +16,7 @@ from karen import IntentRecognizer, IntentSession, Karen
 from karen.context import ContextMemory
 from karen.context.storage import encode
 from karen.intent import InputRouting
-from karen.intent.recognizer import Message
+from karen.intent.recognizer import ClarificationItem, Message
 from karen.observability import ObservedModel, Observer
 from karen.observability.viewer import TraceStore
 
@@ -776,7 +776,7 @@ async def test_new_request_time_is_anchored_before_slow_classifier(monkeypatch, 
         timezone="Asia/Shanghai",
         reference_time_utc=datetime(2026, 10, 2, tzinfo=UTC),
         messages=(Message(role="user", content="写邮件"),),
-        questions=("给谁写？",),
+        clarification_items=(ClarificationItem(question_id="q1", text="给谁写？", asked_after=0),),
     )
     turn = await agent.advance(pending, "新任务：写明天的安排")
     assert turn.session.request_id != pending.request_id
@@ -787,12 +787,15 @@ async def test_new_request_time_is_anchored_before_slow_classifier(monkeypatch, 
 async def test_clarity_gate_retains_pending_context_and_stops_goal_creation():
     from dynamic_graph import FakeModelClient as RawModel
 
-    def clarity(questions, *, known=None, criteria=None):
+    def clarity(questions, *, known=None, criteria=None, answered=None):
         return {
             "known_referents": known or {},
             "references": [],
             "selection_criteria": criteria or [],
             "questions": [{"text": text, "kind": "missing_requirement", "resolution_source": "user", "blocking_reason": "缺口改变本次核心对象或交付要求。"} for text in questions],
+            "question_updates": [{"question_id": answered[0], "status": "answered",
+                                  "evidence_quote": answered[1], "reason": "用户已说明对象"}]
+                                  if answered else [],
             "reason": "Only unresolved necessary information is requested",
         }
 
@@ -801,9 +804,10 @@ async def test_clarity_gate_retains_pending_context_and_stops_goal_creation():
             routing(),
             clarity(["你说的产品编号对应哪个产品？"]),
             routing(types=["task_control"], relation="continue"),
-            clarity(["采用哪一个版本？"], known={"产品": "离线音频转码器"}),
+            clarity(["采用哪一个版本？"], known={"产品": "离线音频转码器"},
+                    answered=("q1", "我说的是离线音频转码器")),
             routing(types=["task_control"], relation="continue"),
-            clarity([], known={"产品": "离线音频转码器版本2"}),
+            clarity([], known={"产品": "离线音频转码器版本2"}, answered=("q2", "版本2")),
             ready(),
         ]
     )
@@ -1040,7 +1044,10 @@ async def test_grounded_requirement_conflict_blocks_goal_until_user_corrects_it(
         "questions": [],
         "reason": "两个同时生效的长度要求不能同时满足",
     }
-    resolved = {**assessment, "requirement_conflicts": [], "reason": "用户已明确纠正旧要求"}
+    resolved = {**assessment, "requirement_conflicts": [], "reason": "用户已明确纠正旧要求",
+                "question_updates": [{"question_id": "q1", "status": "withdrawn",
+                                      "evidence_quote": "以最多500字为准，不需要至少1000字",
+                                      "reason": "用户纠正旧长度约束"}]}
     model = RawModel(
         [
             routing(),

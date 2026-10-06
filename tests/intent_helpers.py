@@ -34,6 +34,12 @@ class ClarityAwareModel(FakeModelClient):
                     "references": [],
                     "selection_criteria": [],
                     "questions": [],
+                    "question_updates": [{
+                        "question_id": item["question_id"], "status": "answered",
+                        "evidence_quote": request.input_data["messages"][-1]["content"],
+                        "reason": "本脚本只验证路由，假设回答足够；语义边界另用原始 FakeModelClient 验证。",
+                    } for item in request.input_data.get("clarification_items", [])
+                       if item["status"] == "pending"],
                     "reason": "No unresolved referents in this scripted routing test",
                 }
             )

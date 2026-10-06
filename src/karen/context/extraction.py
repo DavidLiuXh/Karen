@@ -82,7 +82,7 @@ class Extractor:
             task_instruction=instruction,
             input_data=inputs,
             output_schema=schema.model_json_schema(),
-            max_output_tokens=4096,
+            max_output_tokens=8192,
             timeout_seconds=30,
         )
         deadline = asyncio.get_running_loop().time() + request.timeout_seconds

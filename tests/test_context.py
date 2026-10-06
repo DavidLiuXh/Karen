@@ -1921,12 +1921,15 @@ async def test_detail_recall_keeps_new_source_when_its_summary_does_not_fit(memo
             )
         service.submit(event("另一个对象共99次。", request="unrelated"))
         result = await service.recall(query("最近三个月完成了多少次观测？"))
-        assert newer_summary.memory_id not in {h.memory.memory_id for h in result.m2}
+        assert newer_summary.memory_id in {h.memory.memory_id for h in result.m2}
         assert newer.event_id in {source.event_id for source in detail_queries[0].sources}
         assert new_text in [hit.text for hit in result.details]
         assert not any("99次" in hit.text for hit in result.details)
         assert len(encode(result.context()).encode()) <= 12 * 1024
-        assert "CONTEXT_BUDGET_LIMIT" in result.degradations
+        assert "outcome" not in next(
+            h["memory"] for h in result.context()["m2"]
+            if h["memory"]["memory_id"] == newer_summary.memory_id
+        )
         assert (await service.load_event(newer.event_id)).payload["content"] == new_text
 
 
@@ -2011,3 +2014,32 @@ async def test_dense_source_list_does_not_crowd_out_other_relevant_evidence(memo
     assert "第二种模式的处理时长是37分钟。" in [hit.text for hit in result.details]
     assert "DETAIL_SOURCE_BUDGET_LIMIT" in result.degradations
     assert len(encode(result.context()).encode()) <= 12 * 1024
+
+
+async def test_distinct_user_uses_survive_verbose_assistant_guidance(memory):
+    service, model = memory
+    evidence = []
+    for text in ("设备曾用于录制语音。", "我想尝试设备的视频剪辑功能。"):
+        receipt = service.submit(event(text, request=text))
+        await service.flush(receipt)
+        evidence.append(receipt.event_id)
+    assistant = event("设备通用说明。" + "调整参数并检查设置。" * 120,
+                      request="guide", kind="assistant_message")
+    await service.flush(service.submit(assistant))
+    generate = model.generate
+
+    async def rank_guidance_first(request):
+        response = await generate(request)
+        if request.role == "memory_rerank":
+            records = {r["memory_id"]: r for r in request.input_data["memories"]}
+            response.payload["ranking"].sort(key=lambda r: not any(
+                s["source_role"] == "assistant" for s in records[r["memory_id"]]["sources"]
+            ))
+        return response
+
+    model.generate = rank_guidance_first
+    result = await service.recall(query("设备的使用效果怎样改善？"))
+    assert {s.event_id for h in result.m2 for s in h.memory.sources} >= set(evidence)
+    assert all(h.memory.sources[0].source_role == "user" for h in result.m2[:2])
+    assert len(encode(result.context()).encode()) <= 12 * 1024
+    assert all("fusion_rank" not in h and "vector_score" not in h for h in result.context()["m2"])

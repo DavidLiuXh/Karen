@@ -59,7 +59,15 @@ class Message(IntentContract):
     content: Text
 
 
+class EvidenceUse(IntentContract):
+    evidence_id: Text
+    disposition: Literal["covered", "context_only", "not_applicable"]
+    reason: Text = Field(max_length=300)
+    output_quote: str = Field(default="", max_length=500)
+
+
 class GoalDraft(IntentContract):
+    evidence_coverage: list[EvidenceUse] = Field(default_factory=list)
     supporting_facts: list[Text] = Field(
         default_factory=list,
         description="先列出与本轮目标相关、由当前输入或记忆原文支持的具体事实，再形成目标和验收条件；无相关事实时为空。",
@@ -142,6 +150,7 @@ class Assessment(IntentContract):
 
 
 class DirectAssessment(IntentContract):
+    evidence_coverage: list[EvidenceUse] = Field(default_factory=list)
     supporting_facts: list[Text] = Field(
         default_factory=list,
         description="先列出当前输入或记忆原文支持且与问题相关的事实，再形成 decision；无相关事实时为空。",
@@ -770,7 +779,7 @@ class IntentRecognizer:
                 "MODEL_TIMEOUT", "Intent model request timed out", retryable=True
             ) from exc
 
-    async def _validated(self, request: ModelRequest, schema):
+    async def _validated(self, request: ModelRequest, schema, *, validate=None):
         """One JSON/schema repair within the original deadline and original requirements."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + request.timeout_seconds
@@ -781,7 +790,10 @@ class IntentRecognizer:
                         response = await self._generate(
                             replace(request, timeout_seconds=max(0, deadline - loop.time()))
                         )
-                        return schema.model_validate(response.payload)
+                        result = schema.model_validate(response.payload)
+                        if validate is not None:
+                            validate(result)
+                        return result
                     except ModelCallError as error:
                         if attempt or error.code != "MODEL_RESPONSE_INVALID":
                             raise
@@ -816,6 +828,15 @@ class IntentRecognizer:
                             }
                             for item in error.errors(include_input=False, include_url=False)
                         ]
+                        previous_response = response.payload
+                    except ValueError as error:
+                        # Boundary validators below emit contract codes only.
+                        if attempt:
+                            raise ModelCallError(
+                                "MODEL_RESPONSE_INVALID", "Intent evidence coverage is invalid",
+                                details={"contract": str(error)},
+                            ) from error
+                        errors = [{"type": str(error)}]
                         previous_response = response.payload
                     self.observer.emit(
                         "model.schema_repair",
@@ -908,7 +929,11 @@ class IntentRecognizer:
                     timeout_seconds=max(0, deadline - loop.time()),
                 ),
                 DirectAssessment,
+                validate=lambda result: self._check_evidence_coverage(inputs, result),
             )
+            self.observer.emit("intent.evidence_coverage", data={
+                "stage": "reply", "coverage": assessment.evidence_coverage,
+            })
         return {"decision": assessment.decision}
 
     @staticmethod
@@ -951,9 +976,54 @@ class IntentRecognizer:
         }
         if state.get("memory_context") is not None:
             inputs["memory"] = state["memory_context"]
+            inputs["evidence_to_consider"] = IntentRecognizer._evidence_items(inputs["memory"])
         if state.get("clarity") is not None:
             inputs["clarity"] = state["clarity"].model_dump(mode="json")
         return inputs
+
+    @staticmethod
+    def _evidence_items(memory: dict) -> list[dict]:
+        """Audit distinct, sourced user evidence without duplicating full records."""
+        items = {}
+        for layer in ("m1", "m2"):
+            for hit in memory.get(layer, []):
+                record = hit.get("memory", {})
+                mid = record.get("memory_id")
+                if not mid or hit.get("relevance") != "relevant":
+                    continue
+                if not any(s.get("source_role") == "user" and s.get("quote")
+                           for s in record.get("sources", [])):
+                    continue
+                items[mid] = {"evidence_id": mid, "text": record.get("text", ""),
+                              "layer": layer}
+        for hit in memory.get("details", []):
+            source = hit.get("source", {})
+            if source.get("event_id") and source.get("source_role") == "user":
+                key = f"{source['event_id']}:{source.get('pointer', '')}"
+                items[key] = {"evidence_id": key, "text": hit.get("text", ""), "layer": "m3"}
+        return list(items.values())
+
+    @staticmethod
+    def _check_evidence_coverage(inputs: dict, assessment) -> None:
+        if isinstance(assessment.decision, Clarification):
+            return
+        if isinstance(assessment.decision, Ready):
+            goal = assessment.decision.goal
+            uses = goal.evidence_coverage
+            output = "\n".join([goal.objective, *goal.success_criteria, *goal.constraints])
+        else:
+            uses = assessment.evidence_coverage
+            output = assessment.decision.answer
+        expected = {item["evidence_id"] for item in inputs.get("evidence_to_consider", [])}
+        if [use.evidence_id for use in uses] and not expected:
+            raise ValueError("UNSUPPORTED_EVIDENCE_COVERAGE")
+        if len(uses) != len(expected) or {use.evidence_id for use in uses} != expected:
+            raise ValueError("INCOMPLETE_EVIDENCE_COVERAGE")
+        for use in uses:
+            if use.disposition == "covered" and (
+                not use.output_quote.strip() or use.output_quote not in output
+            ):
+                raise ValueError("COVERAGE_QUOTE_NOT_IN_DELIVERABLE")
 
     @staticmethod
     def _memory_clarification(state: IntentState) -> dict | None:
@@ -1009,7 +1079,12 @@ class IntentRecognizer:
                     timeout_seconds=max(0, deadline - loop.time()),
                 ),
                 Assessment,
+                validate=lambda result: self._check_evidence_coverage(inputs, result),
             )
+            self.observer.emit("intent.evidence_coverage", data={
+                "stage": "goal", "coverage": assessment.decision.goal.evidence_coverage
+                if isinstance(assessment.decision, Ready) else [],
+            })
         return {"decision": assessment.decision}
 
     @staticmethod
@@ -1044,6 +1119,7 @@ class IntentRecognizer:
             "input_routing": session.routing.model_dump(mode="json"),
             "constraints": draft.constraints,
             "supporting_facts": draft.supporting_facts,
+            "evidence_coverage": [use.model_dump(mode="json") for use in draft.evidence_coverage],
             "user_context": session.user_context,
             "conversation": [m.model_dump(mode="json") for m in session.messages],
         }

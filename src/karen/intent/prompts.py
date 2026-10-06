@@ -270,6 +270,25 @@ json_syntax.message 为 Extra data 时，一个 JSON 根对象已经结束，后
 不要复述 previous_response 的字符串结尾。complete_root 是待修复的模型草稿，不是事实证据。
 """
 
+EVIDENCE_COVERAGE_INSTRUCTION = """
+evidence_to_consider 是程序从已召回证据形成的检查清单，证据原文及时间/状态仍以 memory 为准。
+检查清单不是新要求，不授权继承旧任务，也不能把未实践的探索写成实践。
+对清单每个 evidence_id 恰好返回一个 evidence_coverage 条目，不得编造 ID。
+covered 表示回答/目标实际考虑了该事实或用途，output_quote 引用 answer 或目标的
+objective/success_criteria/constraints 中能体现它的连续文字，不能引用 supporting_facts。
+context_only 仅用于无需在交付物逐条复述的辅助背景，reason 说明它如何影响本次回答；
+直接相关的实践、明确探索用途、解释变化所需事实不能仅当成辅助背景而被泛化内容替代。
+not_applicable 必须说明本轮范围、当前要求、时间或证据限制为何排除它；不能以排序靠后排除。
+只审查证据使用、当前要求及实际缺口，不重新扩张任务或添加新的筛选条件。
+准确完整时保留草稿；覆盖不足时直接修正，返回完整结果。
+直接回应时 evidence_coverage 在根对象，目标评估时在 decision.goal 内。澄清无需覆盖报告。
+"""
+
+DIRECT_RESPONSE_REVIEW_INSTRUCTION += EVIDENCE_COVERAGE_INSTRUCTION
+GOAL_REVIEW_INSTRUCTION += EVIDENCE_COVERAGE_INSTRUCTION
+DIRECT_RESPONSE_INSTRUCTION += EVIDENCE_COVERAGE_INSTRUCTION
+INTENT_SYSTEM_INSTRUCTION += EVIDENCE_COVERAGE_INSTRUCTION
+
 
 ENTITY_CHECK_INSTRUCTION = """核验一个模型声称已认识的专有实体，不执行用户的研究问题。
 proposed_definition 是待核验的模型猜测，不是证据。判断精确 subject 名称是否确为你已知的公共实体。

@@ -273,6 +273,9 @@ class StoredMemory(Contract):
                 "verifier_model",
                 "prompt_version",
                 "revision",
+                "actions",
+                "outcome",
+                "artifact_refs",
             },
         )
 
@@ -411,6 +414,14 @@ class MemoryHit(Contract):
     bm25_rank: int | None = None
     evidence_only: bool = False
 
+    def context(self) -> dict[str, JsonValue]:
+        """Evidence for reasoning; ranking diagnostics remain on the recall result."""
+        return {
+            "memory": self.memory.context(),
+            "relevance": self.relevance,
+            "evidence_only": self.evidence_only,
+        }
+
 
 class DetailQuery(Contract):
     text: str
@@ -466,7 +477,6 @@ class RecallResult(Contract):
         """A bounded, sourced JSON package; never includes vectors or credentials."""
         data = self.model_dump(mode="json")
         for layer in ("m1", "m2"):
-            for hit, original in zip(data[layer], getattr(self, layer), strict=True):
-                hit["memory"] = original.memory.context()
+            data[layer] = [hit.context() for hit in getattr(self, layer)]
         data["details"] = [hit.context() for hit in self.details]
         return data

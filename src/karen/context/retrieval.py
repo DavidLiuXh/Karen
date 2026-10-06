@@ -549,6 +549,14 @@ class Retriever:
         m1, m2, included, used = [], [], set(), 0
         memory_groups = []
         root_counts = {"m1": 0, "m2": 0}
+        if "RERANK_FAILED_FUSION_ORDER" not in degraded:
+            # Rank relevance, then pack distinct user evidence before verbose
+            # assistant guidance. Sorting is stable within each category. Do not
+            # rewrite the agreed fusion order on rerank failure.
+            ranked.sort(key=lambda row: (
+                row[1] != "relevant",
+                any(s.source_role != "user" for s in memories[row[0]].sources),
+            ))
         for mid, relevance, rank in ranked:
             layer = memories[mid].layer
             root_limit = (
@@ -576,7 +584,7 @@ class Retriever:
                 )
             size = len(
                 encode(
-                    [{**h.model_dump(mode="json"), "memory": h.memory.context()} for h in hits]
+                    [h.context() for h in hits]
                 ).encode()
             )
             memory_budget = (6 if analysis.kind == "detail" else 10) * 1024
@@ -830,6 +838,10 @@ class Retriever:
             if analysis.time_mode == "timeline"
             else "matched_and_current_versions",
             "index": state["index_coverage"],
+            "evidence_selection": {
+                "ranked": len(ranked),
+                "retained": sum(mid in included for mid, _, _ in ranked),
+            },
         }
         result = RecallResult(
             status="degraded"
@@ -902,4 +914,8 @@ class Retriever:
                 result.collection["display_complete"] = False
         if result.degradations and result.coverage["complete"]:
             result = result.model_copy(update={"coverage": {**result.coverage, "complete": False}})
+        retained = {hit.memory.memory_id for hit in (*result.m1, *result.m2)}
+        result.coverage["evidence_selection"]["retained"] = sum(
+            mid in retained for mid, _, _ in ranked
+        )
         return {"result": result}

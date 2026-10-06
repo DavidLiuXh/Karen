@@ -16,6 +16,7 @@ TASK_GAP_INSTRUCTION = """
 QUESTION_STATE_INSTRUCTION = """
 clarification_items 是本任务的问题台账：稳定 question_id、状态及已核验的回答关联。
 本轮逐项更新所有 pending 问题：明确得到足够回答才 answered；用户明确撤销或纠正要求才 withdrawn；
+已解决问题通常不再返回；重复确认时必须保留原状态与原引文，不能改写已有回答关联。
 部分回答、无效回答或未涉及的问题仍 pending。answered/withdrawn 引用该问题提出之后的连续用户原话，
 不能以助手的问题、自己的推测或旧记录作为用户回答。未改变的已解决事项不重复询问。
 此前提出的问题本身不是用户硬性要求。复核发现它原本过度澄清，或已有可行方案使剩余缺口可省略时，

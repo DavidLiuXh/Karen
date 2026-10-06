@@ -48,6 +48,7 @@ from .prompts import (
 )
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+QuestionStatus = Literal["pending", "answered", "withdrawn", "not_required"]
 
 
 class IntentContract(BaseModel):
@@ -233,7 +234,7 @@ class ClarityReview(IntentContract):
 
 class QuestionUpdate(IntentContract):
     question_id: Text
-    status: Literal["pending", "answered", "withdrawn", "not_required"]
+    status: QuestionStatus
     evidence_quote: str = Field(default="", description="已回答/撤销引用提问后的用户原话；不再必要引用支持可行交付的本任务用户原话；待回答时为空。")
     reason: Text = Field(max_length=500)
 
@@ -242,14 +243,14 @@ class ClarificationItem(IntentContract):
     question_id: Text
     text: Text
     asked_after: int = Field(ge=0)
-    status: Literal["pending", "answered", "withdrawn", "not_required"] = "pending"
+    status: QuestionStatus = "pending"
     evidence_quote: str = ""
     answer_message_index: int | None = None
 
 
 class ClarityAssessment(IntentContract):
     question_updates: list[QuestionUpdate] = Field(
-        default_factory=list, description="对 clarification_items 中每个 pending 问题恰好更新一次；未回答仍为 pending，不能因本轮只回答其他问题就删除。",
+        default_factory=list, description="每个 pending 问题恰好更新一次；已解决问题可重复确认完全相同的状态与引文，不能改写。未回答仍 pending，不能因只回答其他问题就删除。",
     )
     requirement_conflicts: list[RequirementConflict] = Field(
         default_factory=list,
@@ -735,13 +736,19 @@ class IntentRecognizer:
 
     @staticmethod
     def _update_questions(session: IntentSession, updates: list[QuestionUpdate]) -> IntentSession:
-        pending = {item.question_id: item for item in session.clarification_items
-                   if item.status == "pending"}
-        if len(updates) != len(pending) or {u.question_id for u in updates} != set(pending):
+        items = {item.question_id: item for item in session.clarification_items}
+        pending_ids = {item.question_id for item in items.values() if item.status == "pending"}
+        update_ids = {update.question_id for update in updates}
+        if (len(updates) != len(update_ids) or not pending_ids <= update_ids
+                or not update_ids <= set(items)):
             raise ValueError("INCOMPLETE_QUESTION_UPDATES")
         revised = {}
         for update in updates:
-            item = pending[update.question_id]
+            item = items[update.question_id]
+            if item.status != "pending":
+                if update.status != item.status or update.evidence_quote != item.evidence_quote:
+                    raise ValueError("CANNOT_REWRITE_RESOLVED_QUESTION")
+                continue
             if update.status == "pending":
                 if update.evidence_quote:
                     raise ValueError("PENDING_QUESTION_HAS_ANSWER")

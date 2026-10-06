@@ -190,3 +190,30 @@ async def test_unnecessary_question_retraction_still_needs_user_evidence():
         await intent.advance(first, "先不要写")
     assert error.value.code == "MODEL_RESPONSE_INVALID"
     assert first.clarification_items[0].status == "pending"
+
+
+@pytest.mark.parametrize("repeat", [
+    update("q1", "answered", "给客户"),
+    update("q1", "pending"),
+    update("q1", "answered", "给同事"),
+])
+async def test_repeated_confirmations_are_idempotent_but_cannot_rewrite_answers(repeat):
+    final_check = clarity(updates=[repeat, update("q2", "answered", "设计已完成")])
+    model = FakeModelClient([
+        routing(), clarity(gap("给谁写？"), gap("进度是什么？")),
+        routing(types=["task_control"], relation="continue"),
+        clarity(updates=[update("q1", "answered", "给客户"), update("q2")]),
+        routing(types=["task_control"], relation="continue"),
+        final_check, ready() if repeat["status"] == "answered" and repeat["evidence_quote"] == "给客户" else final_check,
+    ])
+    intent = IntentRecognizer(model)
+    first = await intent.advance(IntentSession(), "写邮件")
+    second = await intent.advance(first, "给客户")
+    if repeat["status"] == "answered" and repeat["evidence_quote"] == "给客户":
+        final = await intent.advance(second, "设计已完成，给同事是另外一封邮件才用的对象")
+        assert final.goal and final.clarification_items[0] == second.clarification_items[0]
+    else:
+        with pytest.raises(ModelCallError) as error:
+            await intent.advance(second, "设计已完成，给同事是另外一封邮件才用的对象")
+        assert error.value.code == "MODEL_RESPONSE_INVALID"
+        assert second.clarification_items[0].evidence_quote == "给客户"

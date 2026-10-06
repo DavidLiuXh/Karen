@@ -2139,3 +2139,60 @@ async def test_content_repair_reduces_scope_and_does_not_repeat_the_same_job(tmp
         assert (await service.write_status(following)).derived == "committed"
     finally:
         await service.close()
+
+
+@pytest.mark.parametrize("text,quote,expected", [
+    ("* **视界测量**: 处理时长是 **35分钟**。", "视界测量: 处理时长是 35分钟。", "**视界测量**: 处理时长是 **35分钟**。"),
+    ("说明：**视界测量**，需要35分钟。", "视界测量，需要35分钟。", "**视界测量**，需要35分钟。"),
+])
+async def test_source_resolution_restores_actual_continuous_bold_span(memory, text, quote, expected):
+    service, _ = memory
+    raw = event(text)
+    await service.flush(service.submit(raw))
+    source = service.storage.source(Evidence(
+        event_id=raw.event_id, pointer="/payload/content", quote=quote,
+    ), {raw.event_id: raw})
+    assert source.quote == expected and source.quote in text
+    assert (await service.load_event(raw.event_id)).payload["content"] == text
+
+
+@pytest.mark.parametrize("text,quote", [
+    ("**视界测量**需要35分钟。", "视界测量需要36分钟。"),
+    ("**视界测量**需要35分钟。", "视界测量耗时35分钟。"),
+    ("**设备**: 需要35分钟，**设备**: 需要35分钟。", "设备: 需要35分钟"),
+    ("`a ** b ** c`", "a  b  c"),
+    ("```\na ** b ** c\n```", "a  b  c"),
+    ("a**b**c", "abc"),
+    ("**标记**" + "背景" * 20000, "标记背景"),
+], ids=["numeric", "reword", "ambiguous", "inline-code", "fenced-code", "operator", "large"])
+async def test_bold_quote_recovery_rejects_rewording_ambiguity_code_and_large_sources(memory, text, quote):
+    service, _ = memory
+    raw = event(text)
+    with pytest.raises(ValueError, match="INVALID_SOURCE_QUOTE"):
+        service.storage.source(Evidence(event_id=raw.event_id, pointer="/payload/content", quote=quote),
+                               {raw.event_id: raw})
+
+
+async def test_derived_memory_persists_canonical_source_without_an_extra_model_call(memory):
+    service, model = memory
+    generate = model.generate
+
+    async def omit_bold(request):
+        response = await generate(request)
+        if request.role == "memory_extract":
+            for summary in response.payload["summaries"]:
+                for citation in summary["evidence"]:
+                    citation["quote"] = citation["quote"].replace("**", "")
+        return response
+
+    model.generate = omit_bold
+    text = "**视界测量**: 处理时长是 **35分钟**。"
+    receipt = service.submit(event(text))
+    await service.flush(receipt)
+    _, memories, _ = service.storage.snapshot()
+    assert next(m for m in memories.values() if m.layer == "m2").sources[0].quote == text
+    import json
+
+    cached = json.loads(service.storage.job(receipt.event_id)["extraction"])
+    assert cached["summaries"][0]["evidence"][0]["quote"] == text
+    assert len([r for r in model.requests if r.role == "memory_extract"]) == 1

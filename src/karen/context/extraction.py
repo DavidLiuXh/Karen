@@ -10,7 +10,7 @@ from dynamic_graph.models.client import ModelCallError, ModelClient, ModelReques
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
-from .contracts import Extraction, Scope, StoredMemory, Verification, utcnow
+from .contracts import Extraction, FactCandidate, Scope, StoredMemory, Verification, utcnow
 from .prompts import EXTRACT, MEMORY_SYSTEM, PROMPT_VERSION, REPAIR, VERIFY
 from .storage import Storage, digest, encode, stable_id
 
@@ -205,14 +205,24 @@ class Extractor:
                 sources = []
                 for evidence in candidate.evidence:
                     try:
-                        sources.append(await self.io(self.storage.source, evidence, allowed))
+                        source = await self.io(self.storage.source, evidence, allowed)
+                        sources.append(source)
+                        if source.quote != evidence.quote:
+                            self.observer.emit("memory.source_quote_restored", data={
+                                "source_event_id": evidence.event_id, "pointer": evidence.pointer,
+                                "method": "unique_markdown_bold_span",
+                            })
                     except ValueError as error:
                         raise MemoryValidationError(
                             str(error), invalid_evidence=evidence.model_dump(mode="json")
                         ) from error
-                if candidate in extraction.facts and direct_fact_evidence(event, sources):
+                candidate = candidate.model_copy(update={
+                    "evidence": [e.model_copy(update={"quote": s.quote})
+                                 for e, s in zip(candidate.evidence, sources, strict=True)],
+                })
+                if isinstance(candidate, FactCandidate) and direct_fact_evidence(event, sources):
                     eligible.append(candidate)
-                elif candidate in extraction.summaries:
+                elif not isinstance(candidate, FactCandidate):
                     summaries.append(candidate)
             return extraction.model_copy(update={"facts": eligible, "summaries": summaries})
 

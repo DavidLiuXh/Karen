@@ -119,7 +119,9 @@ async def test_agent_and_frozen_judge_are_isolated_and_both_calls_are_recorded(t
                 "references": [],
                 "known_referents": {},
                 "selection_criteria": [],
-                "questions": [{"text": "你指哪个文件？", "kind": "missing_requirement"}],
+                "questions": [{"text": "你指哪个文件？", "kind": "missing_requirement",
+                               "resolution_source": "user",
+                               "blocking_reason": "实际修改需要唯一文件路径。"}],
                 "reason": "需要文件定位",
             },
         ]

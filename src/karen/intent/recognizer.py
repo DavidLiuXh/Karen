@@ -36,13 +36,11 @@ from .prompts import (
     CLARITY_TASK_INSTRUCTION,
     DIRECT_RESPONSE_INSTRUCTION,
     DIRECT_RESPONSE_REVIEW_INSTRUCTION,
-    ENTITY_CHECK_INSTRUCTION,
     GOAL_CONTEXT_INSTRUCTION,
     GOAL_REVIEW_INSTRUCTION,
     INTENT_SYSTEM_INSTRUCTION,
     INTENT_TASK_INSTRUCTION,
     MEMORY_CONTEXT_INSTRUCTION,
-    REQUIREMENT_CHECK_INSTRUCTION,
     ROUTING_INSTRUCTION,
     STRUCTURE_REPAIR_INSTRUCTION,
 )
@@ -177,20 +175,10 @@ class ReferenceAssessment(IntentContract):
         return self
 
 
-class EntityRecognition(IntentContract):
-    recognized: bool
-    canonical_name: str
-    definition: str
-    reason: Text
-
-    @model_validator(mode="after")
-    def concrete_recognition(self):
-        if self.recognized and (not self.canonical_name.strip() or not self.definition.strip()):
-            raise ValueError("Recognition needs an exact canonical name and concrete definition")
-        return self
-
-
 class ClarityQuestion(IntentContract):
+    resolution_source: Literal["user", "external_lookup", "default_or_omit"]
+    blocking_reason: Text = Field(max_length=300,
+        description="具体说明缺口会改变哪个答案、操作对象或交付要求，以及为何不能从已有证据解决。")
     text: Text
     kind: Literal[
         "unknown_identity", "ambiguous_reference", "selection_criteria", "missing_requirement"
@@ -221,9 +209,10 @@ class RequirementConflict(IntentContract):
     )
 
 
-class RequirementCheck(IntentContract):
-    requirement_conflicts: list[RequirementConflict]
-    reason: Text
+class ClarityReview(IntentContract):
+    references: list[ReferenceAssessment] = Field(default_factory=list)
+    requirement_conflicts: list[RequirementConflict] = Field(default_factory=list)
+    reason: Text = Field(max_length=1500)
 
 
 class ClarityAssessment(IntentContract):
@@ -453,130 +442,89 @@ class IntentRecognizer:
             for message in memory.get("history", {}).get("messages", [])
             if message.get("content")
         )
-        original_conflicts = clarity.requirement_conflicts
-        if clarity.known_referents:
-            original_references = clarity.references
-            original_definitions = dict(clarity.known_referents)
-            originally_unknown = {
-                question.subject.casefold()
-                for question in clarity.questions
-                if question.kind == "unknown_identity"
-            }
-            clarity = await self._validated(
+        original_references = clarity.references
+        located_expressions = {
+            q.subject.casefold() for q in clarity.questions
+            if q.kind == "unknown_identity" and q.lookup_scope
+            and q.subject.casefold() in q.scope_evidence.casefold()
+            and q.lookup_scope.casefold() in q.scope_evidence.casefold()
+            and any(q.scope_evidence in text for text in source_texts)
+        }
+        grounded_conflicts = [c for c in clarity.requirement_conflicts if
+            c.first_requirement != c.second_requirement and all(
+                any(quote in text for text in source_texts)
+                for quote in (c.first_requirement, c.second_requirement)
+            )]
+        ambiguous = [ref for ref in clarity.references
+                     if len(ref.candidates) > 1 and ref.requires_unique_resolution
+                     and ref.expression.casefold() not in located_expressions
+                     and (ref.resolution != "explicit_identification"
+                          or not any(ref.evidence in text for text in source_texts))]
+        if ambiguous or grounded_conflicts:
+            # One focused semantic check; entity recognition alone never triggers
+            # another interpretation of the entire request. It shares the deadline.
+            checked = await self._validated(
                 replace(
                     request,
                     role="intent_clarity_review",
-                    task_instruction=CLARITY_REVIEW_INSTRUCTION + CLARITY_TASK_INSTRUCTION,
-                    input_data={"original_input": request.input_data},
+                    task_instruction=CLARITY_REVIEW_INSTRUCTION,
+                    input_data={
+                        "original_input": request.input_data,
+                        "issues_to_check": {
+                            "references": [ref.model_dump(mode="json") for ref in ambiguous],
+                            "requirements": [{
+                                "first_requirement": c.first_requirement,
+                                "second_requirement": c.second_requirement,
+                            } for c in grounded_conflicts],
+                        },
+                    },
                     timeout_seconds=max(0, deadline - loop.time()),
+                    output_schema=ClarityReview.model_json_schema(),
                 ),
-                ClarityAssessment,
+                ClarityReview,
+                validate=lambda result: self._check_reference_review(ambiguous, result),
             )
-            grounded_references = []
+            checked_expressions = {ref.expression for ref in ambiguous}
+            clarity = clarity.model_copy(update={
+                "references": [ref for ref in clarity.references
+                               if ref.expression not in checked_expressions] + checked.references,
+                "requirement_conflicts": checked.requirement_conflicts,
+                "reason": checked.reason,
+            })
+            references = []
             for ref in clarity.references:
-                ambiguous_before = next(
-                    (
-                        old
-                        for old in original_references
-                        if old.expression == ref.expression
-                        and len(old.candidates) > 1
-                        and set(old.candidates) == set(ref.candidates)
-                        and old.requires_unique_resolution
-                        and old.resolution in {"inferred", "unresolved"}
-                        and old.evidence
-                    ),
-                    None,
-                )
-                if (
-                    ref.resolution == "explicit_identification"
-                    and ambiguous_before is not None
-                    and ref.evidence in ambiguous_before.evidence
-                ):
-                    # Reinterpreting the same ambiguous passage adds no explicit
-                    # identification. Review needs a distinct source statement.
+                old = next((r for r in original_references if r.expression == ref.expression
+                            and len(r.candidates) > 1 and r.requires_unique_resolution
+                            and r.resolution in {"inferred", "unresolved"}), None)
+                if (old and ref.resolution == "explicit_identification" and old.evidence
+                        and ref.evidence in old.evidence):
                     ref = ref.model_copy(update={"resolution": "unresolved"})
-                    self.observer.emit(
-                        "intent.reference_resolution_rejected",
-                        data={"expression": ref.expression, "reason": "reused_ambiguous_evidence"},
-                    )
-                if ref.evidence and not any(ref.evidence in text for text in source_texts):
-                    previous = next(
-                        (
-                            old
-                            for old in original_references
-                            if old.expression == ref.expression
-                            and old.resolution == ref.resolution
-                            and set(ref.candidates) <= set(old.candidates)
-                            and old.evidence
-                            and any(old.evidence in text for text in source_texts)
-                        ),
-                        None,
-                    )
-                    if previous is not None:
-                        ref = ref.model_copy(update={"evidence": previous.evidence})
-                grounded_references.append(ref)
-            clarity = clarity.model_copy(update={"references": grounded_references})
-            checks = {}
-            recognized_entities = {}
-            pending_questions = []
-            for question in clarity.questions:
-                subject = question.subject.casefold()
-                proposed = next(
-                    (
-                        value
-                        for name, value in original_definitions.items()
-                        if name.casefold() == subject
-                    ),
-                    None,
+                    self.observer.emit("intent.reference_resolution_rejected", data={
+                        "expression": ref.expression, "reason": "reused_ambiguous_evidence",
+                    })
+                references.append(ref)
+            clarity = clarity.model_copy(update={"references": references})
+        else:
+            clarity = clarity.model_copy(update={"requirement_conflicts": grounded_conflicts})
+        conflicts = []
+        for conflict in clarity.requirement_conflicts:
+            if conflict.first_requirement == conflict.second_requirement or not all(
+                any(quote in text for text in source_texts)
+                for quote in (conflict.first_requirement, conflict.second_requirement)
+            ):
+                raise ModelCallError(
+                    "MODEL_RESPONSE_INVALID", "Clarity check cited unsupported evidence"
                 )
-                if (
-                    question.kind == "unknown_identity"
-                    and not question.lookup_scope
-                    and subject not in originally_unknown
-                    and proposed
-                ):
-                    if subject not in checks:
-                        checks[subject] = await self._validated(
-                            replace(
-                                request,
-                                role="intent_entity_check",
-                                system_instruction=ENTITY_CHECK_INSTRUCTION,
-                                task_instruction="核验精确名称与定义，返回结构化结果。",
-                                input_data={
-                                    "subject": question.subject,
-                                    "proposed_definition": proposed,
-                                },
-                                output_schema=EntityRecognition.model_json_schema(),
-                                timeout_seconds=max(0, deadline - loop.time()),
-                            ),
-                            EntityRecognition,
-                        )
-                    checked = checks[subject]
-                    if checked.recognized and checked.canonical_name.casefold() == subject:
-                        recognized_entities[subject] = checked.definition
-                        continue
-                pending_questions.append(question)
-            references = [
-                ref.model_copy(
-                    update={
-                        "candidates": [recognized_entities[ref.expression.casefold()]],
-                        "resolution": "unique_candidate",
-                    }
-                )
-                if ref.expression.casefold() in recognized_entities
-                else ref
-                for ref in clarity.references
-            ]
-            clarity = clarity.model_copy(
-                update={
-                    "questions": pending_questions,
-                    "references": references,
-                    "known_referents": {**clarity.known_referents, **recognized_entities},
-                }
-            )
+            conflicts.append(conflict)
         located = {}
         questions = []
+        external = list(clarity.external_information_needed)
         for question in clarity.questions:
+            if question.resolution_source == "external_lookup":
+                external.append(question.blocking_reason)
+                continue
+            if question.resolution_source == "default_or_omit":
+                continue
             quote = question.scope_evidence
             if (
                 question.kind == "unknown_identity"
@@ -600,7 +548,10 @@ class IntentRecognizer:
                     }
                 )
             references.append(ref)
-        clarity = clarity.model_copy(update={"questions": questions, "references": references})
+        clarity = clarity.model_copy(update={
+            "questions": questions, "references": references,
+            "external_information_needed": list(dict.fromkeys(external)),
+        })
         if clarity.references and not any(
             ref.requires_unique_resolution for ref in clarity.references
         ):
@@ -627,59 +578,22 @@ class IntentRecognizer:
                             text=f"‘{ref.expression}’指的是哪一个：{'、'.join(ref.candidates)}？",
                             kind="ambiguous_reference",
                             subject=ref.expression,
+                            resolution_source="user",
+                            blocking_reason="必须选择唯一指代才能确定本次答案或操作对象。",
                         )
                         for ref in unresolved
                     ]
                 }
             )
-        grounded_conflicts, checked_pairs = [], set()
-        conflict_questions = set()
-        for conflict in (*clarity.requirement_conflicts, *original_conflicts):
-            pair = frozenset((conflict.first_requirement, conflict.second_requirement))
-            if (
-                len(pair) != 2
-                or pair in checked_pairs
-                or not all(any(quote in text for text in source_texts) for quote in pair)
-            ):
-                continue
-            checked_pairs.add(pair)
-            conflict_questions.add(conflict.question)
-            grounded_conflicts.append(conflict)
-        conflicts = []
-        if grounded_conflicts:
-            checked = await self._validated(
-                replace(
-                    request,
-                    role="intent_requirement_check",
-                    system_instruction=REQUIREMENT_CHECK_INSTRUCTION,
-                    task_instruction="独立核查完整原始要求，返回所有仍阻碍实际交付的冲突，不生成目标。",
-                    input_data={"original_input": request.input_data},
-                    output_schema=RequirementCheck.model_json_schema(),
-                    timeout_seconds=max(0, deadline - loop.time()),
-                ),
-                RequirementCheck,
-            )
-            for conflict in checked.requirement_conflicts:
-                if conflict.first_requirement == conflict.second_requirement or not all(
-                    any(quote in text for text in source_texts)
-                    for quote in (conflict.first_requirement, conflict.second_requirement)
-                ):
-                    raise ModelCallError(
-                        "MODEL_RESPONSE_INVALID", "Requirement review cited unsupported evidence"
-                    )
-                conflicts.append(conflict)
-        clarity = clarity.model_copy(
-            update={
-                "requirement_conflicts": conflicts,
-                "questions": [q for q in clarity.questions if q.text not in conflict_questions],
-            }
-        )
+        clarity = clarity.model_copy(update={"requirement_conflicts": conflicts})
         if conflicts:
             questions = list(clarity.questions)
             for conflict in conflicts:
                 if not any(question.text == conflict.question for question in questions):
                     questions.append(
-                        ClarityQuestion(text=conflict.question, kind="missing_requirement")
+                        ClarityQuestion(text=conflict.question, kind="missing_requirement",
+                                        resolution_source="user",
+                                        blocking_reason="原始要求不能同时满足，需要用户修正。")
                     )
             clarity = clarity.model_copy(update={"questions": questions})
         if (
@@ -691,12 +605,18 @@ class IntentRecognizer:
                 update={
                     "questions": [
                         ClarityQuestion(
-                            text="请说明选择时最看重的因素或相关偏好。", kind="selection_criteria"
+                            text="请说明选择时最看重的因素或相关偏好。", kind="selection_criteria",
+                            resolution_source="user", blocking_reason="缺少实质筛选标准。"
                         )
                     ]
                 }
             )
         result = {"clarity": clarity}
+        self.observer.emit("intent.clarity_resolution", data={
+            "user_questions": clarity.questions,
+            "external_information_needed": clarity.external_information_needed,
+            "reason": clarity.reason,
+        })
         if clarity.questions:
             result["decision"] = Clarification(
                 outcome="needs_clarification",
@@ -740,6 +660,14 @@ class IntentRecognizer:
             routing.check_session(session)
             self.observer.emit("decision", data={"routing": routing})
             return routing
+
+    @staticmethod
+    def _check_reference_review(ambiguous, review: ClarityReview) -> None:
+        expected = {ref.expression for ref in ambiguous}
+        if len(review.references) != len(expected) or {
+            ref.expression for ref in review.references
+        } != expected:
+            raise ValueError("INVALID_CLARITY_REVIEW_REFERENCES")
 
     async def _generate(self, request: ModelRequest):
         """Retry transient transport failures within one request's total time budget."""

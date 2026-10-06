@@ -30,6 +30,11 @@ def routing(handling="assess", *, types=None, relation="new"):
     }
 
 
+def focused(assessment):
+    return {key: assessment[key] for key in ("references", "requirement_conflicts", "reason")
+            if key in assessment}
+
+
 def reply(text):
     return {"decision": {"outcome": "reply", "answer": text}}
 
@@ -787,7 +792,7 @@ async def test_clarity_gate_retains_pending_context_and_stops_goal_creation():
             "known_referents": known or {},
             "references": [],
             "selection_criteria": criteria or [],
-            "questions": [{"text": text, "kind": "missing_requirement"} for text in questions],
+            "questions": [{"text": text, "kind": "missing_requirement", "resolution_source": "user", "blocking_reason": "缺口改变本次核心对象或交付要求。"} for text in questions],
             "reason": "Only unresolved necessary information is requested",
         }
 
@@ -797,9 +802,7 @@ async def test_clarity_gate_retains_pending_context_and_stops_goal_creation():
             clarity(["你说的产品编号对应哪个产品？"]),
             routing(types=["task_control"], relation="continue"),
             clarity(["采用哪一个版本？"], known={"产品": "离线音频转码器"}),
-            clarity(["采用哪一个版本？"], known={"产品": "离线音频转码器"}),
             routing(types=["task_control"], relation="continue"),
-            clarity([], known={"产品": "离线音频转码器版本2"}),
             clarity([], known={"产品": "离线音频转码器版本2"}),
             ready(),
         ]
@@ -831,7 +834,7 @@ async def test_direct_question_uses_clarity_gate_but_information_does_not():
                 "known_referents": {},
                 "references": [],
                 "selection_criteria": [],
-                "questions": [{"text": "你指哪一位？", "kind": "ambiguous_reference"}],
+                "questions": [{"text": "你指哪一位？", "kind": "ambiguous_reference", "resolution_source": "user", "blocking_reason": "缺口改变本次核心对象或交付要求。"}],
                 "reason": "指代不明确",
             },
         ]
@@ -864,6 +867,8 @@ async def test_multiple_inferred_referents_trigger_clarification_before_answer(r
             },
         ]
     )
+    responses = list(model.responses)
+    model.responses = iter([*responses, focused(responses[-1])])
     result = await IntentRecognizer(model).advance(
         IntentSession(timezone="UTC"), "周宁告诉沈清，她收到了信。是谁收到了信？"
     )
@@ -1113,7 +1118,7 @@ async def test_external_information_does_not_override_a_necessary_identity_quest
                 "references": [],
                 "known_referents": {},
                 "selection_criteria": [],
-                "questions": [{"text": "要更新哪一个私人项目？", "kind": "missing_requirement"}],
+                "questions": [{"text": "要更新哪一个私人项目？", "kind": "missing_requirement", "resolution_source": "user", "blocking_reason": "缺口改变本次核心对象或交付要求。"}],
                 "reason": "公共参数可查询，但真实更新对象未明确",
             },
         ]
@@ -1159,7 +1164,7 @@ async def test_review_cannot_resolve_ambiguity_by_relabeling_the_same_passage(
         [
             routing("respond", types=["question"]),
             initial,
-            reviewed,
+            focused(reviewed),
             reply("程伊寄出了文件。"),
         ]
     )
@@ -1191,17 +1196,16 @@ async def test_dropped_requirement_conflict_needs_independent_source_check(incom
         "questions": [],
         "reason": "已发现当前要求冲突",
     }
-    revised = {**initial, "requirement_conflicts": [], "reason": "复核声称要求兼容"}
     check = {
         "requirement_conflicts": [conflict] if incompatible else [],
         "reason": "仅核查原始要求及完整当前输入",
     }
-    model = RawModel([routing(), initial, revised, check, ready()])
+    model = RawModel([routing(), initial, check, ready()])
     result = await IntentRecognizer(model).advance(
         IntentSession(), "写介绍，全文最多400字，正文至少700字"
     )
     assert bool(result.questions) is incompatible
-    audit = next(r for r in model.requests if r.role == "intent_requirement_check")
+    audit = next(r for r in model.requests if r.role == "intent_clarity_review")
     assert audit.input_data["original_input"]["messages"][0]["content"] == (
         "写介绍，全文最多400字，正文至少700字"
     )
@@ -1236,7 +1240,6 @@ async def test_conflict_in_material_is_not_always_a_blocking_delivery_requiremen
         [
             routing("respond" if analyze_only else "assess", types=["question"]),
             assessment,
-            assessment,
             check,
             reply("是的，两项字数要求矛盾。"),
         ]
@@ -1247,7 +1250,7 @@ async def test_conflict_in_material_is_not_always_a_blocking_delivery_requiremen
     result = await IntentRecognizer(model).advance(IntentSession(), text)
     assert bool(result.questions) is not analyze_only
     assert result.reply == ("是的，两项字数要求矛盾。" if analyze_only else None)
-    audits = [r for r in model.requests if r.role == "intent_requirement_check"]
+    audits = [r for r in model.requests if r.role == "intent_clarity_review"]
     assert len(audits) == 1
     assert audits[0].input_data["original_input"]["messages"][-1]["content"] == text
 
@@ -1261,25 +1264,20 @@ async def test_overlapping_conflict_guesses_use_one_independent_whole_input_verd
         "second_requirement": "材料甲和材料乙",
         "question": "材料之间是否冲突？",
     }
-    second = {
-        "first_requirement": "规则是样本需有同一适用条件。材料甲和材料乙。",
-        "second_requirement": "推断唯一条件后输出结果",
-        "question": "是否缺少唯一条件？",
-    }
     assessment = {
         "requirement_conflicts": [first],
         "known_referents": {"材料": "用户提供的两个材料"},
         "references": [], "selection_criteria": [], "questions": [], "reason": "临时猜测",
     }
     model = RawModel([
-        routing(), assessment, {**assessment, "requirement_conflicts": [second]},
+        routing(), assessment,
         {"requirement_conflicts": [], "reason": "完整材料可同时满足要求"}, ready(),
     ])
     result = await IntentRecognizer(model).advance(IntentSession(), text)
     assert result.goal and not result.questions
-    checks = [r for r in model.requests if r.role == "intent_requirement_check"]
+    checks = [r for r in model.requests if r.role == "intent_clarity_review"]
     assert len(checks) == 1
-    assert checks[0].input_data == {"original_input": model.requests[1].input_data}
+    assert checks[0].input_data["original_input"] == model.requests[1].input_data
     assert "临时猜测" not in str(checks[0].input_data)
 
 
@@ -1318,10 +1316,10 @@ async def test_reference_questions_obey_the_declared_need_for_a_unique_choice(re
         ],
         "known_referents": {},
         "selection_criteria": [],
-        "questions": [{"text": "你指录音还是剪辑？", "kind": "ambiguous_reference"}],
+        "questions": [{"text": "你指录音还是剪辑？", "kind": "ambiguous_reference", "resolution_source": "user", "blocking_reason": "缺口改变本次核心对象或交付要求。"}],
         "reason": "两个场景可分别提供建议，单次操作则需要选定一个",
     }
-    model = RawModel([routing(), assessment, ready()])
+    model = RawModel([routing(), assessment, *([focused(assessment)] if requires_unique else []), ready()])
     result = await IntentRecognizer(model).advance(
         IntentSession(),
         "录音和剪辑都要改善效果。"
@@ -1331,50 +1329,21 @@ async def test_reference_questions_obey_the_declared_need_for_a_unique_choice(re
     assert bool(result.goal) is not requires_unique
 
 
-async def test_clarity_review_can_reject_an_unfounded_entity_definition():
+async def test_unknown_public_identity_is_lookup_information_not_user_clarification():
     from dynamic_graph import FakeModelClient as RawModel
 
-    original = {
-        "references": [],
-        "known_referents": {"Neravion": "用户所指的一个类群名称，身份需查证"},
-        "selection_criteria": [],
-        "questions": [],
-        "reason": "候选把猜测当成识别",
+    assessment = {
+        "references": [], "known_referents": {}, "selection_criteria": [],
+        "questions": [{"text": "这个名称对应什么？", "kind": "unknown_identity",
+                       "subject": "Neravion", "resolution_source": "external_lookup",
+                       "blocking_reason": "查证 Neravion 的身份与公开出现时间。"}],
+        "reason": "名称精确，缺少的是公共资料。",
     }
-    revised = {
-        **original,
-        "questions": [
-            {
-                "text": "Neravion 是什么类群，或是否有其他拼写？",
-                "kind": "unknown_identity",
-                "subject": "Neravion",
-            }
-        ],
-        "reason": "没有提供识别实体的具体事实",
-    }
-    model = RawModel(
-        [
-            routing(),
-            original,
-            revised,
-            {
-                "recognized": False,
-                "canonical_name": "Neravion",
-                "definition": "",
-                "reason": "无法独立识别",
-            },
-        ]
-    )
+    model = RawModel([routing(), assessment, ready()])
     result = await IntentRecognizer(model).advance(IntentSession(), "Neravion 什么时候出现？")
-    assert result.questions and result.goal is None
-    audit = next(r for r in model.requests if r.role == "intent_clarity_review")
-    assert audit.input_data["original_input"]["messages"][0]["content"] == "Neravion 什么时候出现？"
-    # Entity guesses from another model call must not become evidence for review.
-    assert "candidate_assessment" not in audit.input_data
-    assert "用户所指的一个类群名称，身份需查证" not in str(audit.input_data)
-    assert "routing" not in audit.input_data["original_input"]
-    assert "routing" not in model.requests[1].input_data
-    assert model.requests[1].timeout_seconds >= audit.timeout_seconds > 0
+    assert result.goal and not result.questions
+    assert result.goal.context["information_to_verify"] == ["查证 Neravion 的身份与公开出现时间。"]
+    assert [r.role for r in model.requests] == ["intent_router", "intent_clarity", "intent"]
 
 
 async def test_clarity_and_goal_use_the_same_scoped_memory_policy():
@@ -1394,7 +1363,7 @@ async def test_clarity_and_goal_use_the_same_scoped_memory_policy():
         "questions": [],
         "reason": "使用已知偏好作为默认标准",
     }
-    model = RawModel([routing(), clarity, clarity, ready(), ready()])
+    model = RawModel([routing(), clarity, ready(), ready()])
     result = await IntentRecognizer(model).advance(
         IntentSession(), "推荐近期论文", memory_context=memory
     )
@@ -1480,12 +1449,8 @@ async def test_review_preserves_existing_quote_for_unchanged_explicit_identifica
         "questions": [],
         "reason": "用户已消除歧义",
     }
-    reviewed = {
-        **known,
-        "references": [{**known["references"][0], "evidence": "复核说明：用户已消除歧义"}],
-    }
     model = RawModel(
-        [routing("respond", types=["question"]), known, reviewed, reply("对象是甲目录文件。")]
+        [routing("respond", types=["question"]), known, reply("对象是甲目录文件。")]
     )
     result = await IntentRecognizer(model).advance(
         IntentSession(), "那个文件指甲目录文件。你知道对象是哪一个了吗？"
@@ -1555,7 +1520,7 @@ async def test_scoped_identity_gap_requires_grounded_location_and_keeps_real_amb
         "questions": [
             {
                 "text": "灰羽具体指什么？",
-                "kind": kind,
+                "kind": kind, "resolution_source": "user", "blocking_reason": "缺口改变本次核心对象或交付要求。",
                 "subject": "灰羽",
                 "lookup_scope": scope,
                 "scope_evidence": evidence,
@@ -1563,7 +1528,7 @@ async def test_scoped_identity_gap_requires_grounded_location_and_keeps_real_amb
         ],
         "reason": "模型不知道该名字的身份",
     }
-    model = RawModel([routing(), assessment, assessment, ready()])
+    model = RawModel([routing(), assessment, *([focused(assessment)] if clarifies else []), ready()])
     result = await IntentRecognizer(model).advance(IntentSession(), "《蓝砂》里的灰羽是谁扮演的？")
     assert bool(result.questions) is clarifies
     assert (result.goal is None) is clarifies
@@ -1573,47 +1538,32 @@ async def test_scoped_identity_gap_requires_grounded_location_and_keeps_real_amb
         assert reference["evidence"] == evidence
 
 
-@pytest.mark.parametrize(
-    "recognized,canonical_name,clarifies",
-    [(True, "Solenara", False), (False, "Solenara", True), (True, "Solenaria", True)],
-)
-async def test_disputed_entity_definition_needs_exact_independent_recognition(
-    recognized, canonical_name, clarifies
-):
+async def test_known_entity_does_not_trigger_reinterpretation_or_entity_checks():
     from dynamic_graph import FakeModelClient as RawModel
 
-    initial = {
-        "references": [],
-        "known_referents": {"Solenara": "一种公开协议的名称"},
-        "selection_criteria": [],
-        "questions": [],
-        "reason": "已识别对象",
+    clear = {"references": [], "known_referents": {"协议": "用户提供的名称"},
+             "selection_criteria": [], "questions": [], "reason": "对象与问题明确"}
+    model = RawModel([routing(), clear, ready()])
+    result = await IntentRecognizer(model).advance(IntentSession(), "查证指定协议的覆盖范围")
+    assert result.goal and not result.questions
+    assert [r.role for r in model.requests] == ["intent_router", "intent_clarity", "intent"]
+
+
+@pytest.mark.parametrize("resolution_source", ["external_lookup", "default_or_omit"])
+async def test_nonuser_information_gaps_do_not_block_a_clear_goal(resolution_source):
+    from dynamic_graph import FakeModelClient as RawModel
+
+    assessment = {
+        "references": [], "known_referents": {}, "selection_criteria": [],
+        "questions": [{"text": "要什么格式？", "kind": "missing_requirement",
+                       "resolution_source": resolution_source,
+                       "blocking_reason": "交付物可按一般文本格式，资料可查询。"}],
+        "reason": "没有必须由用户解决的缺口",
     }
-    reviewed = {
-        **initial,
-        "questions": [
-            {"text": "Solenara 是什么？", "kind": "unknown_identity", "subject": "Solenara"}
-        ],
-        "reason": "复核未识别该名称",
-    }
-    model = RawModel(
-        [
-            routing(),
-            initial,
-            reviewed,
-            {
-                "recognized": recognized,
-                "canonical_name": canonical_name,
-                "definition": "一种公开协议的完整定义" if recognized else "",
-                "reason": "独立核验精确名称",
-            },
-            ready(),
-        ]
+    model = RawModel([routing(), assessment, ready()])
+    result = await IntentRecognizer(model).advance(IntentSession(), "整理项目介绍")
+    assert result.goal and not result.questions
+    assert bool(result.goal.context.get("information_to_verify")) is (
+        resolution_source == "external_lookup"
     )
-    result = await IntentRecognizer(model).advance(IntentSession(), "Solenara 的覆盖范围是什么？")
-    assert bool(result.questions) is clarifies
-    assert (result.goal is None) is clarifies
-    audit = next(request for request in model.requests if request.role == "intent_entity_check")
-    assert audit.input_data["subject"] == "Solenara"
-    assert audit.input_data["proposed_definition"] == "一种公开协议的名称"
-    assert model.requests[1].timeout_seconds >= audit.timeout_seconds > 0
+    assert not any(r.role == "intent_clarity_review" for r in model.requests)

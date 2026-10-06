@@ -289,6 +289,51 @@ async def test_full_fact_extraction_change_recall_and_exact_source_lookup(memory
     assert len(encode(result.context()).encode()) <= 12 * 1024
 
 
+async def test_new_fact_slot_collision_provides_existing_evidence_for_atomic_repair(tmp_path):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            if request.role != "memory_verify":
+                return await super().generate(request)
+            self.requests.append(request)
+            data = request.input_data
+            existing = data["existing"]
+            if existing and "validation_error" in data:
+                feedback = data["validation_error"]
+                assert feedback["code"] == "EXISTING_FACT_NOT_MATCHED"
+                assert feedback["candidate_id"] == "city"
+                matched = feedback["matching_facts"]
+                assert [(m["fact_key"], m["value"], m["state"]) for m in matched] == [
+                    (self.fact_key, "北京", "active")
+                ]
+                assert matched[0]["memory_id"] == existing[0]["memory_id"]
+                operation, matched_ids = "replace", [matched[0]["memory_id"]]
+            else:
+                operation, matched_ids = "new", []
+            return ModelResponse({"decisions": [{
+                "candidate_id": "city", "verification": "supported",
+                "operation": operation, "matched_ids": matched_ids,
+                "reason": "依据原文核对同一居住地槽位",
+            }]})
+
+    model = Model()
+    service = ContextMemory(root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        await service.flush(service.submit(event("我住在北京")))
+        receipt = service.submit(event("我搬到上海"))
+        await service.flush(receipt)
+        _, stored, _ = service.storage.snapshot()
+        facts = [m for m in stored.values() if m.layer == "m1"]
+        assert {m.value for m in facts if m.state == "active"} == {"上海"}
+        assert {m.value for m in facts if m.state == "superseded"} == {"北京"}
+        assert any(m.layer == "m2" and m.sources[0].event_id == receipt.event_id
+                   for m in stored.values())
+        repaired = [r for r in model.requests if "validation_error" in r.input_data]
+        assert len(repaired) == 1
+    finally:
+        await service.close()
+
+
 async def test_reinforcement_uses_unique_direct_sources_not_assistant_echoes(memory):
     service, _ = memory
     receipts = [service.submit(event("我住在北京", request=f"task-{i}")) for i in range(2)]

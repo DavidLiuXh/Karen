@@ -329,13 +329,27 @@ class Extractor:
                 raise ValueError("MISSING_FACT_MATCH")
             if decision.operation == "new" and matched:
                 raise ValueError("NEW_FACT_CANNOT_REUSE_MATCHED_SLOT")
-            if decision.operation == "new" and any(
-                old.fact_key == candidate.fact_key
-                and old.subject == candidate.subject
-                and old.scope == candidate.scope
-                for old in existing.values()
-            ):
-                raise ValueError("EXISTING_FACT_NOT_MATCHED")
+            if decision.operation == "new":
+                matching_facts = [
+                    old for old in existing.values()
+                    if old.fact_key == candidate.fact_key
+                    and old.subject == candidate.subject
+                    and old.scope == candidate.scope
+                ]
+                if matching_facts:
+                    raise MemoryValidationError(
+                        "EXISTING_FACT_NOT_MATCHED",
+                        candidate_id=candidate.candidate_id,
+                        matching_facts=[
+                            {
+                                "memory_id": old.memory_id,
+                                "fact_key": old.fact_key,
+                                "state": old.state,
+                                "value": old.value,
+                            }
+                            for old in matching_facts
+                        ],
+                    )
             if decision.operation == "coexist" and any(
                 old.fact_key != matched[0].fact_key
                 or old.state != "active"

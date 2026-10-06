@@ -37,7 +37,7 @@ Ollama 暂不可用时，已有记录可降级为 BM25；派生向量任务会�
 | `submit(ContextEvent)` | 校验、脱敏并隔离输入，立即返回 WriteReceipt；不等待磁盘或模型 |
 | `async with foreground()` | 暂停发起新后台模型/embedding 调用，原文落盘继续；支持嵌套 |
 | `await recall(RecallQuery)` | 本轮等待最终召回结果；自动进入 foreground；总期限 20 秒 |
-| `await search_details(DetailQuery)` | 直接读来源或按明确任务/会话/日期范围查 JSON 字段；无范围返回 needs_scope |
+| `await search_details(DetailQuery)` | 直接读来源或按明确任务/会话/日期范围查 JSON 字段；无范围返回 needs_scope；`exclude_event_ids` 同时约束来源读取与范围扫描，召回补查沿用本轮排除列表 |
 | `await write_status(receipt)` | 分别报告 raw、derived、index 状态和安全错误码 |
 | `await flush(receipt=None)` | 等待指定事件或调用时水位内事件的派生与索引终态；失败返回汇总异常 |
 | `await reindex()` | 重建 BM25 并使向量后台重建，保留原有事实、来源及修订 |

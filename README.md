@@ -1,281 +1,248 @@
 # Karen
 
-Karen 将用户请求澄清为可执行目标，选择相关上下文记忆，再交给 DynamicAgentGraph 执行。
-已支持多轮交互与全局上下文记忆；主动发现任务尚未实现。
+Karen 是一个面向个人的 Agent：理解用户想做什么，选取相关记忆，把请求转成有成功标准的目标，再调用工具完成任务。
 
-## 职责与流程
+我们希望它逐步成为了解用户、能够主动发现问题并推进工作的 Personal Agent。**当前版本已实现用户发起的多轮对话、上下文记忆、任务执行和运行观测；主动发现任务与执行中等待用户确认尚未实现。**
 
-`IntentRecognizer` 是独立模块，使用 LangGraph 表达每轮状态流。
-清晰度判断与目标提取共用一次结构化模型调用；生成 `GoalSpec` 是本地转换与校验，
-不需要再次调用模型。Karen 只连接该模块与任务引擎，不实现第二套执行调度。
+## 为什么构建 Karen
 
-意图识别模块独立放在 `src/karen/intent/`：
+日常使用 Agent 时，完成一次请求往往还需要用户承担许多衔接工作：反复描述背景、补充遗漏条件、提醒它不要混淆旧任务，并在失败后判断卡在哪一步。
 
-- `recognizer.py`：意图契约、澄清状态图及 GoalSpec 生成。
-- `prompts.py`：系统提示词与任务指令，优化提示词时修改该文件即可。
-- `__init__.py`：导出 `IntentRecognizer` 和 `IntentSession`。
+Karen 希望减少这些负担，让请求从“说出来”到“得到结果”的过程连贯起来：
 
-任务执行分支的澄清流程：
+- **把需求说清楚。** 自然语言通常不完整，但不是每个未说明的偏好都需要追问。Karen 区分必要缺口与可采用合理默认值的信息，保留原始请求和澄清回答，逐轮形成可执行目标。
+- **让有用背景持续生效。** 用户不必在每次交互中重新介绍自己的偏好和经历；新请求只召回相关背景，独立问题不自动附带最近的整段对话。
+- **把目标交给执行流程。** 需要查询、操作或生成文件时，通过统一的目标契约进入任务引擎，记录实际执行、产物和失败原因。
+- **让行为可以检查和改进。** 通过运行观测定位路由、澄清、记忆、规划与工具调用的问题，再用固定评测验证通用修复。
+
+## 当前能做什么
+
+| 能力 | 使用方式 |
+| --- | --- |
+| 多轮对话与输入路由 | 区分信息告知、普通交流、问题、任务请求及待澄清任务的补充或取消 |
+| 必要澄清 | 信息不足时提出具体问题；合并回答后重新判断，直到目标明确 |
+| 个人上下文记忆 | 自动提取和核验长期事实、偏好、事件摘要，支持跨重启召回及事实变更 |
+| 查询与交付 | 搜索公开资料、读取网页、整理文字、生成 `/tmp` 下的文本或 HTML 文件，并请求本机浏览器打开 HTML |
+| 运行观测 | 查看每轮决策、召回候选、模型调用、执行图、产物及失败或降级原因 |
+
+例如，可以分别告诉 Karen“我喜欢历史和考古”“我喜欢运动，比如骑行”，之后询问“我有哪些爱好？”；也可以让它检索资料、整理说明并保存为 HTML。记忆写入在后台进行，新信息进入可召回状态可能有延迟。
+
+目前的交互入口是命令行。任务能否完成取决于已注册工具、可获得的数据和模型判断；已知的语义与执行问题见下方评测说明。
+
+## Karen 如何工作
+
+Karen 采用高内聚、低耦合的模块划分：输入理解、上下文记忆和运行观测在 Karen 内独立组织；任务规划与执行由 [DynamicAgentGraph](https://github.com/DavidLiuXh/DynamicAgentGraph) 负责。
 
 ```mermaid
 flowchart TD
-    U[用户输入及待决问题台账] --> C[check_clarity：核对缺口与回答]
-    C -->|仍有必要缺口| Q[clarify：返回最多三个具体问题]
-    Q --> W[等待用户回答]
-    W --> U
-    C -->|清晰| A[assess：提取目标与成功标准]
-    A -->|发现必要缺口| Q
-    A -->|可执行| G[build_goal：生成并校验 GoalSpec]
-    G --> E[DynamicGraphEngine.run]
-    E --> R[RunResult]
+    U[用户输入] --> R[判断输入类型与当前任务关系]
+    R -->|信息告知或普通交流| A[直接回应]
+    R -->|问题或任务| M[按需召回相关记忆]
+    M --> D{是否可直接回答}
+    D -->|是| A
+    D -->|需要任务执行| C[判断清晰度]
+    C -->|存在必要缺口| Q[提出澄清问题]
+    Q -->|用户补充，保留原请求| U
+    C -->|清晰| G[生成 GoalSpec]
+    G --> E[DynamicAgentGraph 规划与执行]
+    E --> O[展示结果或失败原因]
+    U -. 异步保存与提取 .-> K[上下文记忆]
+    O -. 异步记录任务结果 .-> K
+    K --> M
 ```
 
-使用 LangGraph 的理由是条件分支显式、状态与节点职责清晰，同时可以独立测试。
-当前每轮图运行到返回问题或生成目标就结束；调用方保存 `IntentSession`，下一次输入时继续。
-尚无跨进程恢复需求，因此不额外引入 checkpointer、共享会话仓库或 `interrupt()`。
-独立意图模块在生成目标后结束该任务的澄清。`Karen.advance` 可连续接收任务：
-传入上一任务返回的会话时，自动为新任务创建新的 request_id，并清空此前消息、目标与问题；
-保留 conversation_id、调用方提供的用户设置及用户时区。跨任务历史由记忆模块按本轮相关性选择。
-调用方可以先独立运行意图模块、审阅目标，也可以使用 `Karen.advance` 在目标清晰后自动执行。
-CLI 默认启用独立的 `karen.context` 模块。“继续修改上一份文档”会定位关联任务；
-存在多个可能对象或来源不可用时进入澄清。完整独立请求不会携带最近对话。
+### 从输入到可执行目标
 
-- 仅澄清会影响目标、范围、交付物或验收的信息；可选偏好不应阻塞任务。
-- 多轮澄清保留原始请求、稳定问题编号和回答关联；部分回答不删除其他待决问题，每轮重新核对清晰度。
-- 每轮最多展示三个问题，全部必要缺口解决前不生成执行目标；过度澄清可依据用户原话标为不再必要。
-- 问题台账、接口与验证见 [澄清状态说明](docs/CLARIFICATION_STATE.md)；没有强制结束澄清的轮数上限。
-- 空输入、无问题的澄清结果、空目标和空成功标准都被拒绝。
-- 模型输出失败时抛出异常，输入会话保持原样，调用方决定是否重试。
-- `GoalSpec` 直接使用引擎契约；request_id 和成功标准 ID 由本地生成。
-- 约束、对话来源与调用方上下文放入 `GoalSpec.context`；数据放入 `inputs`。
-- 用户时区写入 `GoalSpec.context["timezone"]`，也传给意图模型。`IntentSession` 默认通过
-  `tzlocal` 获取本机 IANA 时区（如 `Asia/Shanghai`），并校验其有效性。
-  调用方可通过 `IntentSession(timezone="America/New_York")` 显式指定用户时区；
-  在远程服务器运行时应传入用户端提供的时区，不能将服务器时区视为用户时区。
-- 首次输入时记录时间基准，以用户时区计算今天、明天等日历日期，供意图模型自动解析，
-  并保存到 `GoalSpec.context["time_context"]`。澄清过程中保持基准，新任务重新取时；
-  明确指定的日期及任务时区优先，只有真正含糊或矛盾的日期要求才需要澄清。
-- 输出默认使用引擎的 answer/evidence/limitations 格式，也支持用户明确要求的结构化结果。
-- 未显式传入 `ExecutionPolicy` 时，Karen 授权当前引擎中全部已注册工具、评估器和 reducer。
-  对标记为 `read_only=False` 的工具，同时填入 `allowed_side_effect_tools`，满足引擎的双重授权规则。
-  每次开始执行时读取能力列表，因此新注册的能力也会被纳入。显式策略按调用方给出的白名单执行，
-  模型不能增加工具权限。
+输入模块使用 LangGraph 表达回应、澄清与目标构建流程。告知个人信息不需要启动任务规划；能依据本轮输入或相关记忆回答的问题直接回应；需要外部信息、操作或交付物的请求进入任务执行分支。
 
-## 安装和运行
+澄清维护原始请求、待决问题及回答关联，部分回答不会丢掉其余问题。每轮重新判断清晰度，只追问影响目标、范围、交付物或验收的必要信息。用户时区和首次输入时间作为日期基准，“今天”“明天”等相对日期据此解析。
 
-需要 Python 3.11 或 3.12，以及相邻目录中的 DynamicAgentGraph。
-`uv` 使用本地源码依赖；仅在 Karen 的环境安装，不修改 DynamicAgentGraph 源码。
+目标明确后生成 DynamicAgentGraph 的 `GoalSpec`，包含目标、成功标准、约束、输入和上下文。引擎据此规划执行图、调用已授权能力，并返回执行结果。执行状态和输出结构通过校验，不等于所有业务成功标准已被独立验证。
+
+### 三层记忆与选择性召回
+
+| 层级 | 内容 | 作用 |
+| --- | --- | --- |
+| m1 | 有来源并经模型核验的长期事实与偏好 | 回答当前个人信息、提供持续有效的背景 |
+| m2 | 对话和任务的事实、行动、状态及交付物摘要 | 初步检索历史事件，定位相关任务与证据 |
+| m3 | 按用户当地日期轮转的 JSONL 详细记录及附件 | 根据摘要来源或明确范围补查原文细节 |
+
+记忆保留来源角色、时间、状态及版本关系。“计划搬到上海”与“目前住在北京”可以同时存在；已经发生的变更、纠正和未解决的冲突分别处理，避免只按记录时间简单覆盖。
+
+写入、提取、核验和向量化异步进行；回答问题或执行任务前的召回则等待最终结果：
+
+**向量检索 + BM25 → RRF 融合 → 补齐版本关系 → 限制精排输入 → LLM 精排 → 按需补查 m3。**
+
+精排失败时沿用融合顺序，并明确记录降级。跨任务历史按关联性选择；同一次澄清的对话由当前会话直接保留。模型调用遵循通用接口，默认使用 DeepSeek；向量默认由本机 Ollama 的 BGE-M3 生成，SQLite 和 FTS5 保存索引与记录。
+
+### 查看运行过程
+
+用 `--observe` 随 Karen 一起启动本地只读页面，可以检查“为什么追问”“为什么召回这条记忆”“工具为什么失败”。普通回复呈现用户需要的结果；记忆 ID、完整模型请求和诊断等内部数据保留在观测记录中。
+
+## 评测表现
+
+**截至 2026-10-07，最新代码尚未完成固定清单的完整复测。** 下表是最近一次完整复测的已保存结果，对应 Karen **`6a0f483`**，早于后续通用提示词整理、思考配置和截断恢复改动。
+
+| 评测集 | 主要检查内容 | 通过 / 总数 | 通过率 |
+| --- | --- | ---: | ---: |
+| CLAMBER 固定子集 | 是否需要澄清、澄清问题是否解决实质缺口 | 14 / 24 | 58.3% |
+| LongMemEval oracle 固定子集 | 跨重启记忆、事实更新、时间推理与信息不足 | 13 / 14 | 92.9% |
+| Karen 中文回归 | 路由、多轮澄清、日期、偏好、住所变更及取消 | 11 / 12 | 91.7% |
+| 独立变体回归 | 用不同表述与条件检查通用修复 | 12 / 12 | 100% |
+| 边界回归 | 封闭条件、用途和偏好关系等边界 | 4 / 4 | 100% |
+| **合计** | **同一固定清单** | **54 / 66** | **81.8%** |
+
+同一清单上一轮为 47/66；另行新增的八条澄清回归本轮为 8/8，不并入上述分母。完整失败清单和比较依据见 [完整复测报告](docs/EVALUATION_FULL_ACCEPTANCE_20261007.md)。
+
+后续改动的验证单独记录，不与旧成绩拼接：
+
+| 后续验证 | 结果 | 说明 |
+| --- | --- | --- |
+| 通用提示词整理后的新增迁移回归 | 10 / 12 | 另有 1 条判定失败、1 条模型服务错误；属于开发回归，非盲测 |
+| 思考配置与截断恢复后的真实集成抽查 | 3 / 3 | 覆盖爱好、当前住所和相对日期；截断恢复由模拟 HTTP 响应验证 |
+
+这些是**固定小样本结果，不是公开数据集全集或官方榜单成绩**。LongMemEval 使用 oracle 证据历史和自定义 DeepSeek 评分，没有完成 S/M 长干扰历史评测；CLAMBER 测试到回应、澄清或 GoalSpec，不代表外部任务已执行成功。运行错误和评分错误均计入分母，已见用例的重复成功不覆盖此前失败。
+
+当前仍需改进的主要问题包括：必要信息与可选偏好的区分不够稳定，部分条件和指代存在误判，英文目标语言不一致，以及复杂任务的规划、输出预算和执行时限问题。部分公开标签与评分也存在分歧，原判定继续保留。后续修复已有局部验证，但尚不能据此声称整组达标率提高。
+
+详细依据：[评测协议与复现](docs/EVALUATION.md)、[提示词整理验证](docs/PROMPT_POLICY_VERIFICATION_20261007.md)、[配置与截断恢复验证](docs/MODEL_BUDGET_VERIFICATION_20261007.md)。
+
+## 安装
+
+### 1. 准备环境与源码
+
+需要 Git、Python 3.11 或 3.12、[uv](https://docs.astral.sh/uv/getting-started/installation/)、[Ollama](https://ollama.com/download)，以及 DeepSeek API 密钥。网络搜索另需 Tavily API 密钥。
+
+当前采用本地源码安装，需有两个仓库的访问权限，并将它们放在相邻目录中：
 
 ```bash
-uv sync
-ollama serve  # 已运行时无需再启动
-ollama pull bge-m3:latest  # 已安装时无需重复下载
-export DEEPSEEK_API_KEY='你的密钥'
-uv run karen
+mkdir -p ~/opensource
+cd ~/opensource
+git clone https://github.com/DavidLiuXh/DynamicAgentGraph.git
+git clone https://github.com/DavidLiuXh/Karen.git
+cd Karen
+uv sync --python 3.12
 ```
 
-终端默认直接展示 `answer`、来源和限制说明，不再打印整份执行记录。
-执行失败、取消或结果不完整时明确提示状态，并展示诊断；自定义输出字段也会显示。
-调试时使用 `uv run karen --json` 查看完整结果 JSON。完整执行记录仍由引擎保存在 `runs/`。
-任务完成、失败或取消后都会继续等待下一条输入；输入 `/exit`、EOF 或 Ctrl+C 退出。
-正常退出时的退出码对应最后一次任务的执行结果；未执行任务时为 0。
-交互输入使用 prompt-toolkit 的异步行编辑，支持中文退格、光标移动后修改；仅提交按回车时的最终文本。
-Ctrl+C 会结束行编辑并恢复终端状态，然后等待正常退出所需的持久化完成；退出后可以继续在同一 shell 输入。
+已有源码时直接进入 Karen 目录运行 `uv sync`。`pyproject.toml` 将执行库指向 `../DynamicAgentGraph`；安装不修改执行库源码。
 
-CLI 可通过 `uv run karen --timezone Asia/Shanghai` 指定用户时区。
-无法检测时区或传入无效时区时会提示并退出，不会继续生成缺少时区的目标。
+### 2. 准备本地向量模型
 
-也可以在根目录 `.env` 中设置 `DEEPSEEK_API_KEY` 和 `TAVILY_API_KEY`，然后运行
-`uv run --env-file .env karen`。`.env` 已被 Git 忽略。
-
-模型后端使用 LangChain 的 `ChatDeepSeek`（`langchain-deepseek`），默认 `deepseek-chat`。
-它由 DynamicAgentGraph 已有的 `LangChainModelClient` 转换成共同的 `ModelClient` 接口，
-供意图模块与引擎使用。以后替换其他 LangChain 模型时，可直接通过
-`LangChainModelClient(chat_model=..., model=...)` 注入，无需改动意图图。
-提供者自动重试关闭；任务执行阶段的重试由引擎管理，记忆后台任务按持久化状态有限重试。
-
-CLI 默认注册并授权 DynamicAgentGraph 提供的以下工具（版本均为 `1.0.0`）：
-
-| 能力 | 用途 |
-| --- | --- |
-| `file.read_text` | 读取 `/tmp` 下的 UTF-8 文本 |
-| `file.write_text` | 写入 `/tmp` 下的 UTF-8 文本；覆盖已有文件需要 `overwrite=true` |
-| `browser.open_local_page` | 请求默认浏览器打开 `/tmp` 下已有的 HTML 页面 |
-| `web.fetch` | 获取 HTTP/HTTPS 网页文本；任务中的 LLM 节点按要求提取信息 |
-| `tavily.search` | Tavily 网络搜索，需要配置 `TAVILY_API_KEY` |
-
-未配置 Tavily 密钥时仅该搜索工具不可用，其他工具仍会注册与授权。
-本地工具沿用库的 `/tmp` 目录边界，文本与网页大小限制沿用默认的 1 MiB。
-网页抓取返回当前页面内容，不提供任意历史日期的快照。
-3 个内置 reducer 同样默认授权。
-
-## 独立调用意图模块
-
-```python
-from karen import IntentRecognizer, IntentSession
-from karen.models import deepseek_client
-
-recognizer = IntentRecognizer(deepseek_client())
-session = IntentSession(user_context={"language": "zh-CN"})
-session = await recognizer.advance(session, "帮我写一封邮件")
-if session.goal is None:
-    print(session.questions)  # 向用户展示，拿到回答后再次调用 advance
-else:
-    print(session.goal.model_dump(mode="json"))
-```
-
-## 完整执行
-
-```python
-from dynamic_graph import DynamicGraphEngine, ModelBindings
-from karen import IntentRecognizer, IntentSession, Karen
-from karen.models import deepseek_client
-
-model = deepseek_client()
-engine = DynamicGraphEngine(models=ModelBindings(planner=model, worker=model))
-agent = Karen(intent=IntentRecognizer(model), engine=engine)
-turn = await agent.advance(
-    IntentSession(),
-    "用中文解释高内聚与低耦合，分别给出一个 Python 例子。",
-)
-if turn.response is not None:
-    print(turn.response)
-elif turn.result is not None:
-    print(turn.result.execution_status, turn.result.outputs)
-else:
-    print(turn.session.questions)
-
-# 第一项任务已产生结果时，传入返回会话即可开始另一项独立任务。
-if turn.session.completed:
-    next_turn = await agent.advance(turn.session, "用中文解释 Python 列表推导式，给一个例子。")
-```
-
-`COMPLETED` 和 `output_complete` 只描述执行与输出结构；不意味着所有业务成功标准
-已被独立验收。引擎的失败、能力不足、取消及诊断信息通过 `RunResult` 原样返回。
-当前引擎没有执行中“等待确认”的状态，该能力不属于本次意图澄清模块。
-IntentSession 的运行状态没有跨进程恢复；详细对话与公共任务结果由记忆模块保存。
-任务执行入口没有并发去重或网络请求幂等保障；上层应用负责保管会话、
-避免并发提交同一轮，并确保只调用一次执行入口。
-
-## 上下文记忆
-
-默认目录严格使用 `~/.Karne/context`，跨项目和会话有效。同一目录同时只允许一个写入进程。
-模块实现与接口见 [详细设计](docs/CONTEXT_MEMORY_DESIGN.md) 和 [运行与验收说明](docs/CONTEXT_MEMORY_IMPLEMENTATION.md)。
-
-- m1：有直接来源、经 backend 自动核验的长期事实和偏好，保留替代、纠正、冲突及有效时间。
-- m2：事件与行动摘要、执行状态和交付物引用，关联明确的 m1 版本。
-- m3：按来源用户时区日期轮转的 JSONL 原文，长文本放入同目录附件。
-
-`submit()` 只校验、隔离并入队；原文落盘与 LLM 提取/向量处理有独立后台 worker。
-正常退出自动等待原文、附件、登记与恢复检查点持久化；未完成的模型任务在下次启动继续。
-`close()` 不要求剩余模型调用全部成功；需要索引追平时显式 `await memory.flush()`。
-强制退出可能丢失未落盘队列；写入失败可查询，并在退出时报告。
-
-提取、核验、查询理解和精排注入通用 `ModelClient`，默认 DeepSeek。
-CLI 的输入路由、清晰度、意图、直接回应、执行节点和精排使用思考 `low`；规划传 `medium`。
-DeepSeek [官方接口文档](https://api-docs.deepseek.com/api/create-chat-completion/)目前把
-`medium` 映射为 `high`，观测记录同时展示请求强度和有效强度。
-记忆提取、核验和查询理解保持非思考。精排单阶段最多 20 秒，同步召回总期限 45 秒，查询理解最多 8 秒。
-
-首次输出预算保持不变：路由、意图、直接回应、规划和执行为 16384 tokens，清晰度及其复核、
-记忆提取和核验为 8192，查询理解和精排为 4096。
-出现 `MODEL_RESPONSE_TRUNCATED` 后只允许一次翻倍预算的完整重新生成，恢复上限 32768 tokens，
-同时遵守客户端更低的显式上限、原有次数和总期限。普通 JSON/schema 错误的修复不增加预算。
-精排连续截断仍沿用融合顺序并标记降级；部分输出不会作为成功结果使用。
-预算变化及实际请求参数可从可观测记录中查看。
-
-向量使用 LangChain `Embeddings` 接口，默认本机 BGE-M3。SQLite 保存事实与修订、float32 向量，FTS5 + jieba 提供 BM25。
-召回在本轮等待完成：粗检索 → RRF 融合 → 补齐版本 → 限制候选 → LLM 精排 → 必要原文查找。
-精排失败沿用融合顺序，标记 `degraded/unverified`；缺向量可用 BM25，存储不可用与无相关记忆明确区分。
-召回最终结果放入 `GoalSpec.context["memory"]`，当前明确要求优先于旧偏好，记忆不扩大工具授权。
-“我有哪些爱好”等个人事实查询使用 `facts` 类型，默认读取当前有效 m1，无需任务历史时间范围。
-当前事实粗召回有 m1 时优先精排 m1 及其版本/冲突关系，避免无关 m2 摘要挤占预算；
-没有 m1 候选时保留 m2 作为证据线索，不能据此虚构已核验事实。
-新增不同爱好可并存，明确撤回或纠正才更新对应偏好。
-
-日常回答直接呈现 `answer`，不自动追加标准 `evidence/limitations` 审计字段；
-用户要求的来源及影响结论的重要限制由模型写入回答。完整输出保留在 `--json`、运行记录与
-可观测页面中。统一回答指令位于 `src/karen/prompts.py`，并传入 `GoalSpec.context.response_instruction`。
-
-独立使用：
-
-```python
-from pathlib import Path
-from karen.context import ContextMemory, ContextEvent, RecallQuery
-from karen.models import deepseek_client, memory_embeddings
-
-memory = ContextMemory(
-    root_dir=Path.home() / ".Karne" / "context",
-    model=deepseek_client(),
-    embeddings=memory_embeddings(),
-)
-await memory.start()
-try:
-    receipt = memory.submit(ContextEvent(
-        conversation_id="conversation-1", request_id="task-1",
-        event_type="user_message", timezone="Asia/Shanghai",
-        payload={"content": "我的长期回复语言偏好是中文。"},
-    ))
-    await memory.flush(receipt)  # 仅演示 read-after-write；日常交互不等待后台提取
-    recalled = await memory.recall(RecallQuery(
-        text="我偏好哪种回复语言？", timezone="Asia/Shanghai",
-        conversation_id="conversation-1", request_id="task-2",
-    ))
-    print(recalled.context())
-finally:
-    await memory.close()
-```
-
-API 调用方将实例通过 `Karen(..., memory=memory)` 注入；未注入时保持原有独立任务行为。
-完整交互在 `foreground()` 内暂停发起新后台模型调用；已发出的请求可能仍在进行。
-任务结果由 Karen 自动记录，UI 展示后调用 `agent.record_response(turn.session, displayed_text)`
-保存实际回复；CLI 已接入这一流程。调用方负责 `start()`/`close()` 生命周期。
-
-记忆属于最终一致数据：新内容可能尚未进入 m1/m2，结果中的 `coverage.index` 显示积压与失败。
-模型关联和提取质量需要持续用实际样本校准；自动测试验证契约，不能保证所有自然语言判断正确。
-
-## 运行观测
-
-CLI 默认记录意图判断、记忆筛选、模型调用和后台写入过程。使用参数同时启动
-Karen 和本地只读观测页面，无需另开终端：
+启动 Ollama 服务；已经运行时跳过此步骤：
 
 ```bash
-uv sync
+ollama serve
+```
+
+在另一个终端下载模型，已安装时无需重复下载：
+
+```bash
+ollama pull bge-m3:latest
+```
+
+Ollama 用于 embedding，默认 LLM 仍为云端 DeepSeek。Ollama 暂不可用时，已有记录可降级使用 BM25；向量处理失败会被记录。
+
+### 3. 配置密钥
+
+在 Karen 根目录创建 `.env`，填入自己的密钥：
+
+```dotenv
+DEEPSEEK_API_KEY=your_deepseek_api_key
+TAVILY_API_KEY=your_tavily_api_key
+```
+
+`DEEPSEEK_API_KEY` 必需；不使用网络搜索时可省略 `TAVILY_API_KEY`。`.env` 已被 Git 忽略。
+启动时使用 `uv run --env-file .env ...` 显式加载，也可以在 shell 中导出对应环境变量。
+
+## 使用
+
+### 启动并查看运行过程
+
+在 Karen 目录运行：
+
+```bash
 uv run --env-file .env karen --observe
 ```
 
-默认地址 `http://127.0.0.1:8765/`，每两秒刷新。可以查看多轮任务时间线、实际
-GoalSpec 上下文、执行图、节点产物、失败与降级，以及可自动核对的流程规则。
-引擎执行完成与业务验收分别显示；记录不足会标明缺口。
+浏览器访问启动时打印的地址，默认是 `http://127.0.0.1:8765/`。页面每两秒刷新，服务随 Karen 退出关闭。端口被占用时可用 `--observe 8766`；不需要页面时省略 `--observe`，运行记录仍会保存。
 
-用浏览器访问启动时打印的地址。端口被占用时，可用 `--observe 8766` 指定其他端口。
-页面服务随 Karen 的 `/exit`、EOF 或 Ctrl+C 退出关闭；未加 `--observe` 时只记录、不启动页面。
-需要在 Karen 退出后查看历史记录时，仍可单独运行 `uv run karen-observe --open`。
+| 参数 | 用途 |
+| --- | --- |
+| `--observe [PORT]` | 同时启动观测页面，默认端口 8765 |
+| `--timezone Asia/Shanghai` | 显式指定用户的 IANA 时区；默认读取本机时区 |
+| `--json` | 展示完整结果 JSON，便于调试 |
+| `--help` | 查看命令说明 |
 
-观测保存在 `~/.Karne/observability`，新的引擎记录保存在 `~/.Karne/runs`。
-观测文件不进入用户记忆。接口、脱敏及读取边界见 [运行观测说明](docs/OBSERVABILITY.md)。
+远程运行时应显式提供用户时区。日常显示直接回复或执行结果的 `answer`；用户要求的来源和影响结论的重要限制写入回答，不自动附加内部审计字段。
 
-## 验证
+### 输入请求
+
+下面是可以尝试的输入，分别覆盖个人信息、记忆查询、资料整理和文件交付：
+
+```text
+我喜欢历史和考古，也喜欢骑行。
+我有哪些爱好？
+帮我整理最近一个月北京的路亚水域信息，文字说明即可。
+把刚才整理的内容保存为 /tmp/beijing-lure.html，并用本机浏览器打开。
+```
+
+需要澄清时直接回答问题，Karen 会合并当前任务要求并重新判断；与旧任务无关的新请求独立处理。每项任务结束后继续等待下一条输入。
+
+输入 `/exit`、EOF 或 Ctrl+C 退出。正常退出等待原文和恢复状态持久化，未完成的后台模型任务留待下次恢复；强制终止可能丢失尚未落盘的信息。重新启动后可以召回已保存的记忆，但不会恢复此前尚未完成的澄清或执行会话。
+
+### 当前工具范围
+
+CLI 默认注册并授权当前可用能力；Tavily 未配置时仅搜索工具不可用。
+
+| 工具 | 用途与边界 |
+| --- | --- |
+| `tavily.search` | 搜索公开网络资料，需要 `TAVILY_API_KEY` |
+| `web.fetch` | 读取当前 HTTP/HTTPS 网页文本，不提供任意历史日期快照 |
+| `file.read_text` / `file.write_text` | 读写 `/tmp` 下的 UTF-8 文本，默认大小限制 1 MiB；覆盖须显式指定 |
+| `browser.open_local_page` | 请求默认浏览器打开 `/tmp` 下已有的 HTML；打开请求成功不等于渲染成功 |
+
+自定义接入可传入 `ExecutionPolicy` 限定能力白名单，模型不能自行扩大权限。当前没有执行中暂停并等待用户确认的流程。
+
+### 本地数据与历史查看
+
+记忆全局有效，同一记忆目录同时只允许一个写入进程。目录名沿用当前实现的 **`.Karne`**：
+
+```text
+~/.Karne/
+  context/          # m1/m2、向量和全文索引、m3 原文及附件
+  observability/    # 决策、模型调用和后台处理追踪
+  runs/             # DynamicAgentGraph 执行图、节点记录和产物
+```
+
+记忆与运行记录保存在本地；模型提取、判断、精排和回答会将所需输入发送到配置的 LLM 服务，网络搜索调用 Tavily。观测日志与用户记忆分开保存。
+
+Karen 退出后，仍可单独运行以下命令查看历史记录：
+
+```bash
+uv run karen-observe --open
+```
+
+## 开发与进一步阅读
+
+核心入口是 `Karen.advance(session, text)`：直接回应读取 `TaskTurn.response`，真实执行读取 `TaskTurn.result`，两者都没有时读取 `session.questions`；下一轮传回 `turn.session`。调用方可以独立使用 `IntentRecognizer`，或注入自己的执行引擎、记忆与模型客户端。
+
+| 文档 | 内容 |
+| --- | --- |
+| [输入路由](docs/INPUT_ROUTING.md) | 输入分类、直接回应、会话关联及取消边界 |
+| [多轮澄清](docs/CLARIFICATION_STATE.md) | 待决问题台账、状态转换与目标构建 |
+| [上下文记忆设计](docs/CONTEXT_MEMORY_DESIGN.md) / [接口与运行](docs/CONTEXT_MEMORY_IMPLEMENTATION.md) | m1/m2/m3、版本时间线、异步写入与同步召回 |
+| [运行观测](docs/OBSERVABILITY.md) | 追踪、诊断、读取范围与服务生命周期 |
+| [提示词维护](docs/PROMPT_POLICY.md) | 通用规则与 few-shot 的组织原则 |
+| [模型配置与预算](docs/MODEL_BUDGET_VERIFICATION_20261007.md) | 思考强度、阶段时限及截断后的有界恢复 |
+| [评测协议](docs/EVALUATION.md) / [完整评测报告](docs/EVALUATION_FULL_ACCEPTANCE_20261007.md) | 固定输入、判定标准、复现与逐例结果 |
+
+当前默认模型为 `deepseek-flash`：输入理解、回应、执行节点和精排请求 low 思考，规划请求 medium；记忆提取、核验和查询理解使用非思考。具体客户端见 [模型装配](src/karen/models.py)，阶段组合见 [CLI 入口](src/karen/cli.py)；提示词集中在各模块的 `prompts.py`。
+
+离线行为与边界检查：
 
 ```bash
 uv run pytest
 uv run ruff check .
 ```
 
-测试使用可控模型响应，包含多轮澄清及真实 DynamicGraphEngine 的离线执行，
-不消耗模型 API 额度。它们验证流程与契约，不衡量模型语义判断的准确率。
-
-官方参考：[LangGraph Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api)、
-[ChatDeepSeek](https://docs.langchain.com/oss/python/integrations/chat/deepseek)。
-
-
-## 输入分类与路由
-
-Karen 先判断输入类型及处理方式，再决定是否使用执行器。信息告知、普通交流和能根据相关记忆
-回答的问题直接回应；需要外部信息、操作或交付物的请求继续澄清并生成 GoalSpec。
-补充/纠正待澄清任务保留其上下文，无关输入开始新请求；明确取消待澄清任务不会启动执行。
-混合输入中的个人事实与任务要求都保留，记忆写入仍独立异步处理。
-
-调用方通过 `TaskTurn.response` 获取直接回复，通过 `result` 获取真实执行结果，均无时读取
-`session.questions`。路由理由和完整过程可在观测页面查看。提示词、接口、取消范围及可重复的
-合成语义检查见 [输入路由说明](docs/INPUT_ROUTING.md)。
+离线检查使用可控响应，不消耗模型 API 额度。真实模型评测单独按评测协议运行，使用隔离目录，不读取用户全局记忆；模型服务和实时检索会产生费用及结果波动。修复保持通用，不为单个评测题增加专用分支或修改标签来提高分数。

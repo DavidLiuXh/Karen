@@ -37,13 +37,53 @@ class DisplayAgent:
         return ()
 
 
+async def test_cli_uses_thinking_for_decisions_and_nonthinking_for_memory(monkeypatch):
+    clients, memory_models, agents, rerank_models = [], [], [], []
+
+    def client(*, thinking=True, reasoning_effort="low"):
+        model = FakeModelClient()
+        model.metadata = {"thinking": thinking, "reasoning_effort": reasoning_effort if thinking else None}
+        clients.append(model)
+        return model
+
+    def memory(model, **kwargs):
+        memory_models.append(model)
+        rerank_models.append(kwargs["rerank_model"])
+        return MemoryStub()
+
+    actual_karen = cli.Karen
+
+    def agent(**kwargs):
+        value = actual_karen(**kwargs)
+        agents.append(value)
+        return value
+
+    async def end_input():
+        raise EOFError
+
+    monkeypatch.setattr(cli, "deepseek_client", client)
+    monkeypatch.setattr(cli, "create_memory", memory)
+    monkeypatch.setattr(cli, "Karen", agent)
+    monkeypatch.setattr(cli, "read_input", end_input)
+    assert await cli.converse() == 0
+    assert len(clients) == 3
+    assert agents[0].intent.model.client is clients[0]
+    assert agents[0].intent.model.metadata["thinking"] is True
+    assert memory_models[0].client is clients[2]
+    assert agents[0].engine.models.planner.client is clients[1]
+    assert clients[1].metadata["reasoning_effort"] == "medium"
+    assert rerank_models[0] is agents[0].intent.model
+    assert rerank_models[0].metadata["reasoning_effort"] == "low"
+    assert memory_models[0].metadata["thinking"] is False
+
+
 @pytest.mark.parametrize("api_key", [None, "test-key"])
 async def test_cli_registers_and_authorizes_all_available_tools(monkeypatch, capsys, api_key):
     if api_key is None:
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     else:
         monkeypatch.setenv("TAVILY_API_KEY", api_key)
-    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     agents = []
     actual_karen = cli.Karen
 
@@ -136,7 +176,7 @@ def test_custom_result_fields_are_preserved():
 @pytest.mark.parametrize("json_output", [False, True])
 async def test_conversation_displays_readable_answer_or_full_json(monkeypatch, capsys, json_output):
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     inputs = iter(["写邮件", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     result = RunResult(
@@ -177,7 +217,7 @@ async def test_failed_timezone_detection_requires_explicit_user_timezone(monkeyp
 @pytest.mark.parametrize("first_status", ["COMPLETED", "FAILED", "CANCELLED"])
 async def test_cli_continues_after_each_task(monkeypatch, capsys, first_status):
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     inputs = iter(["第一项任务", "第二项任务", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     received = []
@@ -205,7 +245,7 @@ async def test_cli_continues_after_each_task(monkeypatch, capsys, first_status):
 
 async def test_cli_returns_last_task_failure_code_on_exit(monkeypatch):
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     inputs = iter(["执行任务", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
@@ -278,7 +318,7 @@ def test_real_console_submits_edited_chinese_text(keystrokes):
     )
     os.close(slave)
     output = b""
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 30
 
     def read_until(marker):
         nonlocal output
@@ -289,6 +329,7 @@ def test_real_console_submits_edited_chinese_text(keystrokes):
 
     try:
         read_until("你：".encode())
+        deadline = time.monotonic() + 10  # Editing has its own budget after interpreter startup.
         os.write(master, keystrokes + b"\r")
         read_until(b"RESULT=")
         while b"\n" not in output.split(b"RESULT=", 1)[1]:
@@ -318,7 +359,7 @@ def test_piped_input_remains_supported():
         input="明天北京是否还有大风\n",
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=30,
         check=True,
     )
     assert json.loads(result.stdout.split("RESULT=", 1)[1]) == "明天北京是否还有大风"
@@ -361,7 +402,7 @@ class WaitingAgent:
 
 cli.create_memory = lambda model, **kwargs: Memory()
 cli.create_observer = lambda: cli.Observer()
-cli.deepseek_client = FakeModelClient
+cli.deepseek_client = lambda **kwargs: FakeModelClient()
 cli.Karen = lambda **kwargs: WaitingAgent()
 cli.main()
 """
@@ -515,7 +556,7 @@ async def test_cli_displays_direct_reply_without_execution_result(monkeypatch, c
     from karen.intent import InputRouting
 
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     inputs = iter(["我住在北京", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     route = InputRouting(

@@ -1,0 +1,338 @@
+[
+  {
+    "id": "zh-information",
+    "suite": "karen-zh",
+    "category": "routing",
+    "split": "development",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "我现在住在南京。",
+        "expected": {
+          "handling": "respond",
+          "outcome": "reply"
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "zh-plan",
+    "suite": "karen-zh",
+    "category": "routing",
+    "split": "development",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "我下个月准备搬到成都。",
+        "expected": {
+          "handling": "respond",
+          "outcome": "reply"
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "zh-concept",
+    "suite": "karen-zh",
+    "category": "routing",
+    "split": "development",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "什么是高内聚和低耦合？",
+        "expected": {
+          "handling": "respond",
+          "outcome": "reply"
+        }
+      }
+    ],
+    "gold": {
+      "answer": "高内聚指模块内部功能围绕共同职责，低耦合指模块间通过清晰接口减少相互依赖。"
+    }
+  },
+  {
+    "id": "zh-relative-date",
+    "suite": "karen-zh",
+    "category": "time",
+    "split": "development",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "帮我查一下明天南京是否还有大风。",
+        "expected": {
+          "handling": "assess",
+          "outcome": "execution",
+          "goal_contains": [
+            "2026-10-05"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "zh-clarification",
+    "suite": "karen-zh",
+    "category": "clarification",
+    "split": "development",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "帮我给客户写封项目进度邮件。",
+        "expected": {
+          "outcome": "clarification"
+        }
+      },
+      {
+        "text": "收件人是王经理，中文，设计已完成，下周开始开发，直接给我邮件草稿即可。",
+        "expected": {
+          "relation": "continue",
+          "outcome": "execution",
+          "contains": [
+            "王",
+            "设计"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "zh-hobbies",
+    "suite": "karen-zh",
+    "category": "memory",
+    "split": "development",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [
+      {
+        "session_id": "past-0",
+        "turn": 0,
+        "occurred_at": "2026-10-01T08:00:00+00:00",
+        "role": "user",
+        "content": "我喜欢陶艺。"
+      },
+      {
+        "session_id": "past-1",
+        "turn": 0,
+        "occurred_at": "2026-10-02T08:00:00+00:00",
+        "role": "user",
+        "content": "我也喜欢户外运动，尤其是徒步。"
+      }
+    ],
+    "steps": [
+      {
+        "text": "我有哪些爱好？",
+        "expected": {
+          "handling": "respond",
+          "outcome": "reply",
+          "contains": [
+            "陶艺",
+            "徒步"
+          ],
+          "not_contains": [
+            "event_id",
+            "memory_id",
+            "来源标识",
+            "coverage.complete",
+            "CANDIDATE_BUDGET_LIMIT"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "zh-residence",
+    "suite": "karen-zh",
+    "category": "memory",
+    "split": "development",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [
+      {
+        "session_id": "past-0",
+        "turn": 0,
+        "occurred_at": "2026-10-01T08:00:00+00:00",
+        "role": "user",
+        "content": "我目前住在南京。"
+      },
+      {
+        "session_id": "past-1",
+        "turn": 0,
+        "occurred_at": "2026-10-02T08:00:00+00:00",
+        "role": "user",
+        "content": "我已经搬到苏州并在那里定居了。"
+      }
+    ],
+    "steps": [
+      {
+        "text": "我目前住在哪个城市？",
+        "expected": {
+          "outcome": "reply",
+          "contains": [
+            "苏州"
+          ],
+          "not_contains": [
+            "目前住在南京"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "zh-unknown",
+    "suite": "karen-zh",
+    "category": "memory",
+    "split": "development",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "我的护照号码是多少？",
+        "expected": {
+          "outcome": "reply",
+          "not_contains": [
+            "请提供起止日期"
+          ]
+        }
+      }
+    ],
+    "gold": {
+      "answer": "目前没有可用记忆能确认用户的护照号码，不应编造或假称知道。"
+    }
+  },
+  {
+    "id": "zh-held-information",
+    "suite": "karen-zh",
+    "category": "routing",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "我最喜欢的运动是游泳。",
+        "expected": {
+          "handling": "respond",
+          "outcome": "reply"
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "zh-held-time",
+    "suite": "karen-zh",
+    "category": "time",
+    "split": "heldout",
+    "timezone": "Asia/Tokyo",
+    "reference_time": "2026-10-04T14:30:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "帮我查一下明天大阪天气，只要简短文字。",
+        "expected": {
+          "outcome": "execution",
+          "goal_contains": [
+            "2026-10-05"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "zh-held-hobbies",
+    "suite": "karen-zh",
+    "category": "memory",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [
+      {
+        "session_id": "past-0",
+        "turn": 0,
+        "occurred_at": "2026-10-01T08:00:00+00:00",
+        "role": "user",
+        "content": "我喜欢摄影。"
+      },
+      {
+        "session_id": "past-1",
+        "turn": 0,
+        "occurred_at": "2026-10-02T08:00:00+00:00",
+        "role": "user",
+        "content": "攀岩也是我的爱好。"
+      }
+    ],
+    "steps": [
+      {
+        "text": "我平时有什么兴趣？",
+        "expected": {
+          "outcome": "reply",
+          "contains": [
+            "摄影",
+            "攀岩"
+          ],
+          "not_contains": [
+            "记录时间",
+            "来源标识"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "zh-held-cancel",
+    "suite": "karen-zh",
+    "category": "clarification",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "帮我写一封邮件。",
+        "expected": {
+          "outcome": "clarification"
+        }
+      },
+      {
+        "text": "算了，不用写了。",
+        "expected": {
+          "handling": "cancel",
+          "relation": "continue",
+          "outcome": "reply"
+        }
+      }
+    ],
+    "gold": {}
+  }
+]

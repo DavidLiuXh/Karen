@@ -1,0 +1,273 @@
+[
+  {
+    "id": "expansion-conflicting-length",
+    "suite": "karen-zh",
+    "category": "expansion-boundary",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "写一份活动介绍，全文不超过80字，同时要求正文至少150字。",
+        "expected": {
+          "outcome": "clarification"
+        }
+      }
+    ],
+    "gold": {
+      "answer": "应指出全文最多80字与正文至少150字互不兼容，询问采用哪个要求。"
+    },
+    "search_fixture": false,
+    "live_search": false
+  },
+  {
+    "id": "expansion-analyze-conflict",
+    "suite": "karen-zh",
+    "category": "expansion-boundary",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "全文不超过80字与正文至少150字，这两项要求是否矛盾？解释即可。",
+        "expected": {
+          "outcome": "complete",
+          "contains": [
+            "矛盾"
+          ]
+        }
+      }
+    ],
+    "gold": {},
+    "search_fixture": false,
+    "live_search": false
+  },
+  {
+    "id": "expansion-ambiguous-sender",
+    "suite": "karen-zh",
+    "category": "expansion-boundary",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "顾言告诉夏澄，他批准了这次申请。到底是谁批准了申请？",
+        "expected": {
+          "outcome": "clarification"
+        }
+      }
+    ],
+    "gold": {},
+    "search_fixture": false,
+    "live_search": false
+  },
+  {
+    "id": "expansion-identified-sender",
+    "suite": "karen-zh",
+    "category": "expansion-boundary",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "这里的“他”明确指夏澄。",
+    "history": [],
+    "steps": [
+      {
+        "text": "顾言告诉夏澄，他批准了这次申请。到底是谁批准了申请？",
+        "expected": {
+          "outcome": "complete",
+          "contains": [
+            "夏澄"
+          ]
+        }
+      }
+    ],
+    "gold": {},
+    "search_fixture": false,
+    "live_search": false
+  },
+  {
+    "id": "expansion-reported-fares",
+    "suite": "karen-zh",
+    "category": "expansion-boundary",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [
+      {
+        "session_id": "rail-booking",
+        "turn": 0,
+        "occurred_at": "2026-10-01T08:00:00+00:00",
+        "role": "user",
+        "content": "我订了从机场到酒店的火车票，价格是17美元。"
+      },
+      {
+        "session_id": "rail-booking",
+        "turn": 1,
+        "occurred_at": "2026-10-01T08:00:00+00:00",
+        "role": "assistant",
+        "content": "请以你实际预订的17美元为准。一般报价可能在60美元左右，但不能覆盖你的订单金额。可先确认列车到站位置是否需要步行到酒店，以及行李存放、班次和出票方式。抵达后可按站内标识前往乘车区，保留订单以便核对。"
+      },
+      {
+        "session_id": "taxi-booking",
+        "turn": 0,
+        "occurred_at": "2026-10-02T08:00:00+00:00",
+        "role": "user",
+        "content": "酒店给我预订从机场到酒店的出租车，报价是95美元。"
+      },
+      {
+        "session_id": "taxi-booking",
+        "turn": 1,
+        "occurred_at": "2026-10-02T08:00:00+00:00",
+        "role": "assistant",
+        "content": "请以酒店给你的95美元报价为准。通常市场估计可能在120美元左右，但那不是你的实际报价。可核对预订是否含过路费和等待时间，并保存酒店确认信息。比较费用时应使用同一段行程，明确哪些是实际订单费用，哪些仅为一般参考。"
+      }
+    ],
+    "steps": [
+      {
+        "text": "从机场到酒店坐火车比坐出租车能省多少？",
+        "expected": {
+          "outcome": "complete",
+          "contains": [
+            "78"
+          ]
+        }
+      }
+    ],
+    "gold": {
+      "answer": "按照用户此前记录的费用，出租车95美元减火车17美元，可省78美元。一般市场估计不应覆盖用户给出的报价。"
+    },
+    "search_fixture": false,
+    "live_search": false
+  },
+  {
+    "id": "expansion-public-species",
+    "suite": "karen-zh",
+    "category": "expansion-boundary",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "查一下 Dugesia sicula 是不是单细胞生物，给出简短说明和可靠来源。",
+        "expected": {
+          "outcome": "complete"
+        }
+      }
+    ],
+    "gold": {
+      "answer": "Dugesia sicula 是涡虫/扁形动物，属于多细胞动物，不是单细胞生物。"
+    },
+    "search_fixture": false,
+    "live_search": true
+  },
+  {
+    "id": "expansion-distinct-camera-uses",
+    "suite": "karen-zh",
+    "category": "personalized-use-cases",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [
+      {
+        "session_id": "camera-use",
+        "turn": 0,
+        "occurred_at": "2026-10-01T08:00:00+00:00",
+        "role": "user",
+        "content": "我开始用微单相机拍摄公园风景，日间风景照片已经拍得比较清晰了。"
+      },
+      {
+        "session_id": "camera-use",
+        "turn": 1,
+        "occurred_at": "2026-10-01T08:00:00+00:00",
+        "role": "assistant",
+        "content": "可以在稳定的自然光下继续练习构图和对焦，积累风景拍摄经验。"
+      },
+      {
+        "session_id": "camera-explore",
+        "turn": 0,
+        "occurred_at": "2026-10-02T08:00:00+00:00",
+        "role": "user",
+        "content": "我还想用这台微单尝试拍摄星空，夜间的曝光、对焦和稳定性需要注意什么？"
+      },
+      {
+        "session_id": "camera-explore",
+        "turn": 1,
+        "occurred_at": "2026-10-02T08:00:00+00:00",
+        "role": "assistant",
+        "content": "星空与日间风景的光照条件不同，曝光、对焦方式和稳定性需要单独考虑。"
+      }
+    ],
+    "steps": [
+      {
+        "text": "我的拍摄效果还不太稳定，帮我结合我们以前聊过的情况给些改善建议。",
+        "expected": {
+          "outcome": "complete"
+        }
+      }
+    ],
+    "gold": {
+      "answer": "建议应结合已有日间风景拍摄经验和近期明确询问的星空拍摄用途，区分日间与夜间的曝光、对焦和稳定需求，不能仅给泛化日间摄影技巧或遗漏星空兴趣。"
+    },
+    "search_fixture": false,
+    "live_search": false
+  },
+  {
+    "id": "expansion-no-shared-condition",
+    "suite": "karen-zh",
+    "category": "expansion-boundary",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "按规则完成归类：全部样本必须同时满足“偶数”或全部同时满足“大于十”中的某一共同条件。样本是4 和 15。请先从样本推断唯一共同条件，再按该条件判断8，只输出“符合”或“不符合”。",
+        "expected": {
+          "outcome": "clarification"
+        }
+      }
+    ],
+    "gold": {
+      "answer": "4与15没有共同满足“偶数”或“大于十”的单一条件，应要求修正样本或候选规则，不能强行输出符合或不符合。"
+    },
+    "search_fixture": false,
+    "live_search": false
+  },
+  {
+    "id": "expansion-shared-condition",
+    "suite": "karen-zh",
+    "category": "expansion-boundary",
+    "split": "heldout",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-04T08:00:00+00:00",
+    "context": "",
+    "history": [],
+    "steps": [
+      {
+        "text": "按规则完成归类：全部样本必须同时满足“偶数”或全部同时满足“大于十”中的某一共同条件。样本是4 和 12。请先从样本推断唯一共同条件，再按该条件判断8，只输出“符合”或“不符合”。",
+        "expected": {
+          "outcome": "complete",
+          "contains": [
+            "符合"
+          ]
+        }
+      }
+    ],
+    "gold": {
+      "answer": "两样本共同满足偶数；8也是偶数，应按共同条件输出“符合”，无需澄清。"
+    },
+    "search_fixture": false,
+    "live_search": false
+  }
+]

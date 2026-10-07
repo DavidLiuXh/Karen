@@ -49,6 +49,112 @@ async def test_clear_request_produces_engine_goal_without_clarification():
     assert len(model.assessments) == 1
 
 
+async def test_selected_supporting_facts_reach_execution_as_internal_context():
+    facts = ["用户更换了部件。", "用户同时改变了记录方式。"]
+    model = TaskIntentModel(
+        [
+            ready(
+                objective="解释观测结果的变化",
+                success_criteria=["区分实际变化与记录方式变化"],
+                inputs={"observation": "结果改善"},
+                supporting_facts=facts,
+            )
+        ]
+    )
+    result = await IntentRecognizer(model).advance(
+        IntentSession(), "我更换了部件并改变记录方式，解释最近观测到的变化"
+    )
+    assert result.goal.context["supporting_facts"] == facts
+    assert result.goal.inputs == {"observation": "结果改善"}
+    assert "supporting_facts" not in result.goal.inputs
+
+
+async def test_recalled_uses_are_reviewed_before_goal_creation():
+    from dynamic_graph import ModelResponse
+
+    original = ready(
+        objective="改善录音效果",
+        supporting_facts=["实际用过录音功能", "曾询问视频剪辑功能"],
+        success_criteria=["解释录音参数"],
+        constraints=[],
+        inputs={},
+    )
+    revised = ready(
+        objective="分别改善录音与视频剪辑效果",
+        supporting_facts=original["decision"]["goal"]["supporting_facts"],
+        success_criteria=["解释录音参数", "说明探索视频剪辑时的适用参数"],
+        constraints=[],
+        inputs={},
+    )
+
+    class ReviewModel(TaskIntentModel):
+        async def generate(self, request):
+            if request.role == "intent_goal_review":
+                self.requests.append(request)
+                draft_goal = request.input_data["draft"]["decision"]["goal"]
+                assert draft_goal["objective"] == original["decision"]["goal"]["objective"]
+                assert draft_goal["supporting_facts"] == original["decision"]["goal"]["supporting_facts"]
+                return ModelResponse(revised)
+            return await super().generate(request)
+
+    memory = {"m2": [{"memory": {"text": "录音实际体验；询问如何剪辑视频。"}}]}
+    model = ReviewModel([original])
+    session = IntentSession()
+    result = await IntentRecognizer(model).advance(
+        session, "如何改善这个设备的使用效果？", memory_context=memory
+    )
+    assert result.goal.objective == "分别改善录音与视频剪辑效果"
+    assert len(result.goal.success_criteria) == 2
+    draft_request = next(r for r in model.requests if r.role == "intent")
+    review_request = next(r for r in model.requests if r.role == "intent_goal_review")
+    assert review_request.input_data["memory"] == memory
+    assert review_request.input_data["messages"] == draft_request.input_data["messages"]
+    assert 0 < review_request.timeout_seconds < draft_request.timeout_seconds
+    assert "待审查的模型产物，不能当成新证据" in review_request.task_instruction
+    assert session.goal is None and session.messages == ()
+
+
+@pytest.mark.parametrize("has_memory,is_ready", [(False, True), (True, False)])
+async def test_goal_review_does_not_run_without_evidence_or_for_clarification(has_memory, is_ready):
+    model = TaskIntentModel([ready() if is_ready else clarify()])
+    await IntentRecognizer(model).advance(
+        IntentSession(), "写邮件", memory_context={"m1": [{"text": "背景"}]} if has_memory else {}
+    )
+    assert not any(r.role == "intent_goal_review" for r in model.requests)
+
+
+async def test_goal_review_has_only_the_remaining_assessment_deadline(monkeypatch):
+    from dataclasses import replace
+
+    from karen.intent import recognizer
+
+    request_factory = recognizer.ModelRequest
+    monkeypatch.setattr(
+        recognizer,
+        "ModelRequest",
+        lambda **kwargs: replace(request_factory(**kwargs), timeout_seconds=0.15),
+    )
+
+    class SlowReviewModel(TaskIntentModel):
+        async def generate(self, request):
+            if request.role == "intent":
+                await asyncio.sleep(0.09)
+            if request.role == "intent_goal_review":
+                self.requests.append(request)
+                await asyncio.sleep(0.1)
+            return await super().generate(request)
+
+    model = SlowReviewModel([ready()])
+    session = IntentSession()
+    with pytest.raises(ModelCallError, match="timed out"):
+        await IntentRecognizer(model).advance(
+            session, "写邮件", memory_context={"m2": [{"text": "有关背景"}]}
+        )
+    review = next(r for r in model.requests if r.role == "intent_goal_review")
+    assert 0 < review.timeout_seconds < 0.09
+    assert session.goal is None and session.messages == ()
+
+
 def test_default_timezone_uses_local_machine_configuration():
     assert IntentSession().timezone == get_localzone_name()
 
@@ -167,7 +273,7 @@ async def test_multiple_clarifications_keep_full_conversation_until_ready():
 async def test_invalid_model_response_does_not_change_session(payload):
     session = IntentSession()
     with pytest.raises(ValidationError):
-        await IntentRecognizer(TaskIntentModel([payload])).advance(session, "写邮件")
+        await IntentRecognizer(TaskIntentModel([payload, payload])).advance(session, "写邮件")
     assert session.messages == () and session.goal is None
 
 
@@ -217,10 +323,34 @@ async def test_custom_output_schema_is_validated_by_engine_contract():
         IntentSession(), "输出 draft 字段"
     )
     assert session.goal.output_schema.document() == schema
-    with pytest.raises(ValueError):
-        await IntentRecognizer(TaskIntentModel([ready(output_schema={"type": "array"})])).advance(
-            IntentSession(), "写邮件"
-        )
+    invalid = ready(output_schema={"type": "array"})
+    model = TaskIntentModel([invalid, invalid])
+    with pytest.raises(ValidationError):
+        await IntentRecognizer(model).advance(IntentSession(), "写邮件")
+    assert len(model.assessments) == 2
+
+
+@pytest.mark.parametrize("stage", ["intent", "intent_goal_review"])
+async def test_optional_null_output_schema_uses_the_engine_default(stage):
+    import jsonschema
+    from dynamic_graph.contracts import default_output_schema
+    from dynamic_graph.models.client import ModelResponse
+
+    class Model(TaskIntentModel):
+        async def generate(self, request):
+            if request.role == stage:
+                self.requests.append(request)
+                return ModelResponse(ready(output_schema=None))
+            return await super().generate(request)
+
+    model = Model([ready()])
+    session = await IntentRecognizer(model).advance(
+        IntentSession(), "写一封通知邮件", memory_context={"m2": [{"text": "已提供通知内容"}]}
+    )
+    assert session.goal.output_schema.document() == default_output_schema()
+    assert not session.questions
+    request = next(r for r in model.requests if r.role == stage)
+    jsonschema.validate(ready(output_schema=None), request.output_schema)
 
 
 async def test_cancellation_during_assessment_propagates():
@@ -238,3 +368,118 @@ async def test_cancellation_during_assessment_propagates():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert session.messages == ()
+
+
+async def test_misplaced_model_field_is_repaired_without_losing_clarification():
+    invalid = ready()
+    invalid["decision"]["goal"]["reason"] = "wrong level"
+    model = TaskIntentModel([clarify(), invalid, ready()])
+    recognizer = IntentRecognizer(model)
+    pending = await recognizer.advance(IntentSession(), "写邮件")
+    final = await recognizer.advance(pending, "给客户，设计已完成，中文草稿")
+    assert final.goal is not None
+    assert final.goal.inputs["progress"] == "设计已完成"
+    assert final.goal.context["conversation"][-1]["content"] == "给客户，设计已完成，中文草稿"
+    repair = model.assessments[-1].input_data
+    assert repair["original_input"]["messages"][-1]["content"] == "给客户，设计已完成，中文草稿"
+    assert repair["validation_errors"][0]["type"] == "extra_forbidden"
+    assert pending.goal is None
+
+
+async def test_schema_repair_is_bounded_and_does_not_retry_transport_auth_failures():
+    bad = ready(success_criteria=[])
+    model = TaskIntentModel([bad, bad, ready()])
+    with pytest.raises(ValidationError):
+        await IntentRecognizer(model).advance(IntentSession(), "写邮件")
+    assert len(model.assessments) == 2
+    auth = ModelCallError("MODEL_AUTH_FAILED", "credentials", retryable=False)
+    model = TaskIntentModel([auth, ready()])
+    with pytest.raises(ModelCallError) as caught:
+        await IntentRecognizer(model).advance(IntentSession(), "写邮件")
+    assert caught.value is auth and len(model.assessments) == 1
+
+
+@pytest.mark.parametrize("recovers", [True, False])
+async def test_truncated_intent_gets_one_expanded_regeneration_within_original_deadline(recovers):
+    error = ModelCallError("MODEL_RESPONSE_TRUNCATED", "Output limit reached",
+                           retryable=False, raw_response="{" + "unfinished" * 2000)
+    model = TaskIntentModel([error, ready() if recovers else error, ready()])
+    if recovers:
+        result = await IntentRecognizer(model).advance(IntentSession(), "给客户起草进度邮件")
+        assert result.goal is not None
+    else:
+        with pytest.raises(ModelCallError) as caught:
+            await IntentRecognizer(model).advance(IntentSession(), "给客户起草进度邮件")
+        assert caught.value.code == "MODEL_RESPONSE_TRUNCATED"
+    assert len(model.assessments) == 2
+    first, repaired = model.assessments
+    assert repaired.max_output_tokens == first.max_output_tokens * 2
+    assert 0 < repaired.timeout_seconds <= first.timeout_seconds
+    assert repaired.input_data["previous_response_truncated"] is True
+    assert len(repaired.input_data["previous_response"]) <= 4096
+    assert repaired.input_data["original_input"] == first.input_data
+
+
+@pytest.mark.parametrize("suffix", ["}", "]]}", '{"other":true}', "unrelated text"])
+async def test_surplus_json_feedback_never_accepts_or_discards_a_response(suffix):
+    import json
+
+    root = ready()
+    raw = "  " + json.dumps(root, ensure_ascii=False) + suffix
+    syntax = {"message": "Extra data", "position": len(raw) - len(suffix)}
+    invalid = ModelCallError(
+        "MODEL_RESPONSE_INVALID", "Invalid JSON", raw_response=raw, details={"json_syntax": syntax}
+    )
+    model = TaskIntentModel([invalid, ready(objective="经原始输入核对后的完整目标")])
+    result = await IntentRecognizer(model).advance(IntentSession(), "给客户起草进度邮件")
+    assert result.goal.objective == "经原始输入核对后的完整目标"
+    assert len(model.assessments) == 2
+    repair = model.assessments[1].input_data
+    assert repair["previous_response"] == raw
+    feedback = repair["validation_errors"][0]["json_syntax"]
+    if set(suffix) <= {"}", "]"}:
+        assert feedback["complete_root"] == root
+        assert feedback["unexpected_suffix"] == suffix
+    else:
+        assert "complete_root" not in feedback
+    assert invalid.details["json_syntax"] == syntax
+    assert repair["original_input"]["messages"][0]["content"] == "给客户起草进度邮件"
+
+
+async def test_surplus_json_feedback_still_requires_a_valid_second_response():
+    import json
+
+    invalid = ModelCallError(
+        "MODEL_RESPONSE_INVALID", "Invalid JSON",
+        raw_response=json.dumps(ready()) + "}",
+        details={"json_syntax": {"message": "Extra data"}},
+    )
+    model = TaskIntentModel([invalid, invalid, ready()])
+    with pytest.raises(ModelCallError) as caught:
+        await IntentRecognizer(model).advance(IntentSession(), "写邮件")
+    assert caught.value is invalid and len(model.assessments) == 2
+
+
+async def test_unsupported_goal_inputs_are_repaired_at_model_boundary():
+    model = TaskIntentModel([ready(inputs={"unknown": None}), ready(inputs={})])
+    result = await IntentRecognizer(model).advance(IntentSession(), "写一个不依赖未提供数据的草稿")
+    assert result.goal.inputs == {}
+    assert len(model.assessments) == 2
+    assert model.assessments[-1].input_data["previous_response"]["decision"]["goal"]["inputs"] == {
+        "unknown": None
+    }
+    assert "Null input" in model.assessments[-1].input_data["validation_errors"][0]["message"]
+
+
+async def test_explicit_nullable_input_schema_is_preserved_in_goal():
+    schema = {
+        "type": "object",
+        "properties": {"value": {"type": ["integer", "null"]}},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+    model = TaskIntentModel([ready(inputs={"value": None}, input_schema=schema)])
+    result = await IntentRecognizer(model).advance(IntentSession(), "保留输入中的空值")
+    assert result.goal.inputs == {"value": None}
+    assert result.goal.input_schema.document() == schema
+    assert len(model.assessments) == 1

@@ -1,0 +1,550 @@
+{
+  "protocol_version": "1",
+  "selection_rule": "karen-expansion-v1: sha256(ID), 4 CLAMBER / 2 oracle per category",
+  "previous_manifest_sha256": [
+    "020ac0c6a32c92c05e7809cc22279e49007b545c166b0441bdca1e97a0fcda4a"
+  ],
+  "sources_sha256": {
+    "clamber.jsonl": "58b195515fca3692c6756fc5242983461659c2f9a7f366b509f16b4cbe917fe0",
+    "longmemeval_oracle.json": "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c"
+  },
+  "eligible_remaining_by_category": {
+    "clamber.jsonl/FD/0": 398,
+    "clamber.jsonl/FD/1": 398,
+    "clamber.jsonl/LA/0": 398,
+    "clamber.jsonl/LA/1": 398,
+    "clamber.jsonl/MC/0": 799,
+    "clamber.jsonl/MC/1": 799,
+    "longmemeval_oracle.json/abstention": 22,
+    "longmemeval_oracle.json/knowledge-update": 67,
+    "longmemeval_oracle.json/multi-session": 119,
+    "longmemeval_oracle.json/single-session-assistant": 54,
+    "longmemeval_oracle.json/single-session-preference": 28,
+    "longmemeval_oracle.json/single-session-user": 60,
+    "longmemeval_oracle.json/temporal-reasoning": 89
+  },
+  "excluded_invalid_records": [
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_2487a7cb",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_2312f94c",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "0bb5a684",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "2c63a862",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_385a5000",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "2a1811e2",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_5dcc0aab",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "f0853d11",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_6ed717ea",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_70e84552",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "a3838d2b",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_93159ced",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_2d58bcd6",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "982b5123",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "b9cfe692",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "c8090214",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "e4e14d04",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "c9f37c46",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_2c50253f",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "dcfa8644",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_9a159967",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_d9af6064",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_7de946e7",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "993da5e2",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "a3045048",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_d31cdae3",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_cd90e484",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_93f6379c",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "b29f3365",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_2f56ae70",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_78cf46a3",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_2f584639",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_213fd887",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_5438fa52",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_fe651585",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "8c18457d",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_70e84552_abs",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "c8090214_abs",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_c27434e8_abs",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "gpt4_fe651585_abs",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "2133c1b5",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "7a87bd0c",
+      "reason": "History contains a future session"
+    },
+    {
+      "source": "longmemeval_oracle.json",
+      "id": "e61a7584",
+      "reason": "History contains a future session"
+    }
+  ],
+  "manifest_sha256": "84029de5d1018ff2848e9b8904e6828a72b8cdbce25c9a1fa977608d7b414566",
+  "cases": [
+    {
+      "id": "clamber-0567",
+      "suite": "clamber",
+      "split": "development",
+      "category": "FD/0",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-0495",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "FD/0",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-0493",
+      "suite": "clamber",
+      "split": "development",
+      "category": "FD/0",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-2154",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "FD/0",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-2050",
+      "suite": "clamber",
+      "split": "development",
+      "category": "FD/1",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-0191",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "FD/1",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-0278",
+      "suite": "clamber",
+      "split": "development",
+      "category": "FD/1",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-0310",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "FD/1",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-2759",
+      "suite": "clamber",
+      "split": "development",
+      "category": "LA/0",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-2930",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "LA/0",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-3055",
+      "suite": "clamber",
+      "split": "development",
+      "category": "LA/0",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-2664",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "LA/0",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-3151",
+      "suite": "clamber",
+      "split": "development",
+      "category": "LA/1",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-2650",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "LA/1",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-2825",
+      "suite": "clamber",
+      "split": "development",
+      "category": "LA/1",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-2813",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "LA/1",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-1520",
+      "suite": "clamber",
+      "split": "development",
+      "category": "MC/0",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-1777",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "MC/0",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-1677",
+      "suite": "clamber",
+      "split": "development",
+      "category": "MC/0",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-1658",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "MC/0",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-1132",
+      "suite": "clamber",
+      "split": "development",
+      "category": "MC/1",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-1174",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "MC/1",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-0997",
+      "suite": "clamber",
+      "split": "development",
+      "category": "MC/1",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "clamber-0730",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "MC/1",
+      "history_turns": 0,
+      "history_characters": 0
+    },
+    {
+      "id": "f4f1d8a4_abs",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "abstention",
+      "history_turns": 12,
+      "history_characters": 10826
+    },
+    {
+      "id": "6456829e_abs",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "abstention",
+      "history_turns": 24,
+      "history_characters": 28495
+    },
+    {
+      "id": "0e4e4c46",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "knowledge-update",
+      "history_turns": 24,
+      "history_characters": 31141
+    },
+    {
+      "id": "b6019101",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "knowledge-update",
+      "history_turns": 22,
+      "history_characters": 22998
+    },
+    {
+      "id": "a4996e51",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "multi-session",
+      "history_turns": 24,
+      "history_characters": 31764
+    },
+    {
+      "id": "09ba9854",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "multi-session",
+      "history_turns": 22,
+      "history_characters": 21198
+    },
+    {
+      "id": "fea54f57",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "single-session-assistant",
+      "history_turns": 14,
+      "history_characters": 6807
+    },
+    {
+      "id": "cc539528",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "single-session-assistant",
+      "history_turns": 10,
+      "history_characters": 5704
+    },
+    {
+      "id": "75832dbd",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "single-session-preference",
+      "history_turns": 12,
+      "history_characters": 18947
+    },
+    {
+      "id": "caf03d32",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "single-session-preference",
+      "history_turns": 18,
+      "history_characters": 20016
+    },
+    {
+      "id": "d52b4f67",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "single-session-user",
+      "history_turns": 12,
+      "history_characters": 9930
+    },
+    {
+      "id": "a82c026e",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "single-session-user",
+      "history_turns": 12,
+      "history_characters": 11063
+    },
+    {
+      "id": "71017276",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "temporal-reasoning",
+      "history_turns": 12,
+      "history_characters": 18999
+    },
+    {
+      "id": "gpt4_7a0daae1",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "temporal-reasoning",
+      "history_turns": 22,
+      "history_characters": 31564
+    }
+  ]
+}

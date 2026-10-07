@@ -338,6 +338,7 @@ class ObservedModel:
                     "input": request.input_data,
                     "output_schema": request.output_schema,
                     "timeout_seconds": request.timeout_seconds,
+                    "max_output_tokens": request.max_output_tokens,
                 },
             )
             try:

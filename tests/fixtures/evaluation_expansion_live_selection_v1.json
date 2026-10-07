@@ -1,0 +1,274 @@
+{
+  "protocol_version": "1",
+  "tool_profile": "public-live-readonly-v1",
+  "manifest_sha256": "bab0da8ace5ed9c85e8d3a5a9e54e99247b3f717602a6a85dd51a579858e6e03",
+  "variants_sha256": "88220340635a27179539d5d10da5eacd8e78c7e7d1d51ba1731d534d30b5b883",
+  "cases": [
+    {
+      "id": "clamber-0567",
+      "suite": "clamber",
+      "split": "development",
+      "category": "FD/0",
+      "live_search": false
+    },
+    {
+      "id": "clamber-0495",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "FD/0",
+      "live_search": false
+    },
+    {
+      "id": "clamber-0493",
+      "suite": "clamber",
+      "split": "development",
+      "category": "FD/0",
+      "live_search": false
+    },
+    {
+      "id": "clamber-2154",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "FD/0",
+      "live_search": false
+    },
+    {
+      "id": "clamber-2050",
+      "suite": "clamber",
+      "split": "development",
+      "category": "FD/1",
+      "live_search": false
+    },
+    {
+      "id": "clamber-0191",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "FD/1",
+      "live_search": false
+    },
+    {
+      "id": "clamber-0278",
+      "suite": "clamber",
+      "split": "development",
+      "category": "FD/1",
+      "live_search": false
+    },
+    {
+      "id": "clamber-0310",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "FD/1",
+      "live_search": false
+    },
+    {
+      "id": "clamber-2759",
+      "suite": "clamber",
+      "split": "development",
+      "category": "LA/0",
+      "live_search": false
+    },
+    {
+      "id": "clamber-2930",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "LA/0",
+      "live_search": false
+    },
+    {
+      "id": "clamber-3055",
+      "suite": "clamber",
+      "split": "development",
+      "category": "LA/0",
+      "live_search": false
+    },
+    {
+      "id": "clamber-2664",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "LA/0",
+      "live_search": false
+    },
+    {
+      "id": "clamber-3151",
+      "suite": "clamber",
+      "split": "development",
+      "category": "LA/1",
+      "live_search": false
+    },
+    {
+      "id": "clamber-2650",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "LA/1",
+      "live_search": false
+    },
+    {
+      "id": "clamber-2825",
+      "suite": "clamber",
+      "split": "development",
+      "category": "LA/1",
+      "live_search": false
+    },
+    {
+      "id": "clamber-2813",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "LA/1",
+      "live_search": false
+    },
+    {
+      "id": "clamber-1520",
+      "suite": "clamber",
+      "split": "development",
+      "category": "MC/0",
+      "live_search": false
+    },
+    {
+      "id": "clamber-1777",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "MC/0",
+      "live_search": false
+    },
+    {
+      "id": "clamber-1677",
+      "suite": "clamber",
+      "split": "development",
+      "category": "MC/0",
+      "live_search": false
+    },
+    {
+      "id": "clamber-1658",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "MC/0",
+      "live_search": false
+    },
+    {
+      "id": "clamber-1132",
+      "suite": "clamber",
+      "split": "development",
+      "category": "MC/1",
+      "live_search": false
+    },
+    {
+      "id": "clamber-1174",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "MC/1",
+      "live_search": false
+    },
+    {
+      "id": "clamber-0997",
+      "suite": "clamber",
+      "split": "development",
+      "category": "MC/1",
+      "live_search": false
+    },
+    {
+      "id": "clamber-0730",
+      "suite": "clamber",
+      "split": "heldout",
+      "category": "MC/1",
+      "live_search": false
+    },
+    {
+      "id": "f4f1d8a4_abs",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "abstention",
+      "live_search": true
+    },
+    {
+      "id": "6456829e_abs",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "abstention",
+      "live_search": true
+    },
+    {
+      "id": "0e4e4c46",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "knowledge-update",
+      "live_search": true
+    },
+    {
+      "id": "b6019101",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "knowledge-update",
+      "live_search": true
+    },
+    {
+      "id": "a4996e51",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "multi-session",
+      "live_search": true
+    },
+    {
+      "id": "09ba9854",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "multi-session",
+      "live_search": true
+    },
+    {
+      "id": "fea54f57",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "single-session-assistant",
+      "live_search": true
+    },
+    {
+      "id": "cc539528",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "single-session-assistant",
+      "live_search": true
+    },
+    {
+      "id": "75832dbd",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "single-session-preference",
+      "live_search": true
+    },
+    {
+      "id": "caf03d32",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "single-session-preference",
+      "live_search": true
+    },
+    {
+      "id": "d52b4f67",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "single-session-user",
+      "live_search": true
+    },
+    {
+      "id": "a82c026e",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "single-session-user",
+      "live_search": true
+    },
+    {
+      "id": "71017276",
+      "suite": "longmemeval-oracle",
+      "split": "development",
+      "category": "temporal-reasoning",
+      "live_search": true
+    },
+    {
+      "id": "gpt4_7a0daae1",
+      "suite": "longmemeval-oracle",
+      "split": "heldout",
+      "category": "temporal-reasoning",
+      "live_search": true
+    }
+  ]
+}

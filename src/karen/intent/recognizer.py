@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -13,14 +14,16 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dynamic_graph import GoalSpec, ModelRequest
 from dynamic_graph.contracts import default_output_schema
 from dynamic_graph.graph.schemas import SchemaSpec
-from dynamic_graph.models.client import ModelCallError, ModelClient
+from dynamic_graph.models.client import ModelCallError, ModelClient, expanded_output_budget
 from langgraph.graph import END, START, StateGraph
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     JsonValue,
+    RootModel,
     StringConstraints,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -29,14 +32,23 @@ from tzlocal import get_localzone_name
 from ..observability import Observer
 from ..prompts import RESPONSE_INSTRUCTION
 from .prompts import (
+    CLARITY_INSTRUCTION,
+    CLARITY_REVIEW_INSTRUCTION,
+    CLARITY_SYSTEM_INSTRUCTION,
+    CLARITY_TASK_INSTRUCTION,
     DIRECT_RESPONSE_INSTRUCTION,
+    DIRECT_RESPONSE_REVIEW_INSTRUCTION,
     GOAL_CONTEXT_INSTRUCTION,
+    GOAL_REVIEW_INSTRUCTION,
     INTENT_SYSTEM_INSTRUCTION,
     INTENT_TASK_INSTRUCTION,
+    MEMORY_CONTEXT_INSTRUCTION,
     ROUTING_INSTRUCTION,
+    STRUCTURE_REPAIR_INSTRUCTION,
 )
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+QuestionStatus = Literal["pending", "answered", "withdrawn", "not_required"]
 
 
 class IntentContract(BaseModel):
@@ -48,14 +60,47 @@ class Message(IntentContract):
     content: Text
 
 
+class EvidenceUse(IntentContract):
+    evidence_id: Text
+    disposition: Literal["covered", "context_only", "not_applicable"]
+    reason: Text
+    output_quote: str = Field(default="", max_length=500)
+
+
 class GoalDraft(IntentContract):
+    evidence_coverage: list[EvidenceUse] = Field(default_factory=list)
+    supporting_facts: list[Text] = Field(
+        default_factory=list,
+        description="先列出与本轮目标相关、由当前输入或记忆原文支持的具体事实，再形成目标和验收条件；无相关事实时为空。",
+    )
     objective: Text
     success_criteria: list[Text] = Field(min_length=1)
     constraints: list[Text] = Field(default_factory=list)
     inputs: dict[str, JsonValue] = Field(default_factory=dict)
+    input_schema: SchemaSpec | None = None
     output_schema: SchemaSpec = Field(
-        default_factory=lambda: SchemaSpec.model_validate(default_output_schema())
+        default_factory=lambda: SchemaSpec.model_validate(default_output_schema()),
+        description="未指定或 null 时使用引擎默认 answer/evidence/limitations 格式；自定义 schema 的根为 object。",
     )
+
+    @field_validator("output_schema", mode="before", json_schema_input_type=SchemaSpec | None)
+    @classmethod
+    def default_output_contract(cls, value):
+        # Optional model-facing schema selection becomes a concrete engine schema
+        # at this boundary. Other schema values still undergo full validation.
+        return default_output_schema() if value is None else value
+
+    @model_validator(mode="after")
+    def validate_engine_contract(self):
+        # Use the engine's authoritative contract at the model response boundary,
+        # so unsupported drafts enter bounded repair before building a final goal.
+        GoalSpec(
+            objective=self.objective,
+            inputs=self.inputs,
+            input_schema=self.input_schema,
+            output_schema=self.output_schema,
+        )
+        return self
 
 
 class InputRouting(IntentContract):
@@ -106,7 +151,130 @@ class Assessment(IntentContract):
 
 
 class DirectAssessment(IntentContract):
+    evidence_coverage: list[EvidenceUse] = Field(default_factory=list)
+    supporting_facts: list[Text] = Field(
+        default_factory=list,
+        description="先列出当前输入或记忆原文支持且与问题相关的事实，再形成 decision；无相关事实时为空。",
+    )
     decision: Annotated[Reply | Clarification, Field(discriminator="outcome")]
+
+
+class AcceptedDraft(IntentContract):
+    accepted: Literal[True]
+    evidence_coverage: list[EvidenceUse]
+
+
+class GoalReview(RootModel[AcceptedDraft | Assessment]):
+    pass
+
+
+class ReplyReview(RootModel[AcceptedDraft | DirectAssessment]):
+    pass
+
+
+class ReferenceAssessment(IntentContract):
+    expression: Text
+    candidates: list[Text] = Field(min_length=1)
+    resolution: Literal["unique_candidate", "explicit_identification", "inferred", "unresolved"]
+    evidence: str
+    requires_unique_resolution: bool = Field(
+        default=True,
+        description="只有唯一操作或真实单次事件的唯一指代才为 true；资料查询可分别列出多个版本/记录时为 false，单数用法不要求唯一答案。",
+    )
+
+    @model_validator(mode="after")
+    def valid_resolution(self):
+        if self.resolution == "unique_candidate" and len(self.candidates) != 1:
+            raise ValueError("Multiple candidates cannot be resolved as unique")
+        if self.resolution == "explicit_identification" and not self.evidence.strip():
+            raise ValueError("Explicit identification needs source evidence")
+        return self
+
+
+class ClarityQuestion(IntentContract):
+    question_id: str = Field(default="", description="已有待决问题的稳定标识；新的缺口留空。")
+    resolution_source: Literal["user", "external_lookup", "default_or_omit"]
+    blocking_reason: Text = Field(
+        description="具体说明缺口会改变哪个答案、操作对象或交付要求，以及为何不能从已有证据解决。")
+    text: Text
+    kind: Literal[
+        "unknown_identity", "ambiguous_reference", "selection_criteria", "missing_requirement"
+    ]
+    subject: str = Field(default="", description="该问题涉及的实体原名；unknown_identity 时必填。")
+    lookup_scope: str = Field(
+        default="", description="用户已明确给出的所属作品/项目名称，照抄原词；没有则为空。"
+    )
+    scope_evidence: str = Field(
+        default="",
+        description="同时包含 subject、lookup_scope 及所属关系的连续原话；没有定位范围时为空。",
+    )
+
+    @model_validator(mode="after")
+    def identity_evidence(self):
+        if self.kind == "unknown_identity" and not self.subject.strip():
+            raise ValueError("Unknown identity questions need the entity name")
+        if self.lookup_scope and not self.scope_evidence.strip():
+            raise ValueError("A lookup scope needs source evidence")
+        return self
+
+
+class RequirementConflict(IntentContract):
+    first_requirement: Text = Field(description="互不兼容的第一项当前要求，连续引用用户原话。")
+    second_requirement: Text = Field(description="互不兼容的第二项当前要求，连续引用用户原话。")
+    question: Text = Field(
+        max_length=200, description="只用一个简短问题询问应修正或采用哪项要求，不展开题目解析。"
+    )
+
+
+class ClarityReview(IntentContract):
+    references: list[ReferenceAssessment] = Field(default_factory=list)
+    requirement_conflicts: list[RequirementConflict] = Field(default_factory=list)
+    reason: Text = Field(max_length=1500)
+
+
+class QuestionUpdate(IntentContract):
+    question_id: Text
+    status: QuestionStatus
+    evidence_quote: str = Field(default="", description="已回答/撤销引用提问后的用户原话；不再必要引用支持可行交付的本任务用户原话；待回答时为空。")
+    reason: Text = Field(max_length=500)
+
+
+class ClarificationItem(IntentContract):
+    question_id: Text
+    text: Text
+    asked_after: int = Field(ge=0)
+    status: QuestionStatus = "pending"
+    evidence_quote: str = ""
+    answer_message_index: int | None = None
+
+
+class ClarityAssessment(IntentContract):
+    question_updates: list[QuestionUpdate] = Field(
+        default_factory=list, description="每个 pending 问题恰好更新一次；已解决问题可重复确认完全相同的状态与引文，不能改写。未回答仍 pending，不能因只回答其他问题就删除。",
+    )
+    requirement_conflicts: list[RequirementConflict] = Field(
+        default_factory=list,
+        description="只列出阻碍用户实际要求的交付的未解决冲突；仅分析矛盾时材料的冲突不是交付阻碍。",
+    )
+    external_information_needed: list[Text] = Field(
+        default_factory=list,
+        description="对象与查证问题明确，但尚需外部检索的身份/属性/资料；不是用户必须补充的信息。",
+    )
+    references: list[ReferenceAssessment]
+    known_referents: dict[str, Text]
+    selection_criteria: list[Text]
+    selection_criteria_required: bool = Field(
+        default=False,
+        description="主观选择需要用户实质筛选标准为 true；不能因产物是文字建议而当成普通草稿。",
+    )
+    questions: list[ClarityQuestion] = Field(
+        description=(
+            "仅填写缺失后无法给出任何符合已知要求的有效回应/方案的必要问题。"
+            "开放式推荐已有相关偏好且至少一种方案可行时为空；"
+            "不能要求用户先决定是否需要其他类别，或补某个未选备选方案的条件。"
+        )
+    )
+    reason: Text = Field(max_length=1500)
 
 
 class IntentSession(IntentContract):
@@ -118,7 +286,8 @@ class IntentSession(IntentContract):
     user_context: dict[str, JsonValue] = Field(default_factory=dict)
     timezone: Text = Field(default_factory=get_localzone_name, validate_default=True)
     reference_time_utc: datetime | None = None
-    questions: tuple[str, ...] = ()
+    clarification_items: tuple[ClarificationItem, ...] = ()
+    displayed_question_ids: tuple[str, ...] = ()
     goal: GoalSpec | None = None
     reply: Text | None = None
     routing: InputRouting | None = None
@@ -144,6 +313,16 @@ class IntentSession(IntentContract):
     @property
     def completed(self) -> bool:
         return self.goal is not None or self.reply is not None
+
+    @property
+    def questions(self) -> tuple[str, ...]:
+        """Display at most three pending questions; the ledger retains all gaps."""
+        if self.completed:
+            return ()
+        pending = {item.question_id: item.text for item in self.clarification_items
+                   if item.status == "pending"}
+        order = dict.fromkeys((*self.displayed_question_ids, *pending))
+        return tuple(pending[question_id] for question_id in order if question_id in pending)[:3]
 
     def new_request(self) -> IntentSession:
         return IntentSession(
@@ -184,6 +363,7 @@ class IntentState(TypedDict):
     session: IntentSession
     decision: Clarification | Ready | Reply
     memory_context: dict | None
+    clarity: ClarityAssessment
 
 
 class IntentRecognizer:
@@ -191,6 +371,10 @@ class IntentRecognizer:
         self.model = model
         self.observer = observer or Observer()
         graph = StateGraph(IntentState)
+        graph.add_node(
+            "check_clarity",
+            self.observer.node("intent.check_clarity", self._check_clarity, lambda r: r),
+        )
         graph.add_node("assess", self.observer.node("intent.assess", self._assess, lambda r: r))
         graph.add_node(
             "clarify",
@@ -214,9 +398,9 @@ class IntentRecognizer:
         )
         graph.add_conditional_edges(
             START,
-            lambda state: state["session"].routing.handling,
-            {"respond": "respond", "assess": "assess", "cancel": "cancel"},
+            self._initial_route,
         )
+        graph.add_conditional_edges("check_clarity", self._after_clarity)
         graph.add_conditional_edges("respond", self._route)
         graph.add_edge("finish_reply", END)
         graph.add_edge("cancel", END)
@@ -225,7 +409,305 @@ class IntentRecognizer:
         graph.add_edge("build_goal", END)
         self.graph = graph.compile()
 
-    async def classify(self, session: IntentSession, user_input: str) -> InputRouting:
+    @staticmethod
+    def _initial_route(state: IntentState):
+        routing = state["session"].routing
+        if routing.task_relation == "continue" and routing.handling != "cancel":
+            return "check_clarity"
+        memory = state.get("memory_context") or {}
+        personal_query = (
+            "question" in routing.input_types
+            and "task_request" not in routing.input_types
+            and memory.get("coverage", {}).get("query_kind") in {"facts", "detail"}
+        )
+        if personal_query:
+            # Missing personal evidence is handled by the answer, not by asking
+            # the user to supply the answer. Necessary history guards still apply.
+            return (
+                "check_clarity"
+                if IntentRecognizer._memory_clarification(state)
+                else routing.handling
+            )
+        if routing.handling == "assess" or (
+            routing.handling == "respond" and "question" in routing.input_types
+        ):
+            return "check_clarity"
+        return routing.handling
+
+    @staticmethod
+    def _after_clarity(state: IntentState):
+        if isinstance(state.get("decision"), Clarification):
+            return "clarify"
+        return state["session"].routing.handling
+
+    async def _check_clarity(self, state: IntentState) -> dict:
+        guard = self._memory_clarification(state)
+        if guard:
+            return guard
+        request = ModelRequest(
+            role="intent_clarity",
+            system_instruction=(
+                CLARITY_SYSTEM_INSTRUCTION
+                + MEMORY_CONTEXT_INSTRUCTION
+            ),
+            task_instruction=CLARITY_TASK_INSTRUCTION,
+            input_data={
+                key: value
+                for key, value in self._model_inputs(state).items()
+                if key not in {"routing", "clarity"}
+            },
+            output_schema=ClarityAssessment.model_json_schema(),
+            # Thinking and the final structured answer share this budget.
+            # Reviews retain this cap and the original shared deadline.
+            max_output_tokens=8192,
+        )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + request.timeout_seconds
+        source_texts = [m.content for m in state["session"].messages]
+        requirement_texts = [m.content for m in state["session"].messages if m.role == "user"]
+        context_values = [state["session"].user_context]
+        while context_values:
+            value = context_values.pop()
+            if isinstance(value, str):
+                source_texts.append(value)
+            elif isinstance(value, dict):
+                context_values.extend(value.values())
+            elif isinstance(value, list):
+                context_values.extend(value)
+        memory = state.get("memory_context") or {}
+        for layer in ("m1", "m2"):
+            source_texts.extend(
+                source["quote"]
+                for hit in memory.get(layer, [])
+                for source in hit.get("memory", {}).get("sources", [])
+                if source.get("quote")
+            )
+        source_texts.extend(hit["text"] for hit in memory.get("details", []) if hit.get("text"))
+        source_texts.extend(
+            message["content"]
+            for message in memory.get("history", {}).get("messages", [])
+            if message.get("content")
+        )
+        def check_reference_quotes(result):
+            updated = self._update_questions(state["session"], result.question_updates)
+            pending_ids = {item.question_id for item in updated.clarification_items
+                           if item.status == "pending"}
+            question_ids = [q.question_id for q in result.questions if q.question_id]
+            if not set(question_ids) <= pending_ids or len(set(question_ids)) != len(question_ids):
+                raise ValueError("INVALID_PENDING_QUESTION_ID")
+            for ref in result.references:
+                if (len(ref.candidates) > 1 and ref.requires_unique_resolution
+                        and ref.resolution == "explicit_identification"
+                        and not any(ref.evidence in text for text in source_texts)):
+                    raise ValueError("UNSUPPORTED_REFERENCE_EVIDENCE")
+
+        clarity = await self._validated(request, ClarityAssessment, validate=check_reference_quotes)
+        original_references = clarity.references
+        located_expressions = {
+            q.subject.casefold() for q in clarity.questions
+            if q.kind == "unknown_identity" and q.lookup_scope
+            and q.subject.casefold() in q.scope_evidence.casefold()
+            and q.lookup_scope.casefold() in q.scope_evidence.casefold()
+            and any(q.scope_evidence in text for text in source_texts)
+        }
+        grounded_conflicts = [c for c in clarity.requirement_conflicts if
+            c.first_requirement != c.second_requirement and all(
+                any(quote in text for text in requirement_texts)
+                for quote in (c.first_requirement, c.second_requirement)
+            )]
+        ambiguous = [ref for ref in clarity.references
+                     if len(ref.candidates) > 1 and ref.requires_unique_resolution
+                     and ref.expression.casefold() not in located_expressions
+                     and (ref.resolution != "explicit_identification"
+                          or not any(ref.evidence in text for text in source_texts))]
+        if ambiguous or grounded_conflicts:
+            # One focused semantic check; entity recognition alone never triggers
+            # another interpretation of the entire request. It shares the deadline.
+            checked = await self._validated(
+                replace(
+                    request,
+                    role="intent_clarity_review",
+                    task_instruction=CLARITY_REVIEW_INSTRUCTION,
+                    input_data={
+                        "original_input": request.input_data,
+                        "issues_to_check": {
+                            "references": [ref.model_dump(mode="json") for ref in ambiguous],
+                            "requirements": [{
+                                "first_requirement": c.first_requirement,
+                                "second_requirement": c.second_requirement,
+                            } for c in grounded_conflicts],
+                        },
+                    },
+                    timeout_seconds=max(0, deadline - loop.time()),
+                    output_schema=ClarityReview.model_json_schema(),
+                ),
+                ClarityReview,
+                validate=lambda result: self._check_reference_review(ambiguous, result),
+            )
+            checked_expressions = {ref.expression for ref in ambiguous}
+            clarity = clarity.model_copy(update={
+                "references": [ref for ref in clarity.references
+                               if ref.expression not in checked_expressions] + checked.references,
+                "requirement_conflicts": checked.requirement_conflicts,
+                "reason": checked.reason,
+            })
+            references = []
+            for ref in clarity.references:
+                old = next((r for r in original_references if r.expression == ref.expression
+                            and len(r.candidates) > 1 and r.requires_unique_resolution
+                            and r.resolution in {"inferred", "unresolved"}), None)
+                if (old and ref.resolution == "explicit_identification" and old.evidence
+                        and ref.evidence in old.evidence):
+                    ref = ref.model_copy(update={"resolution": "unresolved"})
+                    self.observer.emit("intent.reference_resolution_rejected", data={
+                        "expression": ref.expression, "reason": "reused_ambiguous_evidence",
+                    })
+                references.append(ref)
+            clarity = clarity.model_copy(update={"references": references})
+        else:
+            clarity = clarity.model_copy(update={"requirement_conflicts": grounded_conflicts})
+        conflicts = []
+        for conflict in clarity.requirement_conflicts:
+            if conflict.first_requirement == conflict.second_requirement or not all(
+                any(quote in text for text in requirement_texts)
+                for quote in (conflict.first_requirement, conflict.second_requirement)
+            ):
+                raise ModelCallError(
+                    "MODEL_RESPONSE_INVALID", "Clarity check cited unsupported evidence"
+                )
+            conflicts.append(conflict)
+        located = {}
+        questions = []
+        external = list(clarity.external_information_needed)
+        for question in clarity.questions:
+            if question.resolution_source == "external_lookup":
+                external.append(question.blocking_reason)
+                continue
+            if question.resolution_source == "default_or_omit":
+                continue
+            quote = question.scope_evidence
+            if (
+                question.kind == "unknown_identity"
+                and question.lookup_scope
+                and question.subject.casefold() in quote.casefold()
+                and question.lookup_scope.casefold() in quote.casefold()
+                and any(quote in text for text in source_texts)
+            ):
+                located[question.subject.casefold()] = question
+            else:
+                questions.append(question)
+        references = []
+        for ref in clarity.references:
+            location = located.get(ref.expression.casefold())
+            if location:
+                ref = ref.model_copy(
+                    update={
+                        "candidates": [f"{location.lookup_scope}中的{location.subject}"],
+                        "resolution": "explicit_identification",
+                        "evidence": location.scope_evidence,
+                    }
+                )
+            references.append(ref)
+        clarity = clarity.model_copy(update={
+            "questions": questions, "references": references,
+            "external_information_needed": list(dict.fromkeys(external)),
+        })
+        if clarity.references and not any(
+            ref.requires_unique_resolution for ref in clarity.references
+        ):
+            clarity = clarity.model_copy(
+                update={
+                    "questions": [q for q in clarity.questions if q.kind != "ambiguous_reference"],
+                }
+            )
+        unresolved = [
+            ref
+            for ref in clarity.references
+            if len(ref.candidates) > 1
+            and ref.requires_unique_resolution
+            and (
+                ref.resolution != "explicit_identification"
+                or not any(ref.evidence in text for text in source_texts)
+            )
+        ]
+        if unresolved and not clarity.questions:
+            clarity = clarity.model_copy(
+                update={
+                    "questions": [
+                        ClarityQuestion(
+                            text=f"‘{ref.expression}’指的是哪一个：{'、'.join(ref.candidates)}？",
+                            kind="ambiguous_reference",
+                            subject=ref.expression,
+                            resolution_source="user",
+                            blocking_reason="必须选择唯一指代才能确定本次答案或操作对象。",
+                        )
+                        for ref in unresolved
+                    ]
+                }
+            )
+        clarity = clarity.model_copy(update={"requirement_conflicts": conflicts})
+        if conflicts:
+            questions = list(clarity.questions)
+            for conflict in conflicts:
+                if not any(question.text == conflict.question for question in questions):
+                    questions.append(
+                        ClarityQuestion(text=conflict.question, kind="missing_requirement",
+                                        resolution_source="user",
+                                        blocking_reason="原始要求不能同时满足，需要用户修正。")
+                    )
+            clarity = clarity.model_copy(update={"questions": questions})
+        if (
+            clarity.selection_criteria_required
+            and not clarity.selection_criteria
+            and not clarity.questions
+        ):
+            clarity = clarity.model_copy(
+                update={
+                    "questions": [
+                        ClarityQuestion(
+                            text="请说明选择时最看重的因素或相关偏好。", kind="selection_criteria",
+                            resolution_source="user", blocking_reason="缺少实质筛选标准。"
+                        )
+                    ]
+                }
+            )
+        session = self._update_questions(state["session"], clarity.question_updates)
+        pending = {item.question_id: item for item in session.clarification_items
+                   if item.status == "pending"}
+        # A partial answer cannot silently erase a previously blocking question.
+        existing = {q.question_id for q in clarity.questions if q.question_id}
+        texts = {q.text for q in clarity.questions}
+        retained = [ClarityQuestion(
+            question_id=item.question_id, text=item.text, kind="missing_requirement",
+            resolution_source="user", blocking_reason="此前的必要问题尚未得到回答或撤销。",
+        ) for item in pending.values() if item.question_id not in existing and item.text not in texts]
+        clarity = clarity.model_copy(update={"questions": [*retained, *clarity.questions]})
+        result = {"clarity": clarity, "session": session}
+        self.observer.emit("intent.clarity_resolution", data={
+            "user_questions": clarity.questions,
+            "external_information_needed": clarity.external_information_needed,
+            "clarification_items": session.clarification_items,
+            "reason": clarity.reason,
+        })
+        if clarity.questions:
+            result["decision"] = Clarification(
+                outcome="needs_clarification",
+                questions=[question.text for question in clarity.questions],
+                reason=clarity.reason,
+            )
+        elif clarity.external_information_needed and state["session"].routing.handling == "respond":
+            routing = session.routing.model_copy(
+                update={"handling": "assess", "reason": "清晰度检查发现需要核查外部资料。"}
+            )
+            result["session"] = session.model_copy(update={"routing": routing})
+            self.observer.emit(
+                "intent.routing_refined", data={"routing": routing, "basis": "external_information"}
+            )
+        return result
+
+    async def classify(
+        self, session: IntentSession, user_input: str, *, memory_context: dict | None = None
+    ) -> InputRouting:
         message = Message(role="user", content=user_input)
         pending = bool(session.questions) and not session.completed
         with self.observer.span("intent.classify"):
@@ -238,17 +720,60 @@ class IntentRecognizer:
                     "pending_task": {
                         "messages": [m.model_dump(mode="json") for m in session.messages],
                         "questions": list(session.questions),
+                        "clarification_items": [item.model_dump(mode="json")
+                                                for item in session.clarification_items],
                     }
                     if pending
                     else None,
+                    **({"memory": memory_context} if memory_context is not None else {}),
                 },
                 output_schema=InputRouting.model_json_schema(),
             )
-            response = await self._generate(request)
-            routing = InputRouting.model_validate(response.payload)
+            routing = await self._validated(request, InputRouting)
             routing.check_session(session)
             self.observer.emit("decision", data={"routing": routing})
             return routing
+
+    @staticmethod
+    def _update_questions(session: IntentSession, updates: list[QuestionUpdate]) -> IntentSession:
+        items = {item.question_id: item for item in session.clarification_items}
+        pending_ids = {item.question_id for item in items.values() if item.status == "pending"}
+        update_ids = {update.question_id for update in updates}
+        if (len(updates) != len(update_ids) or not pending_ids <= update_ids
+                or not update_ids <= set(items)):
+            raise ValueError("INCOMPLETE_QUESTION_UPDATES")
+        revised = {}
+        for update in updates:
+            item = items[update.question_id]
+            if item.status != "pending":
+                if update.status != item.status or update.evidence_quote != item.evidence_quote:
+                    raise ValueError("CANNOT_REWRITE_RESOLVED_QUESTION")
+                continue
+            if update.status == "pending":
+                if update.evidence_quote:
+                    raise ValueError("PENDING_QUESTION_HAS_ANSWER")
+                continue
+            matches = [index for index, message in enumerate(session.messages)
+                       if (update.status == "not_required" or index > item.asked_after)
+                       and message.role == "user"
+                       and update.evidence_quote.strip() and update.evidence_quote in message.content]
+            if not matches:
+                raise ValueError("UNSUPPORTED_QUESTION_ANSWER")
+            revised[item.question_id] = item.model_copy(update={
+                "status": update.status, "evidence_quote": update.evidence_quote,
+                "answer_message_index": matches[-1],
+            })
+        return session.model_copy(update={"clarification_items": tuple(
+            revised.get(item.question_id, item) for item in session.clarification_items
+        )})
+
+    @staticmethod
+    def _check_reference_review(ambiguous, review: ClarityReview) -> None:
+        expected = {ref.expression for ref in ambiguous}
+        if len(review.references) != len(expected) or {
+            ref.expression for ref in review.references
+        } != expected:
+            raise ValueError("INVALID_CLARITY_REVIEW_REFERENCES")
 
     async def _generate(self, request: ModelRequest):
         """Retry transient transport failures within one request's total time budget."""
@@ -287,6 +812,100 @@ class IntentRecognizer:
             raise ModelCallError(
                 "MODEL_TIMEOUT", "Intent model request timed out", retryable=True
             ) from exc
+
+    async def _validated(self, request: ModelRequest, schema, *, validate=None):
+        """One JSON/schema repair within the original deadline and original requirements."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + request.timeout_seconds
+        try:
+            async with asyncio.timeout(request.timeout_seconds):
+                for attempt in range(2):
+                    try:
+                        response = await self._generate(
+                            replace(request, timeout_seconds=max(0, deadline - loop.time()))
+                        )
+                        result = schema.model_validate(response.payload)
+                        if validate is not None:
+                            checked = validate(result)
+                            if checked is not None:
+                                result = checked
+                        return result
+                    except ModelCallError as error:
+                        if attempt or error.code not in {"MODEL_RESPONSE_INVALID", "MODEL_RESPONSE_TRUNCATED"}:
+                            raise
+                        if error.code == "MODEL_RESPONSE_TRUNCATED":
+                            expanded = expanded_output_budget(request.max_output_tokens, self.model)
+                            if expanded <= request.max_output_tokens:
+                                raise
+                            self.observer.emit(
+                                "model.output_budget_expanded",
+                                data={"model_role": request.role,
+                                      "previous_budget": request.max_output_tokens,
+                                      "max_output_tokens": expanded, "next_attempt": 2},
+                            )
+                            request = replace(request, max_output_tokens=expanded)
+                        previous_response = error.raw_response
+                        errors = [{"type": error.code}]
+                        syntax = deepcopy(error.details.get("json_syntax"))
+                        if syntax:
+                            errors[0]["json_syntax"] = syntax
+                            if syntax.get("message") == "Extra data" and isinstance(
+                                previous_response, str
+                            ):
+                                try:
+                                    raw = previous_response.lstrip()
+                                    root, end = json.JSONDecoder().raw_decode(raw)
+                                except ValueError:
+                                    pass
+                                else:
+                                    suffix = raw[end:].strip()
+                                    if isinstance(root, dict) and suffix and set(suffix) <= {"}", "]"}:
+                                        # Feedback only: the invalid response is never accepted.
+                                        # The model must produce a fresh, strictly valid response.
+                                        syntax["complete_root"] = root
+                                        syntax["unexpected_suffix"] = suffix
+                    except ValidationError as error:
+                        if attempt:
+                            raise
+                        errors = [
+                            {
+                                "path": list(item["loc"]),
+                                "type": item["type"],
+                                "message": item["msg"],
+                            }
+                            for item in error.errors(include_input=False, include_url=False)
+                        ]
+                        previous_response = response.payload
+                    except ValueError as error:
+                        # Boundary validators below emit contract codes only.
+                        if attempt:
+                            raise ModelCallError(
+                                "MODEL_RESPONSE_INVALID", "Intent evidence coverage is invalid",
+                                details={"contract": str(error)},
+                            ) from error
+                        errors = [{"type": str(error)}]
+                        previous_response = response.payload
+                    self.observer.emit(
+                        "model.schema_repair",
+                        data={"model_role": request.role, "errors": errors, "next_attempt": 2},
+                    )
+                    request = replace(
+                        request,
+                        task_instruction=request.task_instruction + STRUCTURE_REPAIR_INSTRUCTION,
+                        input_data={
+                            "original_input": request.input_data,
+                            "previous_response": (previous_response[:4096]
+                                if isinstance(previous_response, str) and len(previous_response) > 4096
+                                else previous_response),
+                            "previous_response_truncated": isinstance(previous_response, str)
+                                and len(previous_response) > 4096,
+                            "validation_errors": errors,
+                        },
+                    )
+        except TimeoutError as error:
+            raise ModelCallError(
+                "MODEL_TIMEOUT", "Intent schema repair timed out", retryable=True
+            ) from error
 
     @staticmethod
     def prepare_session(
@@ -339,32 +958,46 @@ class IntentRecognizer:
         return updated
 
     async def _respond(self, state: IntentState) -> dict:
-        session = state["session"]
-        # A direct reply cannot fabricate an unresolved, necessary history reference.
-        guard = (
-            self._memory_clarification(state) if "question" in session.routing.input_types else None
-        )
-        if guard:
-            return guard
+        inputs = self._model_inputs(state)
         request = ModelRequest(
             role="intent_response",
             system_instruction=DIRECT_RESPONSE_INSTRUCTION,
-            task_instruction="直接回应本轮输入；必要信息缺失时提出简短澄清。",
-            input_data=self._model_inputs(state),
+            task_instruction="直接回应本轮输入；必要信息缺失时提出简短澄清。" + CLARITY_INSTRUCTION,
+            input_data=inputs,
             output_schema=DirectAssessment.model_json_schema(),
         )
-        response = await self._generate(request)
-        return {"decision": DirectAssessment.model_validate(response.payload).decision}
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + request.timeout_seconds
+        assessment = await self._validated(request, DirectAssessment)
+        memory = state.get("memory_context") or {}
+        if any(memory.get(layer) for layer in ("m1", "m2", "details")):
+            assessment = await self._validated(
+                replace(
+                    request,
+                    role="intent_response_review",
+                    task_instruction=DIRECT_RESPONSE_REVIEW_INSTRUCTION,
+                    input_data={"original_input": inputs, "draft": assessment.model_dump(mode="json")},
+                    timeout_seconds=max(0, deadline - loop.time()),
+                    output_schema=ReplyReview.model_json_schema(),
+                ),
+                ReplyReview,
+                validate=lambda result: self._resolve_review(inputs, assessment, result),
+            )
+            self.observer.emit("intent.evidence_coverage", data={
+                "stage": "reply", "coverage": assessment.evidence_coverage,
+            })
+        return {"decision": assessment.decision}
 
     @staticmethod
     def _finish_reply(state: IntentState) -> dict:
         session = state["session"]
+        if session.questions:
+            raise ValueError("UNRESOLVED_QUESTIONS_BLOCK_RESPONSE")
         answer = state["decision"].answer
         return {
             "session": session.model_copy(
                 update={
                     "reply": answer,
-                    "questions": (),
                     "messages": (*session.messages, Message(role="assistant", content=answer)),
                 }
             )
@@ -378,7 +1011,10 @@ class IntentRecognizer:
             "session": session.model_copy(
                 update={
                     "reply": answer,
-                    "questions": (),
+                    "clarification_items": tuple(item.model_copy(update={
+                        "status": "withdrawn", "evidence_quote": session.messages[-1].content,
+                        "answer_message_index": len(session.messages) - 1,
+                    }) if item.status == "pending" else item for item in session.clarification_items),
                     "messages": (*session.messages, Message(role="assistant", content=answer)),
                 }
             )
@@ -393,20 +1029,82 @@ class IntentRecognizer:
             "timezone": session.timezone,
             "time_context": session.time_context(),
             "routing": session.routing.model_dump(mode="json"),
+            "clarification_items": [item.model_dump(mode="json")
+                                    for item in session.clarification_items],
         }
         if state.get("memory_context") is not None:
             inputs["memory"] = state["memory_context"]
+            inputs["evidence_to_consider"] = IntentRecognizer._evidence_items(inputs["memory"])
+        if state.get("clarity") is not None:
+            inputs["clarity"] = state["clarity"].model_dump(mode="json")
         return inputs
+
+    @staticmethod
+    def _evidence_items(memory: dict) -> list[dict]:
+        """Audit distinct, sourced user evidence without duplicating full records."""
+        items = {}
+        for layer in ("m1", "m2"):
+            for hit in memory.get(layer, []):
+                record = hit.get("memory", {})
+                mid = record.get("memory_id")
+                if not mid or hit.get("relevance") != "relevant":
+                    continue
+                if not any(s.get("source_role") == "user" and s.get("quote")
+                           for s in record.get("sources", [])):
+                    continue
+                items[mid] = {"evidence_id": mid, "text": record.get("text", ""),
+                              "layer": layer}
+        for hit in memory.get("details", []):
+            source = hit.get("source", {})
+            if source.get("event_id") and source.get("source_role") == "user":
+                key = f"{source['event_id']}:{source.get('pointer', '')}"
+                items[key] = {"evidence_id": key, "text": hit.get("text", ""), "layer": "m3"}
+        return list(items.values())
+
+    @staticmethod
+    def _resolve_review(inputs, draft, review):
+        result = review.root
+        if isinstance(result, AcceptedDraft):
+            if isinstance(draft.decision, Ready):
+                goal = draft.decision.goal.model_copy(update={
+                    "evidence_coverage": result.evidence_coverage,
+                })
+                result = draft.model_copy(update={
+                    "decision": draft.decision.model_copy(update={"goal": goal}),
+                })
+            else:
+                result = draft.model_copy(update={"evidence_coverage": result.evidence_coverage})
+        IntentRecognizer._check_evidence_coverage(inputs, result)
+        return result
+
+    @staticmethod
+    def _check_evidence_coverage(inputs: dict, assessment) -> None:
+        if isinstance(assessment.decision, Clarification):
+            return
+        if isinstance(assessment.decision, Ready):
+            goal = assessment.decision.goal
+            uses = goal.evidence_coverage
+            output = "\n".join([goal.objective, *goal.success_criteria, *goal.constraints])
+        else:
+            uses = assessment.evidence_coverage
+            output = assessment.decision.answer
+        expected = {item["evidence_id"] for item in inputs.get("evidence_to_consider", [])}
+        if [use.evidence_id for use in uses] and not expected:
+            raise ValueError("UNSUPPORTED_EVIDENCE_COVERAGE")
+        if len(uses) != len(expected) or {use.evidence_id for use in uses} != expected:
+            raise ValueError("INCOMPLETE_EVIDENCE_COVERAGE")
+        for use in uses:
+            if use.disposition == "covered" and (
+                not use.output_quote.strip() or use.output_quote not in output
+            ):
+                raise ValueError("COVERAGE_QUOTE_NOT_IN_DELIVERABLE")
 
     @staticmethod
     def _memory_clarification(state: IntentState) -> dict | None:
         memory = state.get("memory_context")
         if (
             memory
-            and (
-                memory.get("coverage", {}).get("requires_history")
-                or memory.get("history", {}).get("status") in {"ambiguous", "unavailable"}
-            )
+            and (memory.get("coverage", {}).get("requires_history"))
             and memory.get("history", {}).get("status") != "selected"
         ):
             from .prompts import HISTORY_CLARIFICATION
@@ -431,9 +1129,6 @@ class IntentRecognizer:
         return None
 
     async def _assess(self, state: IntentState) -> dict:
-        guard = self._memory_clarification(state)
-        if guard:
-            return guard
         inputs = self._model_inputs(state)
         request = ModelRequest(
             role="intent",
@@ -442,8 +1137,29 @@ class IntentRecognizer:
             input_data=inputs,
             output_schema=Assessment.model_json_schema(),
         )
-        response = await self._generate(request)
-        assessment = Assessment.model_validate(response.payload)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + request.timeout_seconds
+        assessment = await self._validated(request, Assessment)
+        memory = state.get("memory_context") or {}
+        if isinstance(assessment.decision, Ready) and any(
+            memory.get(layer) for layer in ("m1", "m2", "details")
+        ):
+            assessment = await self._validated(
+                replace(
+                    request,
+                    role="intent_goal_review",
+                    task_instruction=GOAL_REVIEW_INSTRUCTION,
+                    input_data={**inputs, "draft": assessment.model_dump(mode="json")},
+                    timeout_seconds=max(0, deadline - loop.time()),
+                    output_schema=GoalReview.model_json_schema(),
+                ),
+                GoalReview,
+                validate=lambda result: self._resolve_review(inputs, assessment, result),
+            )
+            self.observer.emit("intent.evidence_coverage", data={
+                "stage": "goal", "coverage": assessment.decision.goal.evidence_coverage
+                if isinstance(assessment.decision, Ready) else [],
+            })
         return {"decision": assessment.decision}
 
     @staticmethod
@@ -456,18 +1172,38 @@ class IntentRecognizer:
     @staticmethod
     def _clarify(state: IntentState) -> dict:
         session = state["session"]
-        questions = tuple(state["decision"].questions)
+        items = list(session.clarification_items)
+        clarity = state.get("clarity")
+        identified = {q.text: q.question_id for q in clarity.questions if q.question_id} if clarity else {}
+        for text in dict.fromkeys(state["decision"].questions):
+            question_id = identified.get(text)
+            if question_id:
+                items = [item.model_copy(update={"text": text})
+                         if item.question_id == question_id else item for item in items]
+                continue
+            if not any(item.text == text and item.status == "pending" for item in items):
+                items.append(ClarificationItem(
+                    question_id=f"q{len(items) + 1}", text=text, asked_after=len(session.messages),
+                ))
+        requested = tuple(item.question_id for text in state["decision"].questions for item in items
+                          if item.status == "pending" and item.text == text)
+        session = session.model_copy(update={
+            "clarification_items": tuple(items), "displayed_question_ids": requested[:3],
+        })
+        questions = session.questions
         messages = (
             *session.messages,
             Message(role="assistant", content="\n".join(questions)),
         )
         return {
-            "session": session.model_copy(update={"messages": messages, "questions": questions})
+            "session": session.model_copy(update={"messages": messages})
         }
 
     @staticmethod
     def _build_goal(state: IntentState) -> dict:
         session = state["session"]
+        if session.questions:
+            raise ValueError("UNRESOLVED_QUESTIONS_BLOCK_EXECUTION")
         decision = state["decision"]
         draft = decision.goal
         context = {
@@ -477,11 +1213,18 @@ class IntentRecognizer:
             "execution_instruction": GOAL_CONTEXT_INSTRUCTION,
             "input_routing": session.routing.model_dump(mode="json"),
             "constraints": draft.constraints,
+            "supporting_facts": draft.supporting_facts,
+            "evidence_coverage": [use.model_dump(mode="json") for use in draft.evidence_coverage],
             "user_context": session.user_context,
             "conversation": [m.model_dump(mode="json") for m in session.messages],
+            "clarification_items": [item.model_dump(mode="json")
+                                    for item in session.clarification_items],
         }
         if state.get("memory_context") is not None:
             context["memory"] = state["memory_context"]
+        clarity = state.get("clarity")
+        if clarity and clarity.external_information_needed:
+            context["information_to_verify"] = clarity.external_information_needed
         goal = GoalSpec(
             request_id=session.request_id,
             objective=draft.objective,
@@ -490,7 +1233,8 @@ class IntentRecognizer:
                 for index, description in enumerate(draft.success_criteria, start=1)
             ],
             inputs=draft.inputs,
+            input_schema=draft.input_schema,
             output_schema=draft.output_schema,
             context=context,
         )
-        return {"session": session.model_copy(update={"questions": (), "goal": goal})}
+        return {"session": session.model_copy(update={"goal": goal})}

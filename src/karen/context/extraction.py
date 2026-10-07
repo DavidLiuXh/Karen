@@ -3,14 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import TypedDict
 
-from dynamic_graph.models.client import ModelClient, ModelRequest
+from dynamic_graph.models.client import (
+    ModelCallError,
+    ModelClient,
+    ModelRequest,
+    expanded_output_budget,
+)
 from langgraph.graph import END, START, StateGraph
+from pydantic import ValidationError
 
-from .contracts import Extraction, Scope, StoredMemory, Verification, utcnow
-from .prompts import EXTRACT, MEMORY_SYSTEM, PROMPT_VERSION, VERIFY
+from .contracts import Extraction, FactCandidate, Scope, StoredMemory, Verification, utcnow
+from .prompts import EXTRACT, MEMORY_SYSTEM, PROMPT_VERSION, REPAIR, VERIFY
 from .storage import Storage, digest, encode, stable_id
+
+
+def direct_fact_evidence(event, sources):
+    return event.event_type in {"user_message", "task_result"} and any(
+        source.event_id == event.event_id and source.source_role in {"user", "tool"}
+        for source in sources
+    )
 
 
 class ExtractionState(TypedDict, total=False):
@@ -21,6 +35,12 @@ class ExtractionState(TypedDict, total=False):
     existing: dict[str, StoredMemory]
     revision: int
     model_info: dict
+
+
+class MemoryValidationError(ValueError):
+    def __init__(self, code, **details):
+        super().__init__(code)
+        self.feedback = {"code": code, **details}
 
 
 class Extractor:
@@ -59,7 +79,7 @@ class Extractor:
         graph.add_edge("commit", END)
         self.graph = graph.compile()
 
-    async def call(self, role, instruction, inputs, schema):
+    async def call(self, role, instruction, inputs, schema, *, validate=None):
         await self.background_ready()
         request = ModelRequest(
             role=role,
@@ -67,12 +87,103 @@ class Extractor:
             task_instruction=instruction,
             input_data=inputs,
             output_schema=schema.model_json_schema(),
-            max_output_tokens=4096,
+            max_output_tokens=8192,
             timeout_seconds=30,
         )
+        deadline = asyncio.get_running_loop().time() + request.timeout_seconds
         async with asyncio.timeout(request.timeout_seconds):
-            response = await self.model.generate(request)
-        return schema.model_validate(response.payload), response.response_metadata.get("model")
+            for attempt in range(2):
+                payload = None
+                try:
+                    await self.background_ready()
+                    response = await self.model.generate(
+                        replace(
+                            request,
+                            timeout_seconds=max(0, deadline - asyncio.get_running_loop().time()),
+                        )
+                    )
+                    payload = response.payload
+                    result = schema.model_validate(payload)
+                    if validate is not None:
+                        result = await validate(result)
+                    return result, response.response_metadata.get("model")
+                except ModelCallError as error:
+                    if error.code not in {"MODEL_RESPONSE_INVALID", "MODEL_RESPONSE_TRUNCATED"}:
+                        raise
+                    if attempt:
+                        # Content repair is exhausted. Do not rerun the identical
+                        # extraction job as though this were a transport outage.
+                        raise ModelCallError(error.code, "Memory content repair exhausted",
+                            usage=error.usage, provider_request_id=error.provider_request_id,
+                            details=error.details) from error
+                    if error.code == "MODEL_RESPONSE_TRUNCATED":
+                        expanded = expanded_output_budget(request.max_output_tokens, self.model)
+                        if expanded <= request.max_output_tokens:
+                            raise ModelCallError(
+                                error.code, "Memory output budget cannot expand",
+                                usage=error.usage, provider_request_id=error.provider_request_id,
+                                details=error.details,
+                            ) from error
+                        self.observer.emit(
+                            "model.output_budget_expanded",
+                            data={"model_role": request.role,
+                                  "previous_budget": request.max_output_tokens,
+                                  "max_output_tokens": expanded, "next_attempt": 2},
+                        )
+                        request = replace(request, max_output_tokens=expanded)
+                    payload = error.raw_response
+                    feedback = {"code": error.code}
+                    if error.details.get("json_syntax"):
+                        feedback["json_syntax"] = error.details["json_syntax"]
+                except ValidationError as error:
+                    if attempt:
+                        raise ModelCallError("MODEL_RESPONSE_INVALID",
+                            "Memory schema repair exhausted",
+                            details={"validation": [{"path": list(e["loc"]), "type": e["type"]}
+                                     for e in error.errors(include_input=False, include_url=False)]},
+                        ) from error
+                    feedback = [
+                        {"path": list(e["loc"]), "type": e["type"]}
+                        for e in error.errors(include_input=False, include_url=False)
+                    ]
+                except ValueError as error:
+                    if payload is None:
+                        raise
+                    # validate callbacks emit contract codes, never provider exception text.
+                    feedback = getattr(error, "feedback", {"code": str(error)})
+                    if attempt:
+                        raise ModelCallError("MODEL_RESPONSE_INVALID",
+                            "Memory evidence repair exhausted", details={"validation": feedback},
+                        ) from error
+                repair_inputs = dict(inputs)
+                # Only the new event is extracted. On content failure, reduce
+                # preceding locating context instead of resubmitting twelve full
+                # events and a potentially huge failed response. Source validation
+                # still checks original persisted events; no partial output is accepted.
+                if role == "memory_extract" and len(inputs.get("events", [])) > 4:
+                    new_id = inputs["new_event_id"]
+                    earlier = [e for e in inputs["events"] if e["event_id"] != new_id]
+                    current = [e for e in inputs["events"] if e["event_id"] == new_id]
+                    repair_inputs["events"] = [*earlier[-3:], *current]
+                previous = encode(payload) if isinstance(payload, (dict, list)) else payload
+                if isinstance(previous, str) and len(previous) > 4096:
+                    payload = previous[:4096]
+                    repair_inputs["previous_response_truncated"] = True
+                self.observer.emit(
+                    "memory.model_repair",
+                    data={"model_role": role, "validation_error": feedback, "next_attempt": 2,
+                          "original_events": len(inputs.get("events", [])),
+                          "repair_events": len(repair_inputs.get("events", []))},
+                )
+                request = replace(
+                    request,
+                    task_instruction=instruction + REPAIR,
+                    input_data={
+                        **repair_inputs,
+                        "previous_response": payload,
+                        "validation_error": feedback,
+                    },
+                )
 
     async def extract(self, state):
         event_id = state["event_id"]
@@ -99,27 +210,68 @@ class Extractor:
         import json
 
         info = json.loads(job["model_info"] or "{}")
-        if job["extraction"]:
-            extraction = Extraction.model_validate_json(job["extraction"])
-        else:
-            extraction, name = await self.call(
-                "memory_extract", EXTRACT, {"new_event_id": event_id, "events": inputs}, Extraction
-            )
-            ids = [c.candidate_id for c in extraction.facts]
+
+        async def checked_extraction(extraction):
+            ids = [fact.candidate_id for fact in extraction.facts]
             if len(ids) != len(set(ids)):
                 raise ValueError("DUPLICATE_CANDIDATE_ID")
-            info["extractor"] = name
-            await self.io(
-                self.storage.update_job,
-                event_id,
-                extraction=extraction.model_dump_json(),
-                model_info=encode(info),
-                derived="extracting",
+            eligible = []
+            summaries = []
+            for candidate in (*extraction.facts, *extraction.summaries):
+                # Old facts and summaries cannot be new evidence; discard them before
+                # validating quotes that will never be used for this event.
+                if not any(e.event_id == event_id for e in candidate.evidence):
+                    continue
+                sources = []
+                for evidence in candidate.evidence:
+                    try:
+                        source = await self.io(self.storage.source, evidence, allowed)
+                        sources.append(source)
+                        if source.quote != evidence.quote:
+                            self.observer.emit("memory.source_quote_restored", data={
+                                "source_event_id": evidence.event_id, "pointer": evidence.pointer,
+                                "method": "unique_markdown_bold_span",
+                            })
+                    except ValueError as error:
+                        raise MemoryValidationError(
+                            str(error), invalid_evidence=evidence.model_dump(mode="json")
+                        ) from error
+                candidate = candidate.model_copy(update={
+                    "evidence": [e.model_copy(update={"quote": s.quote})
+                                 for e, s in zip(candidate.evidence, sources, strict=True)],
+                })
+                if isinstance(candidate, FactCandidate) and direct_fact_evidence(event, sources):
+                    eligible.append(candidate)
+                elif not isinstance(candidate, FactCandidate):
+                    summaries.append(candidate)
+            return extraction.model_copy(update={"facts": eligible, "summaries": summaries})
+
+        extraction = None
+        if job["extraction"]:
+            try:
+                extraction = await checked_extraction(
+                    Extraction.model_validate_json(job["extraction"])
+                )
+            except ValueError:
+                # Older/invalid cached output is not evidence and must be regenerated.
+                await self.io(self.storage.update_job, event_id, extraction=None, verification=None)
+        if extraction is None:
+            extraction, name = await self.call(
+                "memory_extract",
+                EXTRACT,
+                {"new_event_id": event_id, "events": inputs},
+                Extraction,
+                validate=checked_extraction,
             )
-        # Validate every source before any potentially destructive verification decision.
-        for candidate in (*extraction.facts, *extraction.summaries):
-            for evidence in candidate.evidence:
-                await self.io(self.storage.source, evidence, allowed)
+            info["extractor"] = name
+        # Only validated output is cached. Retry cannot be poisoned by an invalid source/status.
+        await self.io(
+            self.storage.update_job,
+            event_id,
+            extraction=extraction.model_dump_json(),
+            model_info=encode(info),
+            derived="extracting",
+        )
         return {"extraction": extraction, "allowed_events": allowed, "model_info": info}
 
     async def verify(self, state):
@@ -156,27 +308,31 @@ class Extractor:
                 existing.update({m.memory_id: m for m in similar})
             except Exception:
                 info["matching"] = "bm25_and_exact_keys"
+        inputs = {
+            "candidates": [c.model_dump(mode="json") for c in facts],
+            "events": [
+                bounded_data(e.model_dump(mode="json")) for e in state["allowed_events"].values()
+            ],
+            "existing": [m.context() for m in existing.values()],
+        }
+
+        async def checked_verification(verification):
+            if sorted(d.candidate_id for d in verification.decisions) != sorted(
+                f.candidate_id for f in facts
+            ):
+                raise ValueError("INCOMPLETE_VERIFICATION")
+            self.build_changes(
+                {**state, "verification": verification, "existing": existing, "model_info": info}
+            )
+            return verification
+
         if facts:
             verification, name = await self.call(
-                "memory_verify",
-                VERIFY,
-                {
-                    "candidates": [c.model_dump(mode="json") for c in facts],
-                    "events": [
-                        bounded_data(e.model_dump(mode="json"))
-                        for e in state["allowed_events"].values()
-                    ],
-                    "existing": [m.model_dump(mode="json") for m in existing.values()],
-                },
-                Verification,
+                "memory_verify", VERIFY, inputs, Verification, validate=checked_verification
             )
             info["verifier"] = name
         else:
             verification = Verification(decisions=[])
-        if sorted(d.candidate_id for d in verification.decisions) != sorted(
-            f.candidate_id for f in facts
-        ):
-            raise ValueError("INCOMPLETE_VERIFICATION")
         await self.io(
             self.storage.update_job,
             state["event_id"],
@@ -209,9 +365,7 @@ class Extractor:
                 raise ValueError("UNVERIFIED_PROJECT_SCOPE")
             sources = [self.storage.source(e, state["allowed_events"]) for e in candidate.evidence]
             # Assistant echoes and goals cannot create durable personal assertions.
-            if event.event_type not in {"user_message", "task_result"} or not any(
-                s.event_id == event.event_id and s.source_role in {"user", "tool"} for s in sources
-            ):
+            if not direct_fact_evidence(event, sources):
                 continue
             if len(decision.matched_ids) != len(set(decision.matched_ids)):
                 raise ValueError("DUPLICATE_MATCHED_ID")
@@ -235,13 +389,47 @@ class Extractor:
                 raise ValueError("MISSING_FACT_MATCH")
             if decision.operation == "new" and matched:
                 raise ValueError("NEW_FACT_CANNOT_REUSE_MATCHED_SLOT")
-            if decision.operation == "new" and any(
-                old.fact_key == candidate.fact_key
-                and old.subject == candidate.subject
-                and old.scope == candidate.scope
-                for old in existing.values()
+            if decision.operation == "new":
+                matching_facts = [
+                    old for old in existing.values()
+                    if old.fact_key == candidate.fact_key
+                    and old.subject == candidate.subject
+                    and old.scope == candidate.scope
+                ]
+                if matching_facts:
+                    raise MemoryValidationError(
+                        "EXISTING_FACT_NOT_MATCHED",
+                        candidate_id=candidate.candidate_id,
+                        matching_facts=[
+                            {
+                                "memory_id": old.memory_id,
+                                "fact_key": old.fact_key,
+                                "state": old.state,
+                                "value": old.value,
+                            }
+                            for old in matching_facts
+                        ],
+                    )
+            if decision.operation == "coexist" and any(
+                old.fact_key != matched[0].fact_key
+                or old.state != "active"
+                or digest(old.value) == digest(candidate.value)
+                for old in matched
             ):
-                raise ValueError("EXISTING_FACT_NOT_MATCHED")
+                raise MemoryValidationError(
+                    "INVALID_COEXISTING_FACT",
+                    candidate_id=candidate.candidate_id,
+                    matched_facts=[
+                        {
+                            "memory_id": old.memory_id,
+                            "fact_key": old.fact_key,
+                            "state": old.state,
+                            "value": old.value,
+                            "same_value": digest(old.value) == digest(candidate.value),
+                        }
+                        for old in matched
+                    ],
+                )
             if decision.operation in {"replace", "correct"} and any(
                 max(s.occurred_at for s in old.sources) > event.occurred_at for old in matched
             ):
@@ -249,7 +437,12 @@ class Extractor:
                 raise ValueError("STALE_FACT_CHANGE")
             if decision.operation == "reinforce":
                 for old in matched:
-                    if digest(old.value) != digest(candidate.value):
+                    value = (
+                        decision.canonical_value
+                        if decision.canonical_value is not None
+                        else candidate.value
+                    )
+                    if digest(old.value) != digest(value):
                         raise ValueError("REINFORCE_DIFFERENT_VALUE")
                     refs = {(s.event_id, s.pointer): s for s in (*old.sources, *sources)}
                     update = {"sources": list(refs.values())}
@@ -307,20 +500,6 @@ class Extractor:
             sources = [self.storage.source(e, state["allowed_events"]) for e in summary.evidence]
             if not any(s.event_id == event.event_id for s in sources):
                 continue
-            if any(
-                a.get("status")
-                not in {
-                    None,
-                    "requested",
-                    "planned",
-                    "attempted",
-                    "completed",
-                    "failed",
-                    "cancelled",
-                }
-                for a in summary.actions
-            ):
-                raise ValueError("INVALID_ACTION_STATUS")
             mid = stable_id(event.event_id, "m2", str(index))
             changes[mid] = StoredMemory(
                 memory_id=mid,

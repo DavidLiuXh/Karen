@@ -59,6 +59,30 @@ def pointer_value(value, pointer: str):
     return value
 
 
+def restore_bold_quote(text: str, quote: str) -> str:
+    """Restore a unique continuous source span when only Markdown bold was omitted."""
+    if len(text) > 32 * 1024:
+        raise ValueError("INVALID_SOURCE_QUOTE")
+    protected = [m.span() for m in re.finditer(r"```[\s\S]*?```|`[^`\n]*`", text)]
+    removed = set()
+    for match in re.finditer(r"(?<!\w)\*\*(?=\S)([^\n]+?)(?<=\S)\*\*(?!\w)", text):
+        if any(start < match.end() and end > match.start() for start, end in protected):
+            continue
+        removed.update((match.start(), match.start() + 1, match.end() - 2, match.end() - 1))
+    positions = [index for index in range(len(text)) if index not in removed]
+    plain = "".join(text[index] for index in positions)
+    start = plain.find(quote)
+    if not quote or start < 0 or plain.find(quote, start + 1) >= 0:
+        raise ValueError("INVALID_SOURCE_QUOTE")
+    first = positions[start]
+    last = positions[start + len(quote) - 1] + 1
+    while first > 0 and first - 1 in removed:
+        first -= 1
+    while last < len(text) and last in removed:
+        last += 1
+    return text[first:last]
+
+
 def text_fields(value, prefix=""):
     if isinstance(value, str):
         yield prefix, value
@@ -357,15 +381,18 @@ class Storage:
         if event is None or "/memory" in evidence.pointer:
             raise ValueError("INVALID_SOURCE_EVENT")
         value = pointer_value(event.model_dump(mode="json"), evidence.pointer)
-        if not isinstance(value, str) or evidence.quote not in value:
+        if not isinstance(value, str):
             raise ValueError("INVALID_SOURCE_QUOTE")
-        return self.source_ref(event, evidence.pointer, evidence.quote)
+        quote = evidence.quote
+        if quote not in value:
+            quote = restore_bold_quote(value, quote)
+        return self.source_ref(event, evidence.pointer, quote)
 
     def source_ref(self, event: ContextEvent, pointer: str, quote: str = "") -> SourceRef:
         """Assign provenance from the captured event, never model-generated metadata."""
         with self.connection() as conn:
             row = conn.execute(
-                "SELECT relative_file FROM events WHERE event_id=?", (event.event_id,)
+                "SELECT relative_file, sequence FROM events WHERE event_id=?", (event.event_id,)
             ).fetchone()
         role = {"user_message": "user", "task_result": "tool"}.get(event.event_type, "assistant")
         return SourceRef(
@@ -374,6 +401,7 @@ class Storage:
             quote=quote,
             source_role=role,
             occurred_at=event.occurred_at,
+            sequence=row[1] if row else None,
             relative_file=row[0] if row else None,
             storage_state="persisted" if row else "queued",
         )

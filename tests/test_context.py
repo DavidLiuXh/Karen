@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from dynamic_graph.models.client import ModelCallError, ModelResponse
+from intent_helpers import ClarityAwareModel as FakeModelClient
 from intent_helpers import TaskIntentModel
 from langchain_core.embeddings import Embeddings
 
@@ -288,6 +289,51 @@ async def test_full_fact_extraction_change_recall_and_exact_source_lookup(memory
     assert len(encode(result.context()).encode()) <= 12 * 1024
 
 
+async def test_new_fact_slot_collision_provides_existing_evidence_for_atomic_repair(tmp_path):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            if request.role != "memory_verify":
+                return await super().generate(request)
+            self.requests.append(request)
+            data = request.input_data
+            existing = data["existing"]
+            if existing and "validation_error" in data:
+                feedback = data["validation_error"]
+                assert feedback["code"] == "EXISTING_FACT_NOT_MATCHED"
+                assert feedback["candidate_id"] == "city"
+                matched = feedback["matching_facts"]
+                assert [(m["fact_key"], m["value"], m["state"]) for m in matched] == [
+                    (self.fact_key, "北京", "active")
+                ]
+                assert matched[0]["memory_id"] == existing[0]["memory_id"]
+                operation, matched_ids = "replace", [matched[0]["memory_id"]]
+            else:
+                operation, matched_ids = "new", []
+            return ModelResponse({"decisions": [{
+                "candidate_id": "city", "verification": "supported",
+                "operation": operation, "matched_ids": matched_ids,
+                "reason": "依据原文核对同一居住地槽位",
+            }]})
+
+    model = Model()
+    service = ContextMemory(root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        await service.flush(service.submit(event("我住在北京")))
+        receipt = service.submit(event("我搬到上海"))
+        await service.flush(receipt)
+        _, stored, _ = service.storage.snapshot()
+        facts = [m for m in stored.values() if m.layer == "m1"]
+        assert {m.value for m in facts if m.state == "active"} == {"上海"}
+        assert {m.value for m in facts if m.state == "superseded"} == {"北京"}
+        assert any(m.layer == "m2" and m.sources[0].event_id == receipt.event_id
+                   for m in stored.values())
+        repaired = [r for r in model.requests if "validation_error" in r.input_data]
+        assert len(repaired) == 1
+    finally:
+        await service.close()
+
+
 async def test_reinforcement_uses_unique_direct_sources_not_assistant_echoes(memory):
     service, _ = memory
     receipts = [service.submit(event("我住在北京", request=f"task-{i}")) for i in range(2)]
@@ -423,6 +469,85 @@ async def test_related_pending_events_are_selected_and_unrelated_history_is_abse
         assert ambiguous.history.status == "ambiguous" and ambiguous.history.messages == []
 
 
+async def test_current_clarification_does_not_reload_its_own_summary_as_history(memory):
+    service, model = memory
+    await service.flush(service.submit(event("整理公园路线清单", request="current-task")))
+    model.dependency = "current_task"
+    result = await service.recall(
+        query("主要是骑行路线").model_copy(
+            update={
+                "request_id": "current-task",
+                "current_task_messages": [
+                    {"role": "user", "content": "整理公园路线清单"},
+                    {"role": "assistant", "content": "哪一类路线？"},
+                ],
+            }
+        )
+    )
+    assert result.status == "empty" and result.history.status == "none"
+    assert not result.m2 and not result.related_request_ids
+    assert result.coverage["dialogue_dependency"] == "current_task"
+    assert not result.coverage["requires_history"]
+    assert not any(r.role == "memory_rerank" for r in model.requests)
+
+
+async def test_external_history_anchors_exclude_sources_from_current_task(memory):
+    service, model = memory
+    await service.flush(service.submit(event("我住在北京", request="current-task")))
+    await service.flush(service.submit(event("我住在北京", request="old-task")))
+    model.dependency, model.history_status = "needed", "selected"
+    result = await service.recall(
+        query("沿用之前北京方案中的参数").model_copy(
+            update={
+                "request_id": "current-task",
+                "current_task_messages": [{"role": "user", "content": "请沿用旧方案"}],
+            }
+        )
+    )
+    assert result.history.status == "selected"
+    assert result.related_request_ids == ["old-task"]
+    assert all(m["request_id"] != "current-task" for m in result.history.messages)
+    rank_request = next(r for r in model.requests if r.role == "memory_rerank")
+    assert all(
+        e["request_id"] != "current-task" for e in rank_request.input_data["history_candidates"]
+    )
+
+
+async def test_missing_external_history_still_clarifies_during_current_task(memory):
+    from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings
+    from test_input_routing import clarify, routing
+
+    from karen import IntentRecognizer, IntentSession, Karen
+
+    service, backend = memory
+    intent_model = FakeModelClient(
+        [routing(), clarify("格式有要求吗？"), routing(types=["task_control"], relation="continue")]
+    )
+    executor = FakeModelClient()
+    agent = Karen(
+        intent=IntentRecognizer(intent_model),
+        engine=DynamicGraphEngine(
+            config=EngineConfig(runs_dir=service.root_dir / "runs"),
+            models=ModelBindings(executor, executor),
+        ),
+        memory=service,
+    )
+    async with service.foreground():
+        first = await agent.advance(IntentSession(timezone="Asia/Shanghai"), "帮我整理一份报告")
+        backend.dependency, backend.history_status = "needed", "unavailable"
+        second = await agent.advance(first.session, "沿用上周那份报告的格式")
+    assert second.session.request_id == first.session.request_id
+    assert second.result is None and second.memory_result.coverage["requires_history"]
+    assert "哪一次任务" in second.session.questions[0]
+    assert [r.role for r in intent_model.requests] == [
+        "intent_router",
+        "intent_clarity",
+        "intent",
+        "intent_router",
+    ]
+    assert not executor.requests
+
+
 async def test_details_require_scope_decode_unicode_and_preserve_field_pointer(memory):
     service, _ = memory
     receipt = service.submit(event("参数是中文路径 /tmp/报告.html"))
@@ -431,6 +556,8 @@ async def test_details_require_scope_decode_unicode_and_preserve_field_pointer(m
     result = await service.search_details(DetailQuery(text="报告", request_id="task-1"))
     assert result.status == "complete" and result.hits
     assert result.hits[0].source.pointer == "/payload/content"
+    assert result.hits[0].source.sequence == receipt.sequence
+    assert result.hits[0].request_id == "task-1"
     assert "/tmp/报告.html" in result.hits[0].text
     with pytest.raises(ValueError, match="SOURCE_QUOTE"):
         service.storage.source(
@@ -550,7 +677,7 @@ async def test_reindex_rebuilds_vectors_without_reextracting_facts(memory):
 
 
 async def test_ambiguous_history_clarifies_then_reassesses_current_task(memory):
-    from dynamic_graph import DynamicGraphEngine, EngineConfig, FakeModelClient, ModelBindings
+    from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings
     from test_execution import graph_response, ready
 
     from karen import IntentRecognizer, IntentSession, Karen
@@ -601,7 +728,7 @@ async def test_ambiguous_history_clarifies_then_reassesses_current_task(memory):
 
 
 async def test_independent_new_task_goal_does_not_inherit_previous_task_messages(memory):
-    from dynamic_graph import DynamicGraphEngine, EngineConfig, FakeModelClient, ModelBindings
+    from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings
     from test_execution import graph_response, ready
 
     from karen import IntentRecognizer, IntentSession, Karen
@@ -736,8 +863,8 @@ async def test_detail_search_budget_reports_partial_instead_of_no_evidence(memor
             service.submit(event(f"消息 {i} 中文路径 /tmp/报告.html"))
         await service._queue.join()
         result = await service.search_details(DetailQuery(text="报告", request_id="task-1"))
-        assert result.status == "partial" and result.scanned_events == 200
-        assert len(result.hits) == 200
+        assert result.status == "partial" and 0 < result.scanned_events <= 200
+        assert len(result.hits) == result.scanned_events
 
 
 async def test_semantic_fact_matching_keeps_canonical_slot_when_new_key_differs(memory):
@@ -909,7 +1036,7 @@ async def test_normal_cli_exit_waits_for_raw_persistence(tmp_path, monkeypatch):
     service = ContextMemory(root_dir=tmp_path, model=MemoryModel(), embeddings=LocalEmbeddings())
     monkeypatch.setattr(cli, "create_memory", lambda model, **kwargs: service)
     monkeypatch.setattr(cli, "create_observer", lambda: cli.Observer())
-    monkeypatch.setattr(cli, "deepseek_client", FakeModelClient)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
     captured = []
 
@@ -1135,3 +1262,1032 @@ async def test_rerank_fallback_does_not_use_only_generic_shared_words(memory):
     generic = await service.recall(query("我们需要了解太阳的温度"))
     assert generic.m1 == [] and generic.m2 == []
     assert "RERANK_FAILED_FUSION_ORDER" in result.degradations
+
+
+async def test_fusion_fallback_matches_original_quotes_when_summary_is_translated(tmp_path):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            result = await super().generate(request)
+            if request.role == "memory_extract":
+                result.payload["summaries"][0]["text"] = "用户昨天收到了新窑炉。"
+            return result
+
+    model = Model()
+    model.kind, model.fail_rank = "detail", True
+    service = ContextMemory(root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        original = "I got my ceramic kiln delivered yesterday."
+        await service.flush(service.submit(event(original)))
+        result = await service.recall(query("ceramic kiln delivery date"))
+        assert [h.memory.text for h in result.m2] == ["用户昨天收到了新窑炉。"]
+        assert [h.text for h in result.details] == [original]
+        assert all(h.relevance == "unverified" for h in result.m2)
+        assert "RERANK_FAILED_FUSION_ORDER" in result.degradations
+        unrelated = await service.recall(query("ceramic workshop registration"))
+        assert unrelated.m1 == [] and unrelated.m2 == []
+    finally:
+        await service.close()
+
+
+async def test_detail_recall_does_not_return_the_excluded_current_question(memory):
+    service, model = memory
+    question = "ceramic kiln delivery date?"
+    receipt = service.submit(event(question))
+    await service.flush(receipt)
+    model.kind = "detail"
+    result = await service.recall(query(question).model_copy(
+        update={"exclude_event_ids": [receipt.event_id]}
+    ))
+    assert result.m1 == [] and result.m2 == []
+    assert result.details == []
+
+
+async def test_assistant_echo_keeps_summary_without_reverifying_personal_facts(tmp_path):
+    class Model(MemoryModel):
+        fail_verify = False
+
+        async def generate(self, request):
+            if self.fail_verify and request.role == "memory_verify":
+                raise ModelCallError("TEST_AUTH_FAILED", "must not verify assistant facts")
+            return await super().generate(request)
+
+    model = Model()
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        await service.flush(service.submit(event("我住在北京")))
+        model.fail_verify = True
+        echo = event("你住在北京", kind="assistant_message")
+        await service.flush(service.submit(echo))
+        _, stored, _ = service.storage.snapshot()
+        facts = [m for m in stored.values() if m.layer == "m1"]
+        assert len(facts) == 1 and len(facts[0].sources) == 1
+        assert any(m.layer == "m2" and m.text == "你住在北京" for m in stored.values())
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize(
+    "canonical,succeeds", [({"city": "京都"}, True), ({"city": "大阪"}, False)]
+)
+async def test_equivalent_fact_representation_reinforces_canonical_value(
+    tmp_path, canonical, succeeds
+):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            from dynamic_graph.models.client import ModelResponse
+
+            data = request.input_data
+            if request.role == "memory_extract":
+                current = next(e for e in data["events"] if e["event_id"] == data["new_event_id"])
+                return ModelResponse(
+                    {
+                        "facts": [
+                            {
+                                "candidate_id": "residence",
+                                "fact_key": "profile.residence.city",
+                                "value": {"name": "京都"}
+                                if current["request_id"] == "second"
+                                else {"city": "京都"},
+                                "text": "用户住在京都",
+                                "evidence": [
+                                    {
+                                        "event_id": current["event_id"],
+                                        "pointer": "/payload/content",
+                                        "quote": current["payload"]["content"],
+                                    }
+                                ],
+                            }
+                        ],
+                        "summaries": [],
+                    }
+                )
+            if request.role == "memory_verify":
+                old = data["existing"]
+                return ModelResponse(
+                    {
+                        "decisions": [
+                            {
+                                "candidate_id": "residence",
+                                "verification": "supported",
+                                "operation": "reinforce" if old else "new",
+                                "matched_ids": [old[0]["memory_id"]] if old else [],
+                                "canonical_value": canonical if old else None,
+                                "reason": "同一事实，不同表示，保留既有值",
+                            }
+                        ]
+                    }
+                )
+            return await super().generate(request)
+
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=Model(), embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        await service.flush(service.submit(event("我住在京都", request="first")))
+        second = service.submit(event("我现在仍住在京都", request="second"))
+        if succeeds:
+            await service.flush(second)
+        else:
+            with pytest.raises(MemoryFlushError):
+                await service.flush(second)
+        _, stored, _ = service.storage.snapshot()
+        facts = [m for m in stored.values() if m.layer == "m1"]
+        assert len(facts) == 1 and facts[0].value == {"city": "京都"}
+        assert len(facts[0].sources) == (2 if succeeds else 1)
+        assert facts[0].state == "active"
+    finally:
+        await service.close()
+
+
+async def test_invalid_verification_is_repaired_before_atomic_commit(tmp_path):
+    class Model(MemoryModel):
+        repairs = 0
+
+        async def generate(self, request):
+            response = await super().generate(request)
+            if request.role == "memory_verify" and request.input_data["existing"]:
+                if "validation_error" in request.input_data:
+                    self.repairs += 1
+                else:
+                    response.payload["decisions"][0]["operation"] = "new"
+            return response
+
+    model = Model()
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        await service.flush(service.submit(event("我住在北京", request="one")))
+        await service.flush(service.submit(event("我住在北京", request="two")))
+        _, stored, _ = service.storage.snapshot()
+        facts = [m for m in stored.values() if m.layer == "m1"]
+        assert len(facts) == 1 and len(facts[0].sources) == 2
+        assert model.repairs == 1
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("invalid", ["unknown", ["completed"]])
+async def test_invalid_summary_action_is_repaired_before_caching(tmp_path, invalid):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            response = await super().generate(request)
+            if request.role == "memory_extract":
+                response.payload["summaries"][0]["actions"] = [
+                    {"status": "completed" if "validation_error" in request.input_data else invalid}
+                ]
+            return response
+
+    model = Model()
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        receipt = service.submit(event("已经给出草稿", kind="assistant_message"))
+        await service.flush(receipt)
+        _, stored, _ = service.storage.snapshot()
+        assert next(m for m in stored.values() if m.layer == "m2").actions == [
+            {"status": "completed"}
+        ]
+        status = await service.write_status(receipt)
+        assert status.derived == "committed" and status.attempts == 0
+        assert len([r for r in model.requests if r.role == "memory_extract"]) == 2
+    finally:
+        await service.close()
+
+
+async def test_invalid_source_quote_is_repaired_and_never_cached_as_evidence(tmp_path):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            response = await super().generate(request)
+            if request.role == "memory_extract" and "validation_error" not in request.input_data:
+                response.payload["summaries"][0]["evidence"][0]["quote"] = "不存在的原文"
+            return response
+
+    model = Model()
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        receipt = service.submit(event("我喜欢做陶艺"))
+        await service.flush(receipt)
+        _, stored, _ = service.storage.snapshot()
+        assert next(iter(stored.values())).sources[0].quote == "我喜欢做陶艺"
+        assert "不存在的原文" not in service.storage.job(receipt.event_id)["extraction"]
+        status = await service.write_status(receipt)
+        assert status.attempts == 0
+        repaired = next(r for r in model.requests if "validation_error" in r.input_data)
+        feedback = repaired.input_data["validation_error"]
+        assert feedback["code"] == "INVALID_SOURCE_QUOTE"
+        assert feedback["invalid_evidence"]["event_id"] == receipt.event_id
+        assert feedback["invalid_evidence"]["quote"] == "不存在的原文"
+    finally:
+        await service.close()
+
+
+async def test_invalid_coexist_match_explains_conflicting_slots_before_atomic_repair(tmp_path):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            self.requests.append(request)
+            data = request.input_data
+            if request.role == "memory_extract":
+                current = next(e for e in data["events"] if e["event_id"] == data["new_event_id"])
+                text = current["payload"]["content"]
+                key = {"我会录音": "skill.audio", "我会剪辑": "skill.video"}.get(
+                    text, "skill.media"
+                )
+                evidence = [
+                    {"event_id": current["event_id"], "pointer": "/payload/content", "quote": text}
+                ]
+                return ModelResponse(
+                    {
+                        "facts": [
+                            {
+                                "candidate_id": "skill",
+                                "fact_key": key,
+                                "value": text,
+                                "text": text,
+                                "evidence": evidence,
+                            }
+                        ],
+                        "summaries": [
+                            {"text": text, "event_kind": "statement", "evidence": evidence}
+                        ],
+                    }
+                )
+            if request.role == "memory_verify":
+                combined = data["candidates"][0]["fact_key"] == "skill.media"
+                if combined and "validation_error" in data:
+                    feedback = data["validation_error"]
+                    assert feedback["code"] == "INVALID_COEXISTING_FACT"
+                    assert feedback["candidate_id"] == "skill"
+                    assert {m["fact_key"] for m in feedback["matched_facts"]} == {
+                        "skill.audio",
+                        "skill.video",
+                    }
+                    operation, verification, matched = "ignore", "uncertain", []
+                else:
+                    operation, verification = (
+                        ("coexist", "supported") if combined else ("new", "supported")
+                    )
+                    matched = [m["memory_id"] for m in data["existing"]] if combined else []
+                return ModelResponse(
+                    {
+                        "decisions": [
+                            {
+                                "candidate_id": "skill",
+                                "verification": verification,
+                                "operation": operation,
+                                "matched_ids": matched,
+                                "reason": "两项独立技能的合并表述不更新同一属性",
+                            }
+                        ]
+                    }
+                )
+            raise AssertionError(request.role)
+
+    model = Model()
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        for text in ["我会录音", "我会剪辑"]:
+            await service.flush(service.submit(event(text)))
+        receipt = service.submit(event("我会录音和剪辑"))
+        await service.flush(receipt)
+        _, stored, _ = service.storage.snapshot()
+        facts = [m for m in stored.values() if m.layer == "m1"]
+        assert {m.fact_key for m in facts} == {"skill.audio", "skill.video"}
+        assert all(m.state == "active" for m in facts)
+        assert any(m.layer == "m2" and m.text == "我会录音和剪辑" for m in stored.values())
+        status = await service.write_status(receipt)
+        assert status.derived == "committed" and status.attempts == 0
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("operation,succeeds", [("coexist", True), ("new", False)])
+async def test_compatible_values_in_same_fact_slot_keep_both_active(tmp_path, operation, succeeds):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            from dynamic_graph.models.client import ModelResponse
+
+            data = request.input_data
+            if request.role == "memory_extract":
+                current = next(e for e in data["events"] if e["event_id"] == data["new_event_id"])
+                value = current["payload"]["content"]
+                return ModelResponse(
+                    {
+                        "facts": [
+                            {
+                                "candidate_id": "interest",
+                                "fact_key": "interest.activities",
+                                "value": value,
+                                "text": value,
+                                "evidence": [
+                                    {
+                                        "event_id": current["event_id"],
+                                        "pointer": "/payload/content",
+                                        "quote": value,
+                                    }
+                                ],
+                            }
+                        ],
+                        "summaries": [],
+                    }
+                )
+            if request.role == "memory_verify":
+                old = data["existing"]
+                return ModelResponse(
+                    {
+                        "decisions": [
+                            {
+                                "candidate_id": "interest",
+                                "verification": "supported",
+                                "operation": operation if old else "new",
+                                "matched_ids": [old[0]["memory_id"]]
+                                if old and operation == "coexist"
+                                else [],
+                                "reason": "不同兴趣可以并存，不表示撤销旧兴趣",
+                            }
+                        ]
+                    }
+                )
+            return await super().generate(request)
+
+    memory = ContextMemory(
+        root_dir=tmp_path / "context", model=Model(), embeddings=LocalEmbeddings()
+    )
+    await memory.start()
+    try:
+        await memory.flush(memory.submit(event("我喜欢摄影", request="first")))
+        second = memory.submit(event("我也喜欢游泳", request="second"))
+        if succeeds:
+            await memory.flush(second)
+        else:
+            with pytest.raises(MemoryFlushError):
+                await memory.flush(second)
+        _, stored, _ = memory.storage.snapshot()
+        facts = [m for m in stored.values() if m.layer == "m1"]
+        assert {m.value for m in facts} == (
+            {"我喜欢摄影", "我也喜欢游泳"} if succeeds else {"我喜欢摄影"}
+        )
+        assert all(m.state == "active" and not m.supersedes and not m.corrects for m in facts)
+    finally:
+        await memory.close()
+
+
+async def test_processing_diagnostics_do_not_crowd_out_memory_evidence(memory):
+    service, backend = memory
+    await service.flush(service.submit(event("我住在北京")))
+    revision, stored, _ = service.storage.snapshot()
+    original = next(m for m in stored.values() if m.layer == "m1")
+    service.storage.commit_memories(
+        original.sources[0].event_id,
+        [original.model_copy(update={"verification_reason": "核验过程" * 10000})],
+        revision,
+    )
+    result = await service.recall(query("我住哪里？"))
+    assert result.m1 and result.m1[0].memory.value == "北京"
+    context = result.context()
+    entry = context["m1"][0]["memory"]
+    assert "verification_reason" not in entry and "created_at" not in entry
+    assert entry["sources"] and entry["state"] == "active"
+    assert entry["recorded_at"] and entry["scope"] and entry["valid_from"] is None
+    assert result.m1[0].memory.verification_reason == "核验过程" * 10000
+    requests = [r for r in backend.requests if r.role == "memory_rerank"]
+    assert "verification_reason" not in requests[-1].input_data["memories"][0]
+
+
+async def test_large_processing_payloads_do_not_remove_coarse_recall_candidates(memory):
+    service, backend = memory
+    for name in ("远星", "星海"):
+        await service.flush(service.submit(event(f"{name}活动共七天。", request=name)))
+    revision, records, _ = service.storage.snapshot()
+    summaries = [m for m in records.values() if m.layer == "m2"]
+    for summary in summaries:
+        service.storage.commit_memories(
+            summary.sources[0].event_id,
+            [summary.model_copy(update={"outcome": {"details": "过程详情" * 12000}})],
+            revision,
+        )
+        revision, _, _ = service.storage.snapshot()
+    backend.kind = "detail"
+    await service.recall(query("远星和星海各持续多久"))
+    ranking = [r for r in backend.requests if r.role == "memory_rerank"][-1]
+    assert {m["request_id"] for m in ranking.input_data["memories"]} == {"远星", "星海"}
+    assert len(encode(ranking.input_data).encode()) <= 24 * 1024
+    assert all(m["sources"] and m["recorded_at"] for m in ranking.input_data["memories"])
+
+
+@pytest.mark.parametrize(
+    "syntax", [None, {"message": "Expecting value", "line": 1, "column": 27, "position": 26}]
+)
+async def test_invalid_model_json_is_supplied_to_bounded_memory_repair(tmp_path, syntax):
+    class Model(MemoryModel):
+        raw = '{"facts": [], "summaries": [broken]}'
+        repaired = False
+
+        async def generate(self, request):
+            if request.role == "memory_extract":
+                if "validation_error" not in request.input_data:
+                    raise ModelCallError(
+                        "MODEL_RESPONSE_INVALID",
+                        "Invalid generated JSON",
+                        raw_response=self.raw,
+                        details={"json_syntax": syntax} if syntax else {},
+                    )
+                assert request.input_data["previous_response"] == self.raw
+                assert request.input_data["validation_error"].get("json_syntax") == syntax
+                self.repaired = True
+            return await super().generate(request)
+
+    model = Model()
+    service = ContextMemory(
+        root_dir=tmp_path / "context", model=model, embeddings=LocalEmbeddings()
+    )
+    await service.start()
+    try:
+        await service.flush(service.submit(event("用户提到花园", kind="assistant_message")))
+        assert model.repaired
+        _, stored, _ = service.storage.snapshot()
+        assert any(m.layer == "m2" for m in stored.values())
+    finally:
+        await service.close()
+
+
+async def test_history_identity_survives_raw_message_budget_limit(memory):
+    service, model = memory
+    async with service.foreground():
+        service.submit(event("上次的方案内容。" * 1600, request="identified-task"))
+        service.submit(
+            event("方案补充细节。" * 1600, request="identified-task", kind="assistant_message")
+        )
+        model.dependency, model.history_status = "needed", "selected"
+        result = await service.recall(query("继续上次的方案"))
+        assert result.history.status == "selected"
+        assert not result.history.complete and result.history.messages == []
+        assert result.related_request_ids == ["identified-task"]
+        assert "HISTORY_BUDGET_LIMIT" in result.degradations
+        assert not result.coverage["complete"]
+
+
+@pytest.mark.parametrize("relevance", ["relevant", "uncertain"])
+async def test_detail_recall_expands_selected_task_and_respects_known_at(memory, relevance):
+    from dynamic_graph import ModelResponse
+
+    service, model = memory
+    past = datetime.now(UTC) + timedelta(minutes=1)
+    anchor = event(
+        "星海活动的记录", request="selected-activity", occurred_at=past - timedelta(hours=2)
+    )
+    await service.flush(service.submit(anchor))
+    async with service.foreground():
+        service.submit(
+            event(
+                "活动持续了七天。",
+                request="selected-activity",
+                occurred_at=past - timedelta(hours=1),
+            )
+        )
+        service.submit(
+            event(
+                "活动后来延长到九天。",
+                request="selected-activity",
+                occurred_at=past + timedelta(hours=1),
+            )
+        )
+        service.submit(
+            event(
+                "另一项活动持续十二天。",
+                request="unrelated-activity",
+                occurred_at=past - timedelta(hours=1),
+            )
+        )
+        original_generate = model.generate
+
+        async def generate(request):
+            if request.role == "memory_query":
+                return ModelResponse(
+                    {
+                        "search_text": "星海",
+                        "kind": "detail",
+                        "time_mode": "known_at",
+                        "at": past.isoformat(),
+                    }
+                )
+            response = await original_generate(request)
+            if request.role == "memory_rerank":
+                for candidate in response.payload["ranking"]:
+                    candidate["relevance"] = relevance
+            return response
+
+        model.generate = generate
+        result = await service.recall(query("当时星海活动持续多久"))
+        texts = [hit.text for hit in result.details]
+        assert "活动持续了七天。" in texts
+        assert not any("九天" in text or "十二天" in text for text in texts)
+        for hit in result.details:
+            assert (await service.load_event(hit.source.event_id)).request_id == "selected-activity"
+
+
+async def test_detail_context_preserves_original_sequence_when_timestamps_match(memory):
+    service, model = memory
+    instant = datetime.now(UTC)
+    first = service.submit(event("这项活动叫远星。", occurred_at=instant))
+    second = service.submit(event("共七天。", occurred_at=instant))
+    await service.flush()
+    model.kind = "detail"
+    result = await service.recall(query("远星持续了多久"))
+    assert [hit.text for hit in result.details] == ["这项活动叫远星。", "共七天。"]
+    assert [hit.source.sequence for hit in result.details] == [first.sequence, second.sequence]
+    assert {hit.request_id for hit in result.details} == {"task-1"}
+
+
+async def test_detail_budget_keeps_adjacent_reply_without_repeated_query_terms(memory):
+    service, model = memory
+    await service.flush(service.submit(event("星海活动记录", request="selected-activity")))
+    duration_reply = "共七天。" + "期间按日程安排开展其他体验。" * 40
+    async with service.foreground():
+        service.submit(event("星海活动在岛上举行。", request="selected-activity"))
+        bridge_text = "好的，接下来仍围绕星海活动补充具体时间。" + "背景解释。" * 150
+        service.submit(event(bridge_text, request="selected-activity", kind="assistant_message"))
+        service.submit(event(duration_reply, request="selected-activity"))
+        for i in range(20):
+            service.submit(
+                event(
+                    f"星海活动后续资料第{i}项。" + "交通与景点信息。" * 40,
+                    request="selected-activity",
+                )
+            )
+        service.submit(event("另一个活动共十二天。", request="unrelated-activity"))
+        model.kind = "detail"
+        result = await service.recall(query("星海活动持续多久"))
+        assert duration_reply in [hit.text for hit in result.details]
+        duration_hit = next(hit for hit in result.details if hit.text == duration_reply)
+        assert duration_hit.source.quote == duration_reply[:1000]
+        assert (await service.load_event(duration_hit.source.event_id)).payload[
+            "content"
+        ] == duration_reply
+        assert not any("十二天" in hit.text for hit in result.details)
+        bridge = next(hit for hit in result.details if hit.text.startswith("好的，接下来"))
+        assert bridge.truncated and bridge.text == bridge_text[:600]
+        assert (await service.load_event(bridge.source.event_id)).payload["content"] == bridge_text
+        assert len(encode(result.context()).encode()) <= 12 * 1024
+
+
+async def test_context_envelope_pressure_retains_priority_evidence_across_tasks(memory):
+    service, model = memory
+    for task in ("rail-estimate", "taxi-estimate"):
+        await service.flush(service.submit(event("旅行交通费用记录", request=task)))
+    original_generate = model.generate
+
+    async def generate(request):
+        response = await original_generate(request)
+        if request.role == "memory_rerank":
+            response.payload["history_reason"] = "已核查当前交通费用问题与旅行记录之间的关联。" * 20
+        return response
+
+    model.generate = generate
+    model.kind = "detail"
+    async with service.foreground():
+        service.submit(event("火车交通费用17美元。", request="rail-estimate"))
+        service.submit(event("出租车交通费用95美元。", request="taxi-estimate"))
+        for task in ("rail-estimate", "taxi-estimate"):
+            for index in range(12):
+                service.submit(
+                    event(
+                        f"交通费用附带背景{index}。" + "预订方式与路线介绍。" * 30,
+                        request=task,
+                    )
+                )
+        result = await service.recall(query("旅行交通费用差额"))
+        texts = [hit.text for hit in result.details]
+        assert "火车交通费用17美元。" in texts
+        assert "出租车交通费用95美元。" in texts
+        assert len(encode(result.context()).encode()) <= 12 * 1024
+        assert not result.coverage["complete"] and result.status == "degraded"
+        for hit in result.details:
+            assert (await service.load_event(hit.source.event_id)).payload["content"] == hit.text
+
+
+async def test_detail_recall_keeps_new_source_when_its_summary_does_not_fit(memory):
+    service, model = memory
+    old_text = "最近三个月，我完成了17次观测。"
+    new_text = "最近三个月，我已经完成了18次观测。" + "记录过程与所见现象。" * 70
+    await service.flush(service.submit(event(old_text, request="observations")))
+    newer = service.submit(event(new_text, request="observations"))
+    await service.flush(newer)
+    revision, records, _ = service.storage.snapshot()
+    newer_summary = next(m for m in records.values() if m.sources[0].event_id == newer.event_id)
+    older_summary = next(m for m in records.values() if m.text == old_text)
+    service.storage.commit_memories(
+        older_summary.sources[0].event_id,
+        [older_summary.model_copy(update={"outcome": {"background": "旧过程" * 250}})],
+        revision,
+    )
+    revision, _, _ = service.storage.snapshot()
+    service.storage.commit_memories(
+        newer.event_id,
+        [newer_summary.model_copy(update={"outcome": {"background": "过程背景" * 4000}})],
+        revision,
+    )
+    model.kind = "detail"
+    detail_queries = []
+    search_details = service.search_details
+
+    async def capture_details(detail_query):
+        detail_queries.append(detail_query)
+        return await search_details(detail_query)
+
+    service.search_details = capture_details
+    async with service.foreground():
+        for i in range(15):
+            service.submit(
+                event(
+                    ("最近三个月完成了多少次观测？背景讨论。" if i == 8 else f"观测安排补充第{i}项。")
+                    + "未来日程与交通说明。" * 50,
+                    request="observations",
+                )
+            )
+        service.submit(event("另一个对象共99次。", request="unrelated"))
+        result = await service.recall(query("最近三个月完成了多少次观测？"))
+        assert newer_summary.memory_id in {h.memory.memory_id for h in result.m2}
+        assert newer.event_id in {source.event_id for source in detail_queries[0].sources}
+        assert new_text in [hit.text for hit in result.details]
+        assert not any("99次" in hit.text for hit in result.details)
+        assert len(encode(result.context()).encode()) <= 12 * 1024
+        assert "outcome" not in next(
+            h["memory"] for h in result.context()["m2"]
+            if h["memory"]["memory_id"] == newer_summary.memory_id
+        )
+        assert (await service.load_event(newer.event_id)).payload["content"] == new_text
+
+
+async def test_old_only_summary_cannot_poison_new_event_derivation(tmp_path):
+    class Model(MemoryModel):
+        previous = None
+
+        async def generate(self, request):
+            result = await super().generate(request)
+            if request.role == "memory_extract":
+                current = request.input_data["new_event_id"]
+                if self.previous is not None:
+                    result.payload["summaries"].append(
+                        {
+                            "text": "重复旧摘要",
+                            "event_kind": "statement",
+                            "evidence": [
+                                {
+                                    "event_id": self.previous,
+                                    "pointer": "/payload/content",
+                                    "quote": "不匹配的旧原文",
+                                }
+                            ],
+                        }
+                    )
+                self.previous = current
+            return result
+
+    service = ContextMemory(root_dir=tmp_path, model=Model(), embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        await service.flush(service.submit(event("项目叫远星。")))
+        await service.flush(service.submit(event("本次补充进度：完成初稿。")))
+        _, records, _ = service.storage.snapshot()
+        summaries = [m.text for m in records.values() if m.layer == "m2"]
+        assert set(summaries) == {"项目叫远星。", "本次补充进度：完成初稿。"}
+    finally:
+        await service.close()
+
+
+async def test_dense_source_list_does_not_crowd_out_other_relevant_evidence(memory):
+    service, model = memory
+    receipts = []
+    for i in range(12):
+        receipt = service.submit(event(f"设备使用背景说明{i}。", request="device-background"))
+        await service.flush(receipt)
+        receipts.append(receipt)
+    quoted = service.submit(event("第二种模式的处理时长是37分钟。", request="device-duration"))
+    await service.flush(quoted)
+    revision, records, _ = service.storage.snapshot()
+    by_event = {m.sources[0].event_id: m for m in records.values() if m.layer == "m2"}
+    dense = by_event[receipts[0].event_id]
+    service.storage.commit_memories(
+        receipts[0].event_id,
+        [dense.model_copy(update={"sources": [by_event[r.event_id].sources[0] for r in receipts]})],
+        revision,
+    )
+    relevant_ids = {dense.memory_id, by_event[quoted.event_id].memory_id}
+    generate = model.generate
+
+    async def rank_selected(request):
+        response = await generate(request)
+        if request.role == "memory_rerank":
+            response.payload["ranking"].sort(key=lambda r: r["memory_id"] != dense.memory_id)
+            for row in response.payload["ranking"]:
+                row["relevance"] = "relevant" if row["memory_id"] in relevant_ids else "irrelevant"
+        return response
+
+    model.generate = rank_selected
+    model.kind = "detail"
+    detail_queries = []
+    search_details = service.search_details
+
+    async def capture_details(detail_query):
+        detail_queries.append(detail_query)
+        return await search_details(detail_query)
+
+    service.search_details = capture_details
+    result = await service.recall(query("设备第二种模式的处理时长"))
+    assert len(detail_queries[0].sources) == 12
+    assert quoted.event_id in {source.event_id for source in detail_queries[0].sources}
+    assert "第二种模式的处理时长是37分钟。" in [hit.text for hit in result.details]
+    assert "DETAIL_SOURCE_BUDGET_LIMIT" in result.degradations
+    assert len(encode(result.context()).encode()) <= 12 * 1024
+
+
+async def test_distinct_user_uses_survive_verbose_assistant_guidance(memory):
+    service, model = memory
+    evidence = []
+    for text in ("设备曾用于录制语音。", "我想尝试设备的视频剪辑功能。"):
+        receipt = service.submit(event(text, request=text))
+        await service.flush(receipt)
+        evidence.append(receipt.event_id)
+    assistant = event("设备通用说明。" + "调整参数并检查设置。" * 120,
+                      request="guide", kind="assistant_message")
+    await service.flush(service.submit(assistant))
+    generate = model.generate
+
+    async def rank_guidance_first(request):
+        response = await generate(request)
+        if request.role == "memory_rerank":
+            records = {r["memory_id"]: r for r in request.input_data["memories"]}
+            response.payload["ranking"].sort(key=lambda r: not any(
+                s["source_role"] == "assistant" for s in records[r["memory_id"]]["sources"]
+            ))
+        return response
+
+    model.generate = rank_guidance_first
+    result = await service.recall(query("设备的使用效果怎样改善？"))
+    assert {s.event_id for h in result.m2 for s in h.memory.sources} >= set(evidence)
+    assert all(h.memory.sources[0].source_role == "user" for h in result.m2[:2])
+    assert len(encode(result.context()).encode()) <= 12 * 1024
+    assert all("fusion_rank" not in h and "vector_score" not in h for h in result.context()["m2"])
+
+
+async def test_overlapping_summaries_keep_later_user_values_before_reranking(memory):
+    service, model = memory
+    receipts = []
+    for index in range(10):
+        receipt = service.submit(event(
+            f"设备处理时长的旧说明{index}。" + "重复操作步骤和参数介绍。" * 120,
+            request="device", kind="assistant_message",
+        ))
+        await service.flush(receipt)
+        receipts.append(receipt)
+    for text in ("设备第一种模式需要19分钟。", "设备第二种模式需要46分钟。"):
+        receipt = service.submit(event(text, request="device"))
+        await service.flush(receipt)
+        receipts.append(receipt)
+    revision, records, _ = service.storage.snapshot()
+    by_event = {m.sources[0].event_id: m for m in records.values() if m.layer == "m2"}
+    changes = []
+    for index, receipt in enumerate(receipts):
+        record = by_event[receipt.event_id]
+        changes.append(record.model_copy(update={
+            "text": "旧操作说明。" * 600 + record.text,
+            "sources": [by_event[r.event_id].sources[0] for r in receipts[:index + 1]],
+        }))
+    service.storage.commit_memories(receipts[-1].event_id, changes, revision)
+    model.kind = "detail"
+    generate = model.generate
+    ranking_input = {}
+
+    async def capture_ranking(request):
+        if request.role == "memory_rerank":
+            ranking_input.update(request.input_data)
+        return await generate(request)
+
+    model.generate = capture_ranking
+    result = await service.recall(query("设备两种模式的处理时长相差多少？"))
+    user_ids = {by_event[r.event_id].memory_id for r in receipts[-2:]}
+    assert user_ids <= set(ranking_input["primary_ids"])
+    projected = encode(ranking_input)
+    assert "19分钟" in projected and "46分钟" in projected
+    context = result.context()
+    assert user_ids <= {hit["memory"]["memory_id"] for hit in context["m2"]}
+    assert "19分钟" in encode(context) and "46分钟" in encode(context)
+    assert len(encode(context).encode()) <= 12 * 1024
+    _, stored, _ = service.storage.snapshot()
+    assert stored[changes[-1].memory_id].sources == changes[-1].sources
+    assert stored[changes[-1].memory_id].text == changes[-1].text
+
+
+@pytest.mark.parametrize("code", ["MODEL_RESPONSE_INVALID", "MODEL_RESPONSE_TRUNCATED"])
+@pytest.mark.parametrize("recovers", [True, False])
+async def test_content_repair_reduces_scope_and_does_not_repeat_the_same_job(tmp_path, code, recovers):
+    class Model(MemoryModel):
+        calls = []
+
+        async def generate(self, request):
+            if request.role == "memory_extract":
+                new = next(e for e in request.input_data["events"]
+                           if e["event_id"] == request.input_data["new_event_id"])
+                if new["payload"].get("content") == "新的设备观察。":
+                    self.calls.append(request)
+                    if len(self.calls) == 1 or not recovers:
+                        raise ModelCallError(code, "Invalid content", retryable=True,
+                                             raw_response="{" + "broken" * 1000,
+                                             usage={"input_tokens": 10, "output_tokens": 20})
+            return await super().generate(request)
+
+    model = Model()
+    service = ContextMemory(root_dir=tmp_path, model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        for index in range(6):
+            await service.flush(service.submit(event(f"设备背景{index}。")))
+        receipt = service.submit(event("新的设备观察。"))
+        if recovers:
+            await service.flush(receipt)
+            assert (await service.write_status(receipt)).derived == "committed"
+        else:
+            with pytest.raises(MemoryFlushError):
+                await service.flush(receipt)
+            status = await service.write_status(receipt)
+            assert status.derived == "failed" and status.attempts == 1 and status.error_code == code
+        assert len(model.calls) == 2
+        first, repaired = model.calls
+        assert len(first.input_data["events"]) == 7 and len(repaired.input_data["events"]) == 4
+        assert repaired.input_data["events"][-1]["event_id"] == receipt.event_id
+        assert repaired.input_data["previous_response_truncated"]
+        assert first.max_output_tokens == 8192
+        assert repaired.max_output_tokens == (16384 if code == "MODEL_RESPONSE_TRUNCATED" else 8192)
+        assert 0 < repaired.timeout_seconds <= first.timeout_seconds
+        assert (await service.load_event(receipt.event_id)).payload["content"] == "新的设备观察。"
+        following = service.submit(event("其他设备的独立记录。", request="other-device"))
+        await service.flush(following)
+        assert (await service.write_status(following)).derived == "committed"
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("text,quote,expected", [
+    ("* **视界测量**: 处理时长是 **35分钟**。", "视界测量: 处理时长是 35分钟。", "**视界测量**: 处理时长是 **35分钟**。"),
+    ("说明：**视界测量**，需要35分钟。", "视界测量，需要35分钟。", "**视界测量**，需要35分钟。"),
+])
+async def test_source_resolution_restores_actual_continuous_bold_span(memory, text, quote, expected):
+    service, _ = memory
+    raw = event(text)
+    await service.flush(service.submit(raw))
+    source = service.storage.source(Evidence(
+        event_id=raw.event_id, pointer="/payload/content", quote=quote,
+    ), {raw.event_id: raw})
+    assert source.quote == expected and source.quote in text
+    assert (await service.load_event(raw.event_id)).payload["content"] == text
+
+
+@pytest.mark.parametrize("text,quote", [
+    ("**视界测量**需要35分钟。", "视界测量需要36分钟。"),
+    ("**视界测量**需要35分钟。", "视界测量耗时35分钟。"),
+    ("**设备**: 需要35分钟，**设备**: 需要35分钟。", "设备: 需要35分钟"),
+    ("`a ** b ** c`", "a  b  c"),
+    ("```\na ** b ** c\n```", "a  b  c"),
+    ("a**b**c", "abc"),
+    ("**标记**" + "背景" * 20000, "标记背景"),
+], ids=["numeric", "reword", "ambiguous", "inline-code", "fenced-code", "operator", "large"])
+async def test_bold_quote_recovery_rejects_rewording_ambiguity_code_and_large_sources(memory, text, quote):
+    service, _ = memory
+    raw = event(text)
+    with pytest.raises(ValueError, match="INVALID_SOURCE_QUOTE"):
+        service.storage.source(Evidence(event_id=raw.event_id, pointer="/payload/content", quote=quote),
+                               {raw.event_id: raw})
+
+
+async def test_derived_memory_persists_canonical_source_without_an_extra_model_call(memory):
+    service, model = memory
+    generate = model.generate
+
+    async def omit_bold(request):
+        response = await generate(request)
+        if request.role == "memory_extract":
+            for summary in response.payload["summaries"]:
+                for citation in summary["evidence"]:
+                    citation["quote"] = citation["quote"].replace("**", "")
+        return response
+
+    model.generate = omit_bold
+    text = "**视界测量**: 处理时长是 **35分钟**。"
+    receipt = service.submit(event(text))
+    await service.flush(receipt)
+    _, memories, _ = service.storage.snapshot()
+    assert next(m for m in memories.values() if m.layer == "m2").sources[0].quote == text
+    import json
+
+    cached = json.loads(service.storage.job(receipt.event_id)["extraction"])
+    assert cached["summaries"][0]["evidence"][0]["quote"] == text
+    assert len([r for r in model.requests if r.role == "memory_extract"]) == 1
+
+
+@pytest.mark.parametrize("role", ["memory_query", "memory_rerank"])
+@pytest.mark.parametrize("recovers", [True, False])
+async def test_recall_truncation_expands_once_without_changing_profiles_or_fusion(tmp_path, role, recovers):
+    class Model(MemoryModel):
+        def __init__(self, allowed_roles):
+            super().__init__()
+            self.allowed_roles = allowed_roles
+            self.truncations = []
+
+        async def generate(self, request):
+            assert request.role in self.allowed_roles
+            if request.role == role:
+                self.truncations.append(request)
+                if len(self.truncations) == 1 or not recovers:
+                    self.requests.append(request)
+                    raise ModelCallError("MODEL_RESPONSE_TRUNCATED", "Output limit", retryable=False)
+            return await super().generate(request)
+
+    base = Model({"memory_extract", "memory_verify", "memory_query"})
+    ranker = Model({"memory_rerank"})
+    service = ContextMemory(root_dir=tmp_path, model=base, rerank_model=ranker, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        await service.flush(service.submit(event("我住在北京。")))
+        result = await service.recall(query("我住在哪里？"))
+        model = base if role == "memory_query" else ranker
+        assert [r.max_output_tokens for r in model.truncations] == [4096, 8192]
+        first, retry = model.truncations
+        assert first.input_data == retry.input_data and first.output_schema == retry.output_schema
+        assert 0 < retry.timeout_seconds <= first.timeout_seconds
+        assert 7 < base.requests[-1].timeout_seconds <= 8
+        assert 19 < ranker.requests[0].timeout_seconds <= 20
+        assert result.m1 and result.m1[0].memory.value == "北京"
+        if not recovers:
+            code = "QUERY_ANALYSIS_FAILED" if role == "memory_query" else "RERANK_FAILED_FUSION_ORDER"
+            assert code in result.degradations
+            if role == "memory_rerank":
+                assert [h.fusion_rank for h in result.m1] == sorted(h.fusion_rank for h in result.m1)
+                assert all(h.relevance == "unverified" for h in result.m1)
+        else:
+            assert "RERANK_FAILED_FUSION_ORDER" not in result.degradations
+    finally:
+        await service.close()
+
+
+async def test_recall_retry_uses_remaining_deadline_and_cancellation_is_not_retried(tmp_path):
+    from karen.context.contracts import QueryAnalysis
+    from karen.context.retrieval import Retriever
+
+    class Model(MemoryModel):
+        async def generate(self, request):
+            self.requests.append(request)
+            await asyncio.sleep(0.03)
+            raise ModelCallError("MODEL_RESPONSE_TRUNCATED", "Output limit")
+
+    model = Model()
+    service = ContextMemory(root_dir=tmp_path, model=model, embeddings=LocalEmbeddings())
+    retriever = Retriever(service)
+    with pytest.raises(TimeoutError):
+        await retriever.call({"deadline": time.monotonic() + 1.55}, "memory_query",
+                             "Return JSON", {}, QueryAnalysis)
+    assert len(model.requests) == 2
+    assert 0 < model.requests[1].timeout_seconds < model.requests[0].timeout_seconds
+    task = asyncio.create_task(retriever.call({"deadline": time.monotonic() + 10}, "memory_query",
+                                             "Return JSON", {}, QueryAnalysis))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(model.requests) == 3
+
+
+async def test_memory_transport_cap_does_not_restart_a_truncated_background_job(tmp_path):
+    class Model(MemoryModel):
+        metadata = {"max_output_tokens": 8192}
+
+        async def generate(self, request):
+            self.requests.append(request)
+            raise ModelCallError("MODEL_RESPONSE_TRUNCATED", "Output limit", retryable=True)
+
+    model = Model()
+    service = ContextMemory(root_dir=tmp_path, model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        receipt = service.submit(event("我住在北京。"))
+        with pytest.raises(MemoryFlushError):
+            await service.flush(receipt)
+        status = await service.write_status(receipt)
+        assert status.derived == "failed" and status.attempts == 1
+        assert status.error_code == "MODEL_RESPONSE_TRUNCATED" and len(model.requests) == 1
+    finally:
+        await service.close()

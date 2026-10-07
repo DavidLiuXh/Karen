@@ -96,6 +96,7 @@ class SourceRef(Contract):
     quote: str = ""
     source_role: Literal["user", "assistant", "tool"]
     occurred_at: datetime
+    sequence: int | None = None
     relative_file: str | None = None
     storage_state: Literal["queued", "persisted", "failed"] = "persisted"
 
@@ -178,6 +179,11 @@ class FactCandidate(Contract):
         return self
 
 
+ACTION_STATUSES = frozenset(
+    {"requested", "planned", "attempted", "completed", "failed", "cancelled"}
+)
+
+
 class SummaryDraft(Contract):
     text: str = Field(min_length=1)
     event_kind: str
@@ -186,6 +192,16 @@ class SummaryDraft(Contract):
     outcome: dict[str, JsonValue] = Field(default_factory=dict)
     artifact_refs: list[dict[str, JsonValue]] = Field(default_factory=list)
     evidence: list[Evidence] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def valid_action_states(self):
+        if any(
+            action.get("status") is not None
+            and (not isinstance(action["status"], str) or action["status"] not in ACTION_STATUSES)
+            for action in self.actions
+        ):
+            raise PydanticCustomError("invalid_action_status", "INVALID_ACTION_STATUS")
+        return self
 
 
 class Extraction(Contract):
@@ -196,9 +212,16 @@ class Extraction(Contract):
 class FactDecision(Contract):
     candidate_id: str
     verification: Literal["supported", "uncertain", "rejected"]
-    operation: Literal["new", "reinforce", "replace", "correct", "conflict", "ignore"]
+    operation: Literal["new", "coexist", "reinforce", "replace", "correct", "conflict", "ignore"]
     matched_ids: list[str] = Field(default_factory=list)
     reason: str = Field(min_length=1)
+    canonical_value: JsonValue = None
+
+    @model_validator(mode="after")
+    def valid_normalization(self):
+        if self.canonical_value is not None and self.operation != "reinforce":
+            raise ValueError("CANONICAL_VALUE_ONLY_FOR_REINFORCEMENT")
+        return self
 
 
 class Verification(Contract):
@@ -238,6 +261,80 @@ class StoredMemory(Contract):
     prompt_version: str = "1"
     revision: int = 0
 
+    def anchor_source(self) -> SourceRef | None:
+        """m2 evidence is validated through its new event, so the last sequence is its anchor."""
+        return max(self.sources, key=lambda s: (s.sequence or 0, s.occurred_at), default=None)
+
+    def evidence_context(self) -> list[dict[str, JsonValue]]:
+        anchor = self.anchor_source()
+        if anchor is None:
+            return []
+        users = sorted(
+            (s for s in self.sources if s.source_role == "user" and s != anchor),
+            key=lambda s: (s.sequence or 0, s.occurred_at), reverse=True,
+        )
+        selected = [anchor, *users[:2]]
+        data = []
+        for source in selected:
+            item = source.model_dump(mode="json")
+            limit = 800 if source == anchor else 400
+            quote = source.quote.encode()[:limit].decode("utf-8", errors="ignore")
+            item["quote"] = quote
+            item["quote_truncated"] = quote != source.quote
+            data.append(item)
+        return data
+
+    def context(self) -> dict[str, JsonValue]:
+        """Keep evidence and temporal semantics; leave processing diagnostics in the store."""
+        data = self.model_dump(
+            mode="json",
+            exclude={
+                "verification_reason",
+                "created_at",
+                "updated_at",
+                "extractor_model",
+                "verifier_model",
+                "prompt_version",
+                "revision",
+                "actions",
+                "outcome",
+                "artifact_refs",
+            },
+        )
+        data["sources"] = self.evidence_context()
+        data["sources_complete"] = len(data["sources"]) == len(self.sources)
+        if self.layer == "m2":
+            text = self.text.encode()[:1200].decode("utf-8", errors="ignore")
+            data["text"] = text
+            data["text_truncated"] = text != self.text
+        return data
+
+    def ranking_context(self) -> dict[str, JsonValue]:
+        """Rank semantic summaries with provenance and temporal/version boundaries."""
+        data = {key: value for key, value in self.context().items() if key in {
+                "memory_id",
+                "layer",
+                "text",
+                "subject",
+                "fact_key",
+                "value",
+                "scope",
+                "state",
+                "verification_state",
+                "assertion_type",
+                "recorded_at",
+                "valid_from",
+                "valid_to",
+                "supersedes",
+                "corrects",
+                "conflict_group_id",
+                "related_memory_ids",
+                "request_id",
+                "event_kind",
+                "sources", "sources_complete", "text_truncated",
+            }}
+        return data
+
 
 class RecallQuery(Contract):
     text: str = Field(min_length=1)
@@ -263,12 +360,21 @@ class QueryAnalysis(Contract):
     kind: Literal["relevance", "facts", "detail", "collection"] = Field(
         default="relevance",
         description=(
-            "facts=用户个人长期事实/偏好查询，包含事实列表；detail=历史原话/参数等细节；"
-            "collection=历史任务/对话的枚举与统计；relevance=其他任务的相关上下文。"
-            "个人爱好列表不是任务统计，默认查询当前有效事实，无需历史时间范围。"
+            "facts=用户持续个人属性/偏好查询，包含属性列表；detail=具体经历、对象参数/进度、"
+            "所需历史数字及其计算；"
+            "collection=仅枚举/统计 Karen 任务或对话；relevance=其他任务的相关上下文。"
+            "个人事件的数量、持续时间、旅行天数、剩余数量都不是 Karen 任务统计，使用 detail；"
+            "个人爱好列表用 facts，无需历史时间范围。"
         ),
     )
-    dialogue_dependency: Literal["none", "needed", "uncertain"] = "none"
+    dialogue_dependency: Literal["none", "current_task", "needed", "uncertain"] = Field(
+        default="none",
+        description=(
+            "none=独立输入；current_task=指代可由提供的 current_task_messages 解析，"
+            "如回答当前任务的澄清问题；needed=必须从当前任务之外的历史补查；"
+            "uncertain=无法确定是否需要当前任务之外的历史。已有澄清链不需要再次从记忆确认。"
+        ),
+    )
     time_mode: Literal["current", "effective_at", "known_at", "timeline", "unspecified"] = Field(
         default="current",
         description=(
@@ -304,6 +410,10 @@ class QueryAnalysis(Contract):
             )
         return self
 
+    @property
+    def uses_external_history(self) -> bool:
+        return self.dialogue_dependency in {"needed", "uncertain"}
+
 
 class RankedCandidate(Contract):
     memory_id: str
@@ -328,10 +438,19 @@ class MemoryHit(Contract):
     bm25_rank: int | None = None
     evidence_only: bool = False
 
+    def context(self) -> dict[str, JsonValue]:
+        """Evidence for reasoning; ranking diagnostics remain on the recall result."""
+        return {
+            "memory": self.memory.context(),
+            "relevance": self.relevance,
+            "evidence_only": self.evidence_only,
+        }
+
 
 class DetailQuery(Contract):
     text: str
     sources: list[SourceRef] = Field(default_factory=list)
+    exclude_event_ids: list[str] = Field(default_factory=list)
     request_id: str | None = None
     conversation_id: str | None = None
     time_range: TimeRange | None = None
@@ -340,7 +459,15 @@ class DetailQuery(Contract):
 class DetailHit(Contract):
     text: str
     source: SourceRef
+    request_id: str
     truncated: bool = False
+
+    def context(self) -> dict[str, JsonValue]:
+        """Keep provenance without repeating a quote already present in the text."""
+        data = self.model_dump(mode="json")
+        if self.source.quote in self.text:
+            data["source"].pop("quote")
+        return data
 
 
 class DetailSearchResult(Contract):
@@ -354,6 +481,7 @@ class History(Contract):
     status: Literal["none", "selected", "ambiguous", "unavailable"] = "none"
     reason: str = ""
     messages: list[dict[str, JsonValue]] = Field(default_factory=list)
+    complete: bool = True
 
 
 class RecallResult(Contract):
@@ -371,4 +499,8 @@ class RecallResult(Contract):
 
     def context(self) -> dict[str, JsonValue]:
         """A bounded, sourced JSON package; never includes vectors or credentials."""
-        return self.model_dump(mode="json")
+        data = self.model_dump(mode="json")
+        for layer in ("m1", "m2"):
+            data[layer] = [hit.context() for hit in getattr(self, layer)]
+        data["details"] = [hit.context() for hit in self.details]
+        return data

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from itertools import zip_longest
 from typing import TypedDict
 
 import numpy as np
-from dynamic_graph.models.client import ModelRequest
+from dynamic_graph.models.client import ModelCallError, ModelRequest, expanded_output_budget
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
@@ -22,8 +24,10 @@ from .contracts import (
     RecallResult,
     TimeRange,
 )
-from .prompts import MEMORY_SYSTEM, QUERY, RERANK
+from .prompts import MEMORY_SYSTEM, QUERY, RERANK, TRUNCATION_REPAIR
 from .storage import digest, encode, terms
+
+RECALL_TIMEOUT_SECONDS = 45
 
 FALLBACK_STOP_WORDS = frozenset(
     {
@@ -112,6 +116,7 @@ def hybrid(memories, vectors, keyword, query_vector, tag, query):
         for mid, m in memories.items()
         if m.verification_state != "rejected"
         and (m.scope.kind == "global" or m.scope.project_id == query.project_id)
+        and not (m.layer == "m2" and m.request_id == query.request_id)
         and not all(s.event_id in query.exclude_event_ids for s in m.sources)
     }
     cosine = {}
@@ -261,9 +266,9 @@ class Retriever:
         self.service.observer.emit("memory.degraded", status="degraded", data=details)
 
     async def recall(self, query):
-        state = {"query": query, "deadline": time.monotonic() + 20, "degraded": []}
+        state = {"query": query, "deadline": time.monotonic() + RECALL_TIMEOUT_SECONDS, "degraded": []}
         try:
-            async with asyncio.timeout(20):
+            async with asyncio.timeout(RECALL_TIMEOUT_SECONDS):
                 async for update in self.graph.astream(state, stream_mode="updates"):
                     for values in update.values():
                         state.update(values)
@@ -277,17 +282,24 @@ class Retriever:
             return RecallResult(
                 status="unavailable",
                 history=History(
-                    status="unavailable" if dependency != "none" else "none",
+                    status="unavailable" if analysis and analysis.uses_external_history else "none",
                     reason="本轮记忆读取未能完成。",
                 ),
                 degradations=["MEMORY_RECALL_UNAVAILABLE"],
-                coverage={"complete": False, "requires_history": dependency == "needed"},
+                coverage={
+                    "complete": False,
+                    "dialogue_dependency": dependency,
+                    "requires_history": dependency == "needed",
+                },
             )
 
     async def call(self, state, role, instruction, inputs, schema):
-        remaining = min(state["deadline"] - time.monotonic() - 1.5, 8)
+        model = self.service.rerank_model if role == "memory_rerank" else self.service.model
+        remaining = min(state["deadline"] - time.monotonic() - 1.5,
+                        20 if role == "memory_rerank" else 8)
         if remaining <= 0:
             raise TimeoutError("RECALL_DEADLINE")
+        deadline = time.monotonic() + remaining
         request = ModelRequest(
             role=role,
             system_instruction=MEMORY_SYSTEM,
@@ -298,8 +310,27 @@ class Retriever:
             timeout_seconds=remaining,
         )
         async with asyncio.timeout(remaining):
-            response = await self.service.model.generate(request)
-        return schema.model_validate(response.payload)
+            for attempt in range(2):
+                try:
+                    response = await model.generate(
+                        replace(request, timeout_seconds=max(0, deadline - time.monotonic()))
+                    )
+                    return schema.model_validate(response.payload)
+                except ModelCallError as error:
+                    if attempt or error.code != "MODEL_RESPONSE_TRUNCATED":
+                        raise
+                    expanded = expanded_output_budget(request.max_output_tokens, model)
+                    if expanded <= request.max_output_tokens:
+                        raise
+                    self.service.observer.emit(
+                        "model.output_budget_expanded",
+                        data={"model_role": role, "previous_budget": request.max_output_tokens,
+                              "max_output_tokens": expanded, "next_attempt": 2},
+                    )
+                    request = replace(
+                        request, max_output_tokens=expanded,
+                        task_instruction=instruction + TRUNCATION_REPAIR,
+                    )
 
     async def analyze(self, state):
         query = state["query"]
@@ -321,6 +352,8 @@ class Retriever:
                 },
                 QueryAnalysis,
             )
+            if analysis.dialogue_dependency == "current_task" and not query.current_task_messages:
+                raise ValueError("CURRENT_TASK_CONTEXT_MISSING")
         except Exception as error:
             self.report_degradation("QUERY_ANALYSIS_FAILED", error)
             analysis = QueryAnalysis(search_text=query.text, time_mode="unspecified")
@@ -378,22 +411,20 @@ class Retriever:
             # m2 links to m1; adding every other event to an m1 would flood context.
             for old in memory.supersedes + memory.corrects:
                 reverse.setdefault(old, []).append(mid)
-        bundles, primary, unique, size = {}, [], set(), 0
+        bundles, primary, unique = {}, [], set()
         for mid in roots:
             bundle = relation_bundle(
                 mid, eligible, reverse, timeline=analysis.time_mode == "timeline"
             )
             extra = set(bundle) - unique
-            added = sum(len(encode(eligible[m].model_dump(mode="json")).encode()) for m in extra)
-            if len(unique | extra) > 80 or size + added > 24 * 1024:
+            if len(unique | extra) > 80:
                 degraded.append("CANDIDATE_BUDGET_LIMIT")
                 continue
             primary.append(mid)
             bundles[mid] = bundle
             unique.update(extra)
-            size += added
         anchors = []
-        if analysis.dialogue_dependency != "none":
+        if analysis.uses_external_history:
             anchors = await self.service.recent(query, analysis)
             # Retrieved older tasks can be located even outside the recent window.
             known_ids = {e.event_id for e in anchors}
@@ -406,8 +437,10 @@ class Retriever:
                         and source.event_id not in query.exclude_event_ids
                     ):
                         try:
-                            anchors.append(await self.service.load_event(source.event_id))
+                            event = await self.service.load_event(source.event_id)
                             known_ids.add(source.event_id)
+                            if event.request_id != query.request_id:
+                                anchors.append(event)
                         except Exception:
                             degraded.append("HISTORY_SOURCE_UNAVAILABLE")
         return {
@@ -424,7 +457,7 @@ class Retriever:
     async def rank(self, state):
         primary, analysis = state["primary"], state["analysis"]
         degraded = list(state["degraded"])
-        if not primary and analysis.dialogue_dependency == "none":
+        if not primary and not analysis.uses_external_history:
             return {"ranking": Ranking(ranking=[])}
         records = {mid for bundle in state["bundles"].values() for mid in bundle}
         anchors = [
@@ -445,17 +478,22 @@ class Retriever:
             "current_task_messages": state["query"].current_task_messages,
             "analysis": analysis.model_dump(mode="json"),
             "primary_ids": list(primary),
-            "memories": [state["memories"][mid].model_dump(mode="json") for mid in sorted(records)],
+            "memories": [state["memories"][mid].ranking_context() for mid in sorted(records)],
             "history_candidates": anchors,
         }
         # Bound the whole request, including raw locating clues, not just memories.
         primary = list(primary)
         while len(encode(inputs).encode()) > 24 * 1024 and primary:
-            primary.pop()
+            # Preserve original fusion order among retained roots. Remove repeated
+            # assistant background before a distinct new user observation.
+            removed = next((mid for mid in reversed(primary)
+                            if state["memories"][mid].anchor_source().source_role != "user"),
+                           primary[-1])
+            primary.remove(removed)
             records = {mid for root in primary for mid in state["bundles"][root]}
             inputs["primary_ids"] = primary
             inputs["memories"] = [
-                state["memories"][mid].model_dump(mode="json") for mid in sorted(records)
+                state["memories"][mid].ranking_context() for mid in sorted(records)
             ]
             degraded.append("RERANK_INPUT_BUDGET_LIMIT")
         while len(encode(inputs).encode()) > 24 * 1024 and inputs["history_candidates"]:
@@ -486,7 +524,7 @@ class Retriever:
                 raise ValueError("EMPTY_SELECTED_HISTORY")
             if ranking.history_status != "selected" and ranking.selected_event_ids:
                 raise ValueError("UNEXPECTED_HISTORY")
-            if analysis.dialogue_dependency == "none" and ranking.history_status != "none":
+            if not analysis.uses_external_history and ranking.history_status != "none":
                 raise ValueError("UNRELATED_HISTORY")
         except Exception as error:
             self.report_degradation("RERANK_FAILED_FUSION_ORDER", error)
@@ -519,18 +557,36 @@ class Retriever:
                 if len(word) >= 2 and word not in FALLBACK_STOP_WORDS
             }
             entity_words = {word for entity in analysis.entities for word in terms(entity)}
+            evidence_text = {
+                mid: " ".join([
+                    memories[mid].text,
+                    *(source.quote for source in memories[mid].sources
+                      if source.event_id not in query.exclude_event_ids),
+                ])
+                for mid in state["primary"]
+            }
+            evidence_words = {mid: set(terms(text)) for mid, text in evidence_text.items()}
             ranked = [
                 (mid, "unverified", None)
                 for mid in state["primary"]
                 if memories[mid].fact_key in keywords
                 or (
-                    any(entity and entity in memories[mid].text for entity in analysis.entities)
-                    and bool((query_words & set(terms(memories[mid].text))) - entity_words)
+                    any(entity and entity in evidence_text[mid] for entity in analysis.entities)
+                    and bool((query_words & evidence_words[mid]) - entity_words)
                 )
-                or len((query_words & set(terms(memories[mid].text))) - entity_words) >= 2
+                or len((query_words & evidence_words[mid]) - entity_words) >= 2
             ]
         m1, m2, included, used = [], [], set(), 0
+        memory_groups = []
         root_counts = {"m1": 0, "m2": 0}
+        if "RERANK_FAILED_FUSION_ORDER" not in degraded:
+            # Rank relevance, then pack distinct user evidence before verbose
+            # assistant guidance. Sorting is stable within each category. Do not
+            # rewrite the agreed fusion order on rerank failure.
+            ranked.sort(key=lambda row: (
+                row[1] != "relevant",
+                memories[row[0]].anchor_source().source_role != "user",
+            ))
         for mid, relevance, rank in ranked:
             layer = memories[mid].layer
             root_limit = (
@@ -556,12 +612,24 @@ class Retriever:
                         ),
                     )
                 )
-            size = len(encode([h.model_dump(mode="json") for h in hits]).encode())
-            if used + size > 10 * 1024:
+            size = len(
+                encode(
+                    [h.context() for h in hits]
+                ).encode()
+            )
+            memory_budget = (6 if analysis.kind == "detail" else 10) * 1024
+            if used + size > memory_budget:
                 degraded.append("CONTEXT_BUDGET_LIMIT")
                 continue
             for hit in hits:
+                projected = hit.memory.context()
+                if (projected.get("text_truncated") or not projected["sources_complete"]
+                        or any(s["quote_truncated"] for s in projected["sources"])):
+                    degraded.append("MEMORY_CONTEXT_TRUNCATED")
+            for hit in hits:
                 (m1 if hit.memory.layer == "m1" else m2).append(hit)
+            if hits:
+                memory_groups.append({hit.memory.memory_id for hit in hits})
             included.update(extra)
             used += size
             root_counts[layer] += 1
@@ -569,6 +637,7 @@ class Retriever:
             m1.sort(key=lambda hit: hit.fusion_rank)
             m2.sort(key=lambda hit: hit.fusion_rank)
         history_messages = []
+        before_history = used
         if ranking.history_status == "selected":
             events = {e.event_id: e for e in state["anchors"]}
             selected = sorted(
@@ -601,17 +670,53 @@ class Retriever:
                 history_messages.append(message)
                 used += size
         history_status = ranking.history_status
-        if history_status == "selected" and len(history_messages) != len(
-            ranking.selected_event_ids
-        ):
+        all_history_events = len(history_messages) == len(ranking.selected_event_ids)
+        history_complete = all_history_events and not any(
+            message["truncated"] for message in history_messages
+        )
+        if history_status == "selected" and not all_history_events:
             history_messages = []
-            history_status = "unavailable"
+            used = before_history
+        if history_status == "selected" and not history_complete:
+            degraded.append("HISTORY_BUDGET_LIMIT")
         history = History(
-            status=history_status, reason=ranking.history_reason, messages=history_messages
+            status=history_status,
+            reason=ranking.history_reason,
+            messages=history_messages,
+            complete=history_complete,
         )
         details, detail_status = [], None
+        detail_priority = []
         if analysis.kind == "detail" and time.monotonic() < state["deadline"]:
-            refs = [source for hit in (*m1, *m2) for source in hit.memory.sources]
+            # Summary bodies and source locators have different budgets. A relevant
+            # summary that does not fit must still lead us to its original evidence.
+            source_memories = [
+                memories[related]
+                for mid, _, _ in ranked
+                if memories[mid].layer == "m2"
+                for related in state["bundles"][mid]
+            ]
+            source_memories.extend(hit.memory for hit in m1)
+            refs, seen_sources = [], set()
+            # Give each ranked record a source before taking additional sources
+            # from a dense summary. A single record must not consume every locator.
+            source_groups = []
+            for memory in source_memories:
+                anchor = memory.anchor_source()
+                others = sorted((s for s in memory.sources if s != anchor), key=lambda s: (
+                    s.source_role != "user", -(s.sequence or 0),
+                ))
+                source_groups.append([anchor, *others])
+            for source_group in zip_longest(*source_groups):
+                for source in source_group:
+                    if source is None:
+                        continue
+                    identity = (source.event_id, source.pointer)
+                    if identity not in seen_sources:
+                        seen_sources.add(identity)
+                        refs.append(source)
+            if len(refs) > 12:
+                degraded.append("DETAIL_SOURCE_BUDGET_LIMIT")
             scope_task = (
                 ranking.related_request_ids[0] if len(ranking.related_request_ids) == 1 else None
             )
@@ -627,6 +732,7 @@ class Retriever:
             result = await self.service.search_details(
                 DetailQuery(
                     text=analysis.search_text,
+                    exclude_event_ids=query.exclude_event_ids,
                     sources=refs[:12],
                     request_id=scope_task,
                     time_range=detail_range,
@@ -636,15 +742,120 @@ class Retriever:
                 )
             )
             detail_status = result.status
-            for hit in result.hits[:4]:
-                size = len(encode(hit.model_dump(mode="json")).encode())
+            detail_hits = list(result.hits)
+            # Only successfully read anchors are already covered. Omitted or
+            # unavailable locators can still be found by bounded task expansion.
+            reference_ids = {hit.source.event_id for hit in result.hits}
+            words = set(terms(analysis.search_text)) - FALLBACK_STOP_WORDS
+            direct_details = sorted(
+                result.hits,
+                key=lambda hit: (
+                    hit.source.source_role == "user",
+                    len(words & set(terms(hit.text))),
+                    hit.source.occurred_at,
+                    hit.source.sequence or 0,
+                ),
+                reverse=True,
+            )
+            priority_details = []
+            bridge_details = []
+            # A summary can cite an earlier turn while its missing detail lives in
+            # a later turn of that same task. Expand only positively selected tasks.
+            scopes = list(
+                dict.fromkeys(
+                    [
+                        *ranking.related_request_ids,
+                        *(
+                            memories[mid].request_id
+                            for mid, relevance, _ in ranked
+                            if memories[mid].layer == "m2"
+                        ),
+                    ]
+                )
+            )
+            scopes = [scope for scope in scopes if scope != query.request_id]
+            if len(scopes) > 3:
+                degraded.append("DETAIL_SCOPE_BUDGET_LIMIT")
+            for scope in scopes[:3]:
+                if time.monotonic() >= state["deadline"]:
+                    detail_status = "partial"
+                    break
+                expanded = await self.service.search_details(
+                    DetailQuery(
+                        # Replies can omit the entity and query vocabulary entirely.
+                        # The verified task boundary supplies the search scope.
+                        text="",
+                        exclude_event_ids=query.exclude_event_ids,
+                        request_id=scope,
+                        time_range=detail_range,
+                    )
+                )
+                detail_hits.extend(expanded.hits)
+                novel_user_hits = [
+                    hit
+                    for hit in expanded.hits
+                    if hit.source.event_id not in reference_ids and hit.source.source_role == "user"
+                ]
+                if novel_user_hits:
+                    novel_user_hits.sort(
+                        key=lambda hit: (hit.source.occurred_at, hit.source.sequence or 0)
+                    )
+                    anchor = max(
+                        range(len(novel_user_hits)),
+                        key=lambda index: len(words & set(terms(novel_user_hits[index].text))),
+                    )
+                    # Follow-up replies often carry the requested value without
+                    # repeating the subject. Keep adjacent user evidence together.
+                    neighbors = novel_user_hits[max(0, anchor - 1) : anchor + 2]
+                    priority_details.extend(neighbors)
+                    first = neighbors[0].source.sequence
+                    last = neighbors[-1].source.sequence
+                    for hit in expanded.hits:
+                        sequence = hit.source.sequence
+                        if (
+                            hit.source.source_role == "assistant"
+                            and first is not None
+                            and last is not None
+                            and sequence is not None
+                            and first < sequence < last
+                        ):
+                            preview = hit.text[:600]
+                            bridge_details.append(
+                                hit.model_copy(
+                                    update={
+                                        "text": preview,
+                                        "source": hit.source.model_copy(update={"quote": preview}),
+                                        "truncated": hit.truncated or preview != hit.text,
+                                    }
+                                )
+                            )
+                if expanded.status != "complete":
+                    detail_status = expanded.status
+            detail_hits.sort(
+                key=lambda hit: (
+                    hit.source.event_id not in reference_ids and hit.source.source_role == "user",
+                    len(words & set(terms(hit.text))),
+                ),
+                reverse=True,
+            )
+            seen_details = set()
+            for hit in [*direct_details, *priority_details, *bridge_details, *detail_hits]:
+                identity = (hit.source.event_id, hit.source.pointer)
+                if identity in seen_details:
+                    continue
+                seen_details.add(identity)
+                size = len(encode(hit.context()).encode())
                 if used + size > 11 * 1024:
                     degraded.append("DETAIL_BUDGET_LIMIT")
-                    break
+                    continue
                 details.append(hit)
+                detail_priority.append(identity)
                 used += size
-            if result.status != "complete":
-                degraded.append("DETAIL_SEARCH_" + result.status.upper())
+                if hit.truncated:
+                    degraded.append("DETAIL_CONTEXT_TRUNCATED")
+            details.sort(key=lambda hit: (hit.source.occurred_at, hit.source.sequence or 0))
+            if detail_status != "complete":
+                degraded.append("DETAIL_SEARCH_" + detail_status.upper())
         collection = None
         if analysis.kind == "collection":
             collection = await self.service._io(
@@ -659,6 +870,8 @@ class Retriever:
                 collection["reason"] = "raw_writes_pending"
         coverage = {
             "complete": not degraded,
+            "query_kind": analysis.kind,
+            "dialogue_dependency": analysis.dialogue_dependency,
             "requires_history": analysis.dialogue_dependency == "needed",
             "detail_status": detail_status,
             "pending_events": len(self.service._pending),
@@ -667,6 +880,10 @@ class Retriever:
             if analysis.time_mode == "timeline"
             else "matched_and_current_versions",
             "index": state["index_coverage"],
+            "evidence_selection": {
+                "ranked": len(ranked),
+                "retained": sum(mid in included for mid, _, _ in ranked),
+            },
         }
         result = RecallResult(
             status="degraded"
@@ -688,22 +905,46 @@ class Retriever:
             coverage=coverage,
             collection=collection,
         )
-        # The envelope also consumes space. Drop whole groups, never only a successor.
-        if len(encode(result.context()).encode()) > 12 * 1024:
+        # Account for the actual envelope. A small overflow must not erase every
+        # recalled fact and source. Keep the highest-priority raw details; memory
+        # timeline groups are removed together so successors never stand alone.
+        while len(encode(result.context()).encode()) > 12 * 1024 and detail_priority:
+            identity = detail_priority.pop()
             result = result.model_copy(
                 update={
-                    "m1": [],
-                    "m2": [],
-                    "details": [],
+                    "details": [
+                        hit
+                        for hit in result.details
+                        if (hit.source.event_id, hit.source.pointer) != identity
+                    ],
                     "status": "degraded",
-                    "degradations": [*result.degradations, "CONTEXT_BUDGET_LIMIT"],
+                    "degradations": list(
+                        dict.fromkeys([*result.degradations, "CONTEXT_BUDGET_LIMIT"])
+                    ),
+                }
+            )
+        while len(encode(result.context()).encode()) > 12 * 1024 and memory_groups:
+            removed = memory_groups.pop()
+            result = result.model_copy(
+                update={
+                    layer: [
+                        hit for hit in getattr(result, layer) if hit.memory.memory_id not in removed
+                    ]
+                    for layer in ("m1", "m2")
+                }
+                | {
+                    "status": "degraded",
+                    "degradations": list(
+                        dict.fromkeys([*result.degradations, "CONTEXT_BUDGET_LIMIT"])
+                    ),
                 }
             )
         if len(encode(result.context()).encode()) > 12 * 1024 and result.history.messages:
             result = result.model_copy(
                 update={
-                    "history": History(status="unavailable", reason="所选历史超出本轮上下文预算。"),
-                    "related_request_ids": [],
+                    "history": result.history.model_copy(
+                        update={"messages": [], "complete": False}
+                    ),
                     "status": "degraded",
                     "degradations": [*result.degradations, "HISTORY_BUDGET_LIMIT"],
                 }
@@ -715,4 +956,8 @@ class Retriever:
                 result.collection["display_complete"] = False
         if result.degradations and result.coverage["complete"]:
             result = result.model_copy(update={"coverage": {**result.coverage, "complete": False}})
+        retained = {hit.memory.memory_id for hit in (*result.m1, *result.m2)}
+        result.coverage["evidence_selection"]["retained"] = sum(
+            mid in retained for mid, _, _ in ranked
+        )
         return {"result": result}

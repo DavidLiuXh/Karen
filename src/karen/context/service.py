@@ -19,7 +19,6 @@ from .contracts import (
     DetailHit,
     DetailQuery,
     DetailSearchResult,
-    Evidence,
     MemoryFlushError,
     MemoryQueueFull,
     PersistenceError,
@@ -40,10 +39,12 @@ class ContextMemory:
         root_dir: Path,
         model: ModelClient,
         embeddings: Embeddings,
+        rerank_model: ModelClient | None = None,
         observer: Observer | None = None,
     ):
         self.root_dir = Path(root_dir).expanduser().absolute()
         self.model = model
+        self.rerank_model = rerank_model if rerank_model is not None else model
         self.embeddings = embeddings
         self.observer = observer or Observer()
         self.storage = Storage(self.root_dir)
@@ -330,7 +331,9 @@ class ContextMemory:
             if self._model_tag != before:
                 await self._io(self.storage.invalidate_vectors, before)
                 self._model_tag = before
-            async with asyncio.timeout(10):
+            # Derivation runs asynchronously; long summaries may need more time on
+            # a local CPU. Foreground recall retains its own short deadline.
+            async with asyncio.timeout(30 if background else 10):
                 vectors = await self.embeddings.aembed_documents(texts)
             after = await self._embedding_identity()
             if before != after:
@@ -402,6 +405,10 @@ class ContextMemory:
 
     async def source_ref(self, event, pointer, quote=""):
         source = await self._io(self.storage.source_ref, event, pointer, quote)
+        if source.sequence is None and event.event_id in self._pending:
+            source = source.model_copy(
+                update={"sequence": self._pending[event.event_id][1].sequence}
+            )
         if event.event_id in self._raw_failures:
             source = source.model_copy(update={"storage_state": "failed"})
         return source
@@ -483,7 +490,10 @@ class ContextMemory:
                 event_ids.append(event.event_id)
             event_ids = list(dict.fromkeys(event_ids))
         words = terms(query.text)
+        excluded = set(query.exclude_event_ids)
         for event_id in event_ids:
+            if event_id in excluded:
+                continue
             if scanned >= 200 or read_bytes >= 2 * 1024 * 1024 or time.monotonic() - start >= 2:
                 partial = True
                 break
@@ -513,18 +523,19 @@ class ContextMemory:
                         continue
                     if not refs and words and not any(w in text.casefold() for w in words):
                         continue
-                    source = await self._io(
-                        self.storage.source,
-                        Evidence(event_id=event_id, pointer=pointer, quote=text[:1000] or " "),
-                        {event_id: event},
-                    )
-                    if event_id in self._raw_failures:
-                        source = source.model_copy(update={"storage_state": "failed"})
+                    source = await self.source_ref(event, pointer, text[:1000])
                     match = next(
                         (text.casefold().find(w) for w in words if w in text.casefold()), 0
                     )
                     snippet = text[max(0, match - 200) : max(0, match - 200) + 2400]
-                    hits.append(DetailHit(text=snippet, source=source, truncated=snippet != text))
+                    hits.append(
+                        DetailHit(
+                            text=snippet,
+                            source=source,
+                            request_id=event.request_id,
+                            truncated=snippet != text,
+                        )
+                    )
             except (PersistenceError, ValueError, KeyError):
                 partial = True
         return DetailSearchResult(

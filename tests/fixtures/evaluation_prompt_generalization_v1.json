@@ -1,0 +1,338 @@
+[
+  {
+    "id": "prompt-generalization-optional-zh-v1",
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-07T16:30:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "steps": [
+      {
+        "text": "帮我把这条采购要求整理成中文条款：共买20支黑色签字笔，每支不超过5元。直接给条款正文，不需要其他内容。",
+        "expected": {
+          "outcome": "goal",
+          "goal_contains": [
+            "20",
+            "5"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "prompt-generalization-optional-en-v1",
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-07T16:30:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "steps": [
+      {
+        "text": "Draft a short update for my lab team: all samples have been catalogued and testing starts Tuesday. Give me the text only; do not send it.",
+        "expected": {
+          "outcome": "goal",
+          "goal_contains": [
+            "samples",
+            "Tuesday"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "prompt-generalization-partial-object-v1",
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-07T16:30:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "steps": [
+      {
+        "text": "修改电脑里的那个排班文件，把唯一的值班日期改成2026-10-12。",
+        "expected": {
+          "outcome": "clarification"
+        }
+      },
+      {
+        "text": "还没确定是哪个文件。",
+        "expected": {
+          "outcome": "clarification",
+          "relation": "continue"
+        }
+      },
+      {
+        "text": "文件路径是/tmp/rota.tsv，只修改日期。",
+        "expected": {
+          "outcome": "goal",
+          "relation": "continue",
+          "goal_contains": [
+            "/tmp/rota.tsv",
+            "2026-10-12"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "prompt-generalization-ambiguous-action-en-v1",
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-07T16:30:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "steps": [
+      {
+        "text": "Send the approved reimbursement document to her. No recipient or document has been identified in this conversation.",
+        "expected": {
+          "outcome": "clarification"
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "prompt-generalization-no-valid-prerequisite-en-v1",
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-07T16:30:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "steps": [
+      {
+        "text": "The only candidate rules are divisible by 3 and divisible by 5. The same single rule must hold for every example: 6 and 10. Infer that shared rule, then decide whether 15 satisfies it. Return only YES or NO.",
+        "expected": {
+          "outcome": "clarification"
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "prompt-generalization-valid-prerequisite-zh-v1",
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-07T16:30:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "steps": [
+      {
+        "text": "候选规则只有“等于8”和“小于4”。全部样例必须共享同一条规则，样例为1和2。先推断共有规则，再判断3是否符合，只返回是或否。",
+        "expected": {
+          "outcome": "complete"
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "prompt-generalization-analyze-incompatibility-en-v1",
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-07T16:30:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "steps": [
+      {
+        "text": "I have a fixed budget of $30. The only available tickets cost $45 and $60, and discounts and borrowing are excluded. Explain whether buying either ticket is feasible and why.",
+        "expected": {
+          "outcome": "complete"
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "prompt-generalization-task-timezone-v1",
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-07T16:30:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "steps": [
+      {
+        "text": "按美国洛杉矶当地时间，查明天的空气质量。",
+        "expected": {
+          "outcome": "goal",
+          "goal_contains": [
+            "2026-10-08"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "prompt-generalization-public-lookup-v1",
+    "suite": "clamber",
+    "split": "development",
+    "category": "clarification",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-07T16:30:00+00:00",
+    "context": "",
+    "history": [],
+    "search_fixture": false,
+    "steps": [
+      {
+        "text": "帮我查证 Velunaria 这个名称对应什么公开对象及其定义，保留原拼写。",
+        "expected": {
+          "outcome": "goal",
+          "goal_contains": [
+            "Velunaria"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "prompt-generalization-compatible-preferences-v1",
+    "suite": "karen-zh",
+    "split": "development",
+    "category": "memory",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-07T16:30:00+00:00",
+    "context": "",
+    "history": [
+      {
+        "session_id": "generalization-history-0",
+        "turn": 0,
+        "occurred_at": "2026-10-06T08:00:00+00:00",
+        "role": "user",
+        "content": "我偏好简洁的回复。"
+      },
+      {
+        "session_id": "generalization-history-1",
+        "turn": 0,
+        "occurred_at": "2026-10-06T08:00:00+00:00",
+        "role": "user",
+        "content": "我也喜欢用列表展示并列信息。"
+      }
+    ],
+    "search_fixture": false,
+    "steps": [
+      {
+        "text": "我偏好什么样的回复方式？",
+        "expected": {
+          "outcome": "reply",
+          "contains": [
+            "简洁",
+            "列表"
+          ],
+          "not_contains": [
+            "memory_id",
+            "event_id",
+            "coverage",
+            "degraded"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "prompt-generalization-planned-vs-actual-v1",
+    "suite": "karen-zh",
+    "split": "development",
+    "category": "memory",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-07T16:30:00+00:00",
+    "context": "",
+    "history": [
+      {
+        "session_id": "generalization-history-0",
+        "turn": 0,
+        "occurred_at": "2026-10-06T08:00:00+00:00",
+        "role": "user",
+        "content": "我目前是产品设计师。"
+      },
+      {
+        "session_id": "generalization-history-1",
+        "turn": 0,
+        "occurred_at": "2026-10-06T08:00:00+00:00",
+        "role": "user",
+        "content": "我计划下个月转岗为项目经理。"
+      }
+    ],
+    "search_fixture": false,
+    "steps": [
+      {
+        "text": "我目前是什么岗位？",
+        "expected": {
+          "outcome": "reply",
+          "contains": [
+            "产品设计师"
+          ],
+          "not_contains": [
+            "目前是项目经理"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  },
+  {
+    "id": "prompt-generalization-latest-comparable-state-v1",
+    "suite": "karen-zh",
+    "split": "development",
+    "category": "memory",
+    "timezone": "Asia/Shanghai",
+    "reference_time": "2026-10-07T16:30:00+00:00",
+    "context": "",
+    "history": [
+      {
+        "session_id": "generalization-history-0",
+        "turn": 0,
+        "occurred_at": "2026-10-06T08:00:00+00:00",
+        "role": "user",
+        "content": "这批设备一共40台，累计检查完成12台。"
+      },
+      {
+        "session_id": "generalization-history-1",
+        "turn": 0,
+        "occurred_at": "2026-10-07T08:00:00+00:00",
+        "role": "user",
+        "content": "这批设备累计检查完成17台了。"
+      }
+    ],
+    "search_fixture": false,
+    "steps": [
+      {
+        "text": "这批设备还剩多少台没有检查？",
+        "expected": {
+          "outcome": "reply",
+          "contains": [
+            "23"
+          ]
+        }
+      }
+    ],
+    "gold": {}
+  }
+]

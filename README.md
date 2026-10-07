@@ -236,16 +236,21 @@ API 调用方将实例通过 `Karen(..., memory=memory)` 注入；未注入时�
 
 ## 运行观测
 
-CLI 默认记录意图判断、记忆筛选、模型调用和后台写入过程。启动本地只读页面：
+CLI 默认记录意图判断、记忆筛选、模型调用和后台写入过程。使用参数同时启动
+Karen 和本地只读观测页面，无需另开终端：
 
 ```bash
 uv sync
-uv run karen-observe --open
+uv run --env-file .env karen --observe
 ```
 
 默认地址 `http://127.0.0.1:8765/`，每两秒刷新。可以查看多轮任务时间线、实际
 GoalSpec 上下文、执行图、节点产物、失败与降级，以及可自动核对的流程规则。
 引擎执行完成与业务验收分别显示；记录不足会标明缺口。
+
+用浏览器访问启动时打印的地址。端口被占用时，可用 `--observe 8766` 指定其他端口。
+页面服务随 Karen 的 `/exit`、EOF 或 Ctrl+C 退出关闭；未加 `--observe` 时只记录、不启动页面。
+需要在 Karen 退出后查看历史记录时，仍可单独运行 `uv run karen-observe --open`。
 
 观测保存在 `~/.Karne/observability`，新的引擎记录保存在 `~/.Karne/runs`。
 观测文件不进入用户记忆。接口、脱敏及读取边界见 [运行观测说明](docs/OBSERVABILITY.md)。

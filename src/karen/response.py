@@ -5,6 +5,26 @@ import json
 from dynamic_graph import RunResult
 
 
+def _diagnostic_message(diagnostic) -> str:
+    if diagnostic.code != "TOOL_FAILED":
+        return diagnostic.message
+    reason = diagnostic.details.get("reason_code")
+    if reason == "TOOL_TRANSPORT_FAILED":
+        return "工具服务连接或传输失败，请检查网络后重试。"
+    if reason == "TOOL_RESPONSE_INVALID":
+        return "工具服务返回了无法解析的数据。"
+    status = diagnostic.details.get("http_status")
+    if reason == "TOOL_HTTP_ERROR" and type(status) is int and 100 <= status <= 599:
+        if status in {401, 403}:
+            return f"工具服务拒绝授权（HTTP {status}），请检查对应服务的凭据或权限。"
+        if status == 429:
+            return "工具服务触发限流（HTTP 429），请稍后重试。"
+        if status >= 500:
+            return f"工具服务暂时不可用（HTTP {status}），请稍后重试。"
+        return f"工具服务返回 HTTP {status}，本次调用未完成。"
+    return diagnostic.message
+
+
 def format_result(result: RunResult) -> str:
     lines = []
     if result.execution_status == "FAILED":
@@ -50,5 +70,5 @@ def format_result(result: RunResult) -> str:
         lines.append("执行已结束，没有返回内容。")
     for diagnostic in result.diagnostics:
         label = "提示" if diagnostic.severity == "warning" else "诊断"
-        lines.append(f"{label}（{diagnostic.code}）：{diagnostic.message}")
+        lines.append(f"{label}（{diagnostic.code}）：{_diagnostic_message(diagnostic)}")
     return "\n\n".join(lines)

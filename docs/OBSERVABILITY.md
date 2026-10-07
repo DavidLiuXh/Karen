@@ -4,15 +4,20 @@
 
 ## 使用
 
-更新环境后，在两个终端分别启动：
+更新环境后，通过启动参数同时运行 Karen 和观测页面：
 
 ```bash
 uv sync
-uv run --env-file .env karen
-uv run karen-observe --open
+uv run --env-file .env karen --observe
 ```
 
 页面地址默认是 `http://127.0.0.1:8765/`，每两秒刷新。只绑定本机回环地址，没有写入、执行或重放任务的接口。
+启动时打印页面地址，使用浏览器访问即可；`--observe 8766` 可以选择其他端口。
+页面与当前 CLI 使用同一个观测目录，随 `/exit`、EOF、Ctrl+C 或启动失败关闭并释放端口。
+端口绑定失败会提示换端口并结束启动，不会静默显示其他进程的页面。
+不加参数时继续记录运行过程，但不启动 HTTP 服务。
+
+Karen 退出后仍可单独运行 `uv run karen-observe --open` 查看历史记录；该独立命令的
 `--port` 可以选择其他端口，`--root` 可以指定观测目录。引擎记录目录是该目录的同级 `runs`。
 
 CLI 默认保存位置：

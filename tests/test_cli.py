@@ -1,3 +1,4 @@
+import asyncio
 import errno
 import json
 import os
@@ -5,11 +6,14 @@ import pty
 import select
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import termios
+import threading
 import time
 from contextlib import contextmanager
+from http.client import HTTPConnection
 from zoneinfo import ZoneInfoNotFoundError
 
 import pytest
@@ -35,6 +39,151 @@ def local_memory_only(monkeypatch):
 class DisplayAgent:
     def record_response(self, session, text, **kwargs):
         return ()
+
+
+@pytest.mark.parametrize("arguments,port", [([], None), (["--observe"], 8765),
+                                            (["--observe", "8766"], 8766)])
+def test_cli_observation_parameter(monkeypatch, arguments, port):
+    calls = []
+
+    async def converse(**kwargs):
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "converse", converse)
+    monkeypatch.setattr(sys, "argv", ["karen", "--timezone", "UTC", "--json", *arguments])
+    with pytest.raises(SystemExit) as stopped:
+        cli.main()
+    assert stopped.value.code == 0
+    assert calls == [{"json_output": True, "timezone": "UTC", "observe_port": port}]
+
+
+@pytest.mark.parametrize("port", ["0", "-1", "65536", "not-a-port"])
+def test_cli_rejects_invalid_observation_ports(monkeypatch, port):
+    monkeypatch.setattr(sys, "argv", ["karen", f"--observe={port}"])
+    with pytest.raises(SystemExit) as stopped:
+        cli.main()
+    assert stopped.value.code == 2
+
+
+def observation_get(port, path):
+    connection = HTTPConnection("127.0.0.1", port, timeout=2)
+    try:
+        connection.request("GET", path)
+        response = connection.getresponse()
+        return response.status, response.read()
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("ending", ["exit", "eof", "cancel", "memory_failure", "memory_close_failure"])
+async def test_observation_serves_current_records_and_closes_with_conversation(
+    tmp_path, monkeypatch, capsys, ending
+):
+    observer = cli.Observer(tmp_path / "observability")
+    monkeypatch.setattr(cli, "create_observer", lambda: observer)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    servers, closed = [], []
+    actual_background_server = cli.background_server
+
+    @contextmanager
+    def capture_server(root, *, port):
+        with actual_background_server(root, port=port) as server:
+            servers.append(server)
+            yield server
+
+    class Memory(MemoryStub):
+        async def start(self):
+            if ending == "memory_failure":
+                raise OSError("test initialization failure")
+
+        async def close(self):
+            # The server stays available while normal persistence drains.
+            status, _ = await asyncio.to_thread(observation_get, servers[0].server_port, "/")
+            assert status == 200
+            closed.append(True)
+            if ending == "memory_close_failure":
+                raise cli.PersistenceError("test persistence failure")
+
+    async def read_input():
+        port = servers[0].server_port
+        status, html = await asyncio.to_thread(observation_get, port, "/")
+        assert status == 200 and b"<html" in html.lower()
+        with observer.span("input"):
+            observer.emit("input.received", data={"text": "本次运行的新交互"})
+        async with asyncio.timeout(2):
+            while True:
+                status, body = await asyncio.to_thread(observation_get, port, "/api/tasks")
+                if json.loads(body)["tasks"]:
+                    break
+                await asyncio.sleep(0.01)
+        assert status == 200
+        assert json.loads(body)["tasks"][0]["input"] == "本次运行的新交互"
+        if ending == "eof":
+            raise EOFError
+        if ending == "cancel":
+            raise asyncio.CancelledError
+        return "/exit"
+
+    monkeypatch.setattr(cli, "background_server", capture_server)
+    monkeypatch.setattr(cli, "create_memory", lambda *args, **kwargs: Memory())
+    monkeypatch.setattr(cli, "read_input", read_input)
+    if ending == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await cli.converse(timezone="UTC", observe_port=0)
+    elif ending == "memory_close_failure":
+        with pytest.raises(cli.PersistenceError):
+            await cli.converse(timezone="UTC", observe_port=0)
+    else:
+        assert await cli.converse(timezone="UTC", observe_port=0) == (
+            1 if ending == "memory_failure" else 0
+        )
+    assert closed == ([] if ending == "memory_failure" else [True])
+    port = servers[0].server_port
+    assert f"http://127.0.0.1:{port}/" in capsys.readouterr().err
+    with socket.socket() as probe:
+        assert probe.connect_ex(("127.0.0.1", port)) != 0
+    assert not any(t.name == "karen-observation-server" for t in threading.enumerate())
+
+
+async def test_observation_port_conflict_aborts_startup_and_keeps_existing_listener(
+    tmp_path, monkeypatch, capsys
+):
+    from karen.observability.viewer import background_server
+
+    observer = cli.Observer(tmp_path / "observability")
+    monkeypatch.setattr(cli, "create_observer", lambda: observer)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
+
+    def unexpected_memory(*args, **kwargs):
+        pytest.fail("Conversation must not start without the requested observation server")
+
+    monkeypatch.setattr(cli, "create_memory", unexpected_memory)
+    with background_server(tmp_path / "other-observability", port=0) as existing:
+        assert await cli.converse(timezone="UTC", observe_port=existing.server_port) == 1
+        assert observation_get(existing.server_port, "/")[0] == 200
+    assert "可能已被占用" in capsys.readouterr().err
+
+
+async def test_without_observe_keeps_recording_without_starting_http_server(tmp_path, monkeypatch):
+    observer = cli.Observer(tmp_path / "observability")
+    monkeypatch.setattr(cli, "create_observer", lambda: observer)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
+
+    def unexpected_server(*args, **kwargs):
+        pytest.fail("HTTP server must be opt-in")
+
+    async def read_input():
+        with observer.span("input"):
+            observer.emit("input.received", data={"text": "recorded without HTTP"})
+        return "/exit"
+
+    monkeypatch.setattr(cli, "background_server", unexpected_server)
+    monkeypatch.setattr(cli, "read_input", read_input)
+    assert await cli.converse(timezone="UTC") == 0
+    assert any("recorded without HTTP" in p.read_text()
+               for p in (observer.root_dir / "traces").glob("*.jsonl"))
 
 
 async def test_cli_uses_thinking_for_decisions_and_nonthinking_for_memory(monkeypatch):
@@ -401,7 +550,9 @@ class WaitingAgent:
         await asyncio.Event().wait()
 
 cli.create_memory = lambda model, **kwargs: Memory()
-cli.create_observer = lambda: cli.Observer()
+cli.create_observer = lambda: cli.Observer(
+    Path(os.environ['KAREN_TEST_PERSISTED']).parent / 'observability'
+) if '--observe' in sys.argv else cli.Observer()
 cli.deepseek_client = lambda **kwargs: FakeModelClient()
 cli.Karen = lambda **kwargs: WaitingAgent()
 cli.main()
@@ -470,13 +621,23 @@ def terminal_command(command, *, extra_env):
 
 
 @pytest.mark.parametrize("exit_method", ["ctrl_c", "sigint", "task_ctrl_c", "eof", "exit"])
-def test_cli_exit_restores_terminal_and_waits_for_persistence(local_cli_script, exit_method):
+@pytest.mark.parametrize("observe", [False, True])
+def test_cli_exit_restores_terminal_and_waits_for_persistence(local_cli_script, exit_method, observe):
     script, persisted = local_cli_script
+    arguments = [sys.executable, "-u", str(script), "--timezone", "Asia/Shanghai"]
+    if observe:
+        # The public CLI requires a nonzero port. Reserve an available one for this subprocess.
+        with socket.socket() as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            port = reservation.getsockname()[1]
+        arguments.extend(["--observe", str(port)])
     with terminal_command(
-        [sys.executable, "-u", str(script), "--timezone", "Asia/Shanghai"],
+        arguments,
         extra_env={"KAREN_TEST_PERSISTED": str(persisted)},
     ) as (process, master, read_until, wait_for_exit):
         read_until("你：".encode())
+        if observe:
+            assert observation_get(port, "/")[0] == 200
         if exit_method == "task_ctrl_c":
             os.write(master, "执行测试任务\r".encode())
             read_until(b"TASK_STARTED")
@@ -497,6 +658,9 @@ def test_cli_exit_restores_terminal_and_waits_for_persistence(local_cli_script, 
         for attrs in state.values():
             attrs[3] &= ~getattr(termios, "PENDIN", 0)
         assert state["after"] == state["before"]
+        if observe:
+            with socket.socket() as probe:
+                assert probe.connect_ex(("127.0.0.1", port)) != 0
 
 
 def test_shell_accepts_another_command_after_karen_ctrl_c(local_cli_script):
@@ -584,3 +748,26 @@ async def test_cli_displays_direct_reply_without_execution_result(monkeypatch, c
     else:
         assert output == "Karen：好的，了解了，你住在北京。\n"
     assert len(displayed) == 1 and "好的，了解了" in displayed[0]
+
+
+@pytest.mark.parametrize("details,expected", [
+    ({"reason_code": "TOOL_TRANSPORT_FAILED", "exception_type": "ConnectError"}, "连接或传输失败"),
+    ({"reason_code": "TOOL_RESPONSE_INVALID"}, "无法解析的数据"),
+    ({"reason_code": "TOOL_HTTP_ERROR", "http_status": 401}, "凭据或权限"),
+    ({"reason_code": "TOOL_HTTP_ERROR", "http_status": 429}, "触发限流"),
+    ({"reason_code": "TOOL_HTTP_ERROR", "http_status": 503}, "暂时不可用"),
+    ({"reason_code": "TOOL_HTTP_ERROR", "http_status": 432}, "HTTP 432"),
+    ({"reason_code": "TOOL_HTTP_ERROR", "http_status": "private-provider-value"}, "Registered tool failed"),
+    ({}, "Registered tool failed"),
+])
+def test_tool_failure_presentation_explains_safe_cause_without_dumping_details(details, expected):
+    result = RunResult(
+        run_id="failed-search", execution_status="FAILED",
+        diagnostics=[{"code": "TOOL_FAILED", "phase": "execution",
+                      "message": "Registered tool failed",
+                      "details": {**details, "internal_only": "private-diagnostic-value"}}],
+    )
+    text = cli.format_result(result)
+    assert expected in text and "任务执行失败" in text
+    assert "private-diagnostic-value" not in text and "private-provider-value" not in text
+    assert "ConnectError" not in text

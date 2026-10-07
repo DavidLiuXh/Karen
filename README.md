@@ -1,119 +1,121 @@
 # Karen
 
-Karen 是一个面向个人的 Agent：理解用户想做什么，选取相关记忆，把请求转成有成功标准的目标，再调用工具完成任务。
+English | [简体中文](README_cn.md)
 
-我们希望它逐步成为了解用户、能够主动发现问题并推进工作的 Personal Agent。**当前版本已实现用户发起的多轮对话、上下文记忆、任务执行和运行观测；主动发现任务与执行中等待用户确认尚未实现。**
+Karen is a personal agent that understands what you want to do, retrieves relevant memories, turns requests into goals with success criteria, and uses tools to carry them out.
 
-## 为什么构建 Karen
+Our aim is to build a Personal Agent that understands its user, proactively identifies problems, and moves work forward. **The current version supports user-initiated conversations, contextual memory, task execution, and observability. Proactive task discovery and pausing execution for user confirmation are not yet implemented.**
 
-日常使用 Agent 时，完成一次请求往往还需要用户承担许多衔接工作：反复描述背景、补充遗漏条件、提醒它不要混淆旧任务，并在失败后判断卡在哪一步。
+## Why build Karen?
 
-Karen 希望减少这些负担，让请求从“说出来”到“得到结果”的过程连贯起来：
+Using an agent often leaves users responsible for connecting the steps: repeating background information, filling in missing requirements, keeping unrelated tasks separate, and figuring out where a failed request got stuck.
 
-- **把需求说清楚。** 自然语言通常不完整，但不是每个未说明的偏好都需要追问。Karen 区分必要缺口与可采用合理默认值的信息，保留原始请求和澄清回答，逐轮形成可执行目标。
-- **让有用背景持续生效。** 用户不必在每次交互中重新介绍自己的偏好和经历；新请求只召回相关背景，独立问题不自动附带最近的整段对话。
-- **把目标交给执行流程。** 需要查询、操作或生成文件时，通过统一的目标契约进入任务引擎，记录实际执行、产物和失败原因。
-- **让行为可以检查和改进。** 通过运行观测定位路由、澄清、记忆、规划与工具调用的问题，再用固定评测验证通用修复。
+Karen aims to reduce that work and make the path from a request to a result more continuous:
 
-## 当前能做什么
+- **Clarify what matters.** Natural language is often incomplete, but not every unspecified preference needs a question. Karen distinguishes necessary information from details that can use reasonable defaults, preserves the original request and clarification answers, and works toward an executable goal.
+- **Keep useful context available.** Users should not have to repeat their preferences and experiences in every interaction. Each new request retrieves relevant background; unrelated questions do not automatically inherit the entire recent conversation.
+- **Connect goals to execution.** Requests that require research, actions, or files enter a task engine through a shared goal contract, with records of execution, outputs, and failures.
+- **Make behavior inspectable and improvable.** Runtime traces help locate problems in routing, clarification, memory, planning, and tool calls. Fixed evaluations check whether general fixes work.
 
-| 能力 | 使用方式 |
+## What can Karen do today?
+
+| Capability | What it supports |
 | --- | --- |
-| 多轮对话与输入路由 | 区分信息告知、普通交流、问题、任务请求及待澄清任务的补充或取消 |
-| 必要澄清 | 信息不足时提出具体问题；合并回答后重新判断，直到目标明确 |
-| 个人上下文记忆 | 自动提取和核验长期事实、偏好、事件摘要，支持跨重启召回及事实变更 |
-| 查询与交付 | 搜索公开资料、读取网页、整理文字、生成 `/tmp` 下的文本或 HTML 文件，并请求本机浏览器打开 HTML |
-| 运行观测 | 查看每轮决策、召回候选、模型调用、执行图、产物及失败或降级原因 |
+| Multi-turn conversation and input routing | Distinguishes information sharing, casual conversation, questions, task requests, and updates or cancellation of a task awaiting clarification |
+| Necessary clarification | Asks specific questions when required information is missing, merges the answers, and reassesses until the goal is clear |
+| Personal contextual memory | Automatically extracts and verifies long-term facts, preferences, and event summaries; supports retrieval across restarts and changes to facts |
+| Research and deliverables | Searches public sources, reads web pages, organizes text, writes text or HTML files under `/tmp`, and requests that the local browser open HTML files |
+| Observability | Shows decisions, retrieval candidates, model calls, execution graphs, artifacts, and the causes of failures or degraded operation |
 
-例如，可以分别告诉 Karen“我喜欢历史和考古”“我喜欢运动，比如骑行”，之后询问“我有哪些爱好？”；也可以让它检索资料、整理说明并保存为 HTML。记忆写入在后台进行，新信息进入可召回状态可能有延迟。
+For example, you can tell Karen “I like history and archaeology” and “I enjoy sports, such as cycling,” then later ask “What are my hobbies?” You can also ask it to research a topic, organize the findings, and save them as HTML. Memory writes run in the background, so new information may take time to become retrievable.
 
-目前的交互入口是命令行。任务能否完成取决于已注册工具、可获得的数据和模型判断；已知的语义与执行问题见下方评测说明。
+The current interaction interface is a CLI. Task completion depends on registered tools, available data, and model decisions. Known semantic and execution issues are described in the evaluation section below.
 
-## Karen 如何工作
+## How Karen works
 
-Karen 采用高内聚、低耦合的模块划分：输入理解、上下文记忆和运行观测在 Karen 内独立组织；任务规划与执行由 [DynamicAgentGraph](https://github.com/DavidLiuXh/DynamicAgentGraph) 负责。
+Karen uses modules with high cohesion and low coupling. Input understanding, contextual memory, and observability are separate modules within Karen; [DynamicAgentGraph](https://github.com/DavidLiuXh/DynamicAgentGraph) handles task planning and execution.
 
 ```mermaid
 flowchart TD
-    U[用户输入] --> R[判断输入类型与当前任务关系]
-    R -->|信息告知或普通交流| A[直接回应]
-    R -->|问题或任务| M[按需召回相关记忆]
-    M --> D{是否可直接回答}
-    D -->|是| A
-    D -->|需要任务执行| C[判断清晰度]
-    C -->|存在必要缺口| Q[提出澄清问题]
-    Q -->|用户补充，保留原请求| U
-    C -->|清晰| G[生成 GoalSpec]
-    G --> E[DynamicAgentGraph 规划与执行]
-    E --> O[展示结果或失败原因]
-    U -. 异步保存与提取 .-> K[上下文记忆]
-    O -. 异步记录任务结果 .-> K
+    U[User input] --> R[Classify input and its relation to the current task]
+    R -->|Information sharing or conversation| A[Respond directly]
+    R -->|Question or task| M[Retrieve relevant memories as needed]
+    M --> D{Can it be answered directly?}
+    D -->|Yes| A
+    D -->|Requires task execution| C[Assess clarity]
+    C -->|Necessary information is missing| Q[Ask clarification questions]
+    Q -->|User answers; preserve the original request| U
+    C -->|Clear| G[Build GoalSpec]
+    G --> E[DynamicAgentGraph plans and executes]
+    E --> O[Show the result or failure reason]
+    U -. Save and extract asynchronously .-> K[Contextual memory]
+    O -. Record task results asynchronously .-> K
     K --> M
 ```
 
-### 从输入到可执行目标
+### From input to an executable goal
 
-输入模块使用 LangGraph 表达回应、澄清与目标构建流程。告知个人信息不需要启动任务规划；能依据本轮输入或相关记忆回答的问题直接回应；需要外部信息、操作或交付物的请求进入任务执行分支。
+The input module uses LangGraph to express response, clarification, and goal-building flows. Sharing personal information does not require task planning. Questions answerable from the current input or relevant memories receive a direct response; requests requiring external information, actions, or deliverables enter the execution path.
 
-澄清维护原始请求、待决问题及回答关联，部分回答不会丢掉其余问题。每轮重新判断清晰度，只追问影响目标、范围、交付物或验收的必要信息。用户时区和首次输入时间作为日期基准，“今天”“明天”等相对日期据此解析。
+Clarification preserves the original request, pending questions, and their associated answers. A partial answer does not discard other pending questions. Each turn reassesses clarity and asks only for information necessary to determine the goal, scope, deliverable, or acceptance criteria. The user's timezone and the initial input time provide the reference for relative dates such as “today” and “tomorrow.”
 
-目标明确后生成 DynamicAgentGraph 的 `GoalSpec`，包含目标、成功标准、约束、输入和上下文。引擎据此规划执行图、调用已授权能力，并返回执行结果。执行状态和输出结构通过校验，不等于所有业务成功标准已被独立验证。
+Once the goal is clear, Karen creates a DynamicAgentGraph `GoalSpec` containing the objective, success criteria, constraints, inputs, and context. The engine plans an execution graph, invokes authorized capabilities, and returns a result. Valid execution status and output structure do not mean that every business success criterion has been independently verified.
 
-### 三层记忆与选择性召回
+### Three memory layers and selective retrieval
 
-| 层级 | 内容 | 作用 |
+| Layer | Contents | Purpose |
 | --- | --- | --- |
-| m1 | 有来源并经模型核验的长期事实与偏好 | 回答当前个人信息、提供持续有效的背景 |
-| m2 | 对话和任务的事实、行动、状态及交付物摘要 | 初步检索历史事件，定位相关任务与证据 |
-| m3 | 按用户当地日期轮转的 JSONL 详细记录及附件 | 根据摘要来源或明确范围补查原文细节 |
+| m1 | Long-term facts and preferences with sources and model verification | Answers questions about current personal information and supplies persistent background |
+| m2 | Summaries of facts, actions, status, and deliverables from conversations and tasks | Provides initial retrieval of past events and locates related tasks and evidence |
+| m3 | Detailed JSONL records rotated by the user's local date, plus attachments | Supplies original details through summary references or a clearly bounded search |
 
-记忆保留来源角色、时间、状态及版本关系。“计划搬到上海”与“目前住在北京”可以同时存在；已经发生的变更、纠正和未解决的冲突分别处理，避免只按记录时间简单覆盖。
+Memories retain source roles, times, status, and version relationships. “I plan to move to Shanghai” and “I currently live in Beijing” can coexist. Completed changes, corrections, and unresolved conflicts are handled separately rather than simply overwriting older records by timestamp.
 
-写入、提取、核验和向量化异步进行；回答问题或执行任务前的召回则等待最终结果：
+Writing, extraction, verification, and embedding run asynchronously. Retrieval before answering a question or executing a task waits for the final result:
 
-**向量检索 + BM25 → RRF 融合 → 补齐版本关系 → 限制精排输入 → LLM 精排 → 按需补查 m3。**
+**Vector search + BM25 → RRF fusion → Complete version relationships → Bound reranking input → LLM reranking → Look up m3 details as needed.**
 
-精排失败时沿用融合顺序，并明确记录降级。跨任务历史按关联性选择；同一次澄清的对话由当前会话直接保留。模型调用遵循通用接口，默认使用 DeepSeek；向量默认由本机 Ollama 的 BGE-M3 生成，SQLite 和 FTS5 保存索引与记录。
+If reranking fails, Karen retains the fused order and explicitly records degraded operation. History from other tasks is selected by relevance; the current session directly preserves its own clarification conversation. Model calls use a common interface with DeepSeek as the default backend. Local Ollama BGE-M3 generates embeddings, while SQLite and FTS5 store records and indexes.
 
-### 查看运行过程
+### Inspecting runtime behavior
 
-用 `--observe` 随 Karen 一起启动本地只读页面，可以检查“为什么追问”“为什么召回这条记忆”“工具为什么失败”。普通回复呈现用户需要的结果；记忆 ID、完整模型请求和诊断等内部数据保留在观测记录中。
+Start the local read-only dashboard alongside Karen with `--observe` to investigate questions such as “Why did it ask for clarification?”, “Why was this memory retrieved?”, and “Why did the tool fail?” Normal responses present the result the user needs; internal data such as memory IDs, full model requests, and diagnostics remain in the observation records.
 
-## 评测表现
+## Evaluation results
 
-**截至 2026-10-07，最新代码尚未完成固定清单的完整复测。** 下表是最近一次完整复测的已保存结果，对应 Karen **`6a0f483`**，早于后续通用提示词整理、思考配置和截断恢复改动。
+**As of 2026-10-07, the latest code has not completed a full rerun of the fixed evaluation set.** The table below shows the most recent saved full run, for Karen **`6a0f483`**, before subsequent changes to general prompt rules, reasoning settings, and recovery from truncated output.
 
-| 评测集 | 主要检查内容 | 通过 / 总数 | 通过率 |
+| Evaluation set | Main focus | Passed / Total | Pass rate |
 | --- | --- | ---: | ---: |
-| CLAMBER 固定子集 | 是否需要澄清、澄清问题是否解决实质缺口 | 14 / 24 | 58.3% |
-| LongMemEval oracle 固定子集 | 跨重启记忆、事实更新、时间推理与信息不足 | 13 / 14 | 92.9% |
-| Karen 中文回归 | 路由、多轮澄清、日期、偏好、住所变更及取消 | 11 / 12 | 91.7% |
-| 独立变体回归 | 用不同表述与条件检查通用修复 | 12 / 12 | 100% |
-| 边界回归 | 封闭条件、用途和偏好关系等边界 | 4 / 4 | 100% |
-| **合计** | **同一固定清单** | **54 / 66** | **81.8%** |
+| CLAMBER fixed subset | Whether clarification is needed and whether questions resolve the substantive gap | 14 / 24 | 58.3% |
+| LongMemEval oracle fixed subset | Memory across restarts, fact updates, temporal reasoning, and insufficient information | 13 / 14 | 92.9% |
+| Karen Chinese regression | Routing, multi-turn clarification, dates, preferences, residence changes, and cancellation | 11 / 12 | 91.7% |
+| Independent variant regression | Different wording and conditions to check general fixes | 12 / 12 | 100% |
+| Boundary regression | Closed conditions, intended uses, preference relationships, and other boundaries | 4 / 4 | 100% |
+| **Total** | **The same fixed set** | **54 / 66** | **81.8%** |
 
-同一清单上一轮为 47/66；另行新增的八条澄清回归本轮为 8/8，不并入上述分母。完整失败清单和比较依据见 [完整复测报告](docs/EVALUATION_FULL_ACCEPTANCE_20261007.md)。
+The preceding run of the same set scored 47/66. Eight additional clarification regression cases scored 8/8 in this run and are not included in the denominator above. See the [full evaluation report](docs/EVALUATION_FULL_ACCEPTANCE_20261007.md) for all failures and the comparison basis.
 
-后续改动的验证单独记录，不与旧成绩拼接：
+Validation of subsequent changes is reported separately, without combining it with earlier scores:
 
-| 后续验证 | 结果 | 说明 |
+| Subsequent validation | Result | Notes |
 | --- | --- | --- |
-| 通用提示词整理后的新增迁移回归 | 10 / 12 | 另有 1 条判定失败、1 条模型服务错误；属于开发回归，非盲测 |
-| 思考配置与截断恢复后的真实集成抽查 | 3 / 3 | 覆盖爱好、当前住所和相对日期；截断恢复由模拟 HTTP 响应验证 |
+| New transfer regression cases after generalizing prompt rules | 10 / 12 | One judgment failure and one model service error; development regression, not a blind evaluation |
+| Live integration spot checks after reasoning and truncation-recovery changes | 3 / 3 | Covers hobbies, current residence, and relative dates; truncation recovery was verified with simulated HTTP responses |
 
-这些是**固定小样本结果，不是公开数据集全集或官方榜单成绩**。LongMemEval 使用 oracle 证据历史和自定义 DeepSeek 评分，没有完成 S/M 长干扰历史评测；CLAMBER 测试到回应、澄清或 GoalSpec，不代表外部任务已执行成功。运行错误和评分错误均计入分母，已见用例的重复成功不覆盖此前失败。
+These are **results on small fixed samples, not the complete public datasets or official leaderboard scores**. LongMemEval uses oracle evidence histories and a custom DeepSeek grader; S/M histories with long distractor context have not been evaluated. CLAMBER checks responses, clarification, or GoalSpec generation, not successful execution of external tasks. Runtime and grading errors count in the denominator, and successful repeats do not replace earlier failures.
 
-当前仍需改进的主要问题包括：必要信息与可选偏好的区分不够稳定，部分条件和指代存在误判，英文目标语言不一致，以及复杂任务的规划、输出预算和执行时限问题。部分公开标签与评分也存在分歧，原判定继续保留。后续修复已有局部验证，但尚不能据此声称整组达标率提高。
+Remaining issues include inconsistent judgments about necessary information versus optional preferences, errors in interpreting some conditions and references, inconsistent goal language for English inputs, and planning, output-budget, and execution-deadline problems in complex tasks. Some public labels and grading decisions are also disputed; the original judgments are retained. Later fixes have local validation, but this does not yet establish an improved pass rate for the full set.
 
-详细依据：[评测协议与复现](docs/EVALUATION.md)、[提示词整理验证](docs/PROMPT_POLICY_VERIFICATION_20261007.md)、[配置与截断恢复验证](docs/MODEL_BUDGET_VERIFICATION_20261007.md)。
+Details: [evaluation protocol and reproduction](docs/EVALUATION.md), [prompt-generalization validation](docs/PROMPT_POLICY_VERIFICATION_20261007.md), and [reasoning and truncation-recovery validation](docs/MODEL_BUDGET_VERIFICATION_20261007.md).
 
-## 安装
+## Installation
 
-### 1. 准备环境与源码
+### 1. Prepare the environment and source code
 
-需要 Git、Python 3.11 或 3.12、[uv](https://docs.astral.sh/uv/getting-started/installation/)、[Ollama](https://ollama.com/download)，以及 DeepSeek API 密钥。网络搜索另需 Tavily API 密钥。
+You need Git, Python 3.11 or 3.12, [uv](https://docs.astral.sh/uv/getting-started/installation/), [Ollama](https://ollama.com/download), and a DeepSeek API key. Web search also requires a Tavily API key.
 
-当前采用本地源码安装，需有两个仓库的访问权限，并将它们放在相邻目录中：
+Installation currently uses local source code. You need access to both repositories, placed in sibling directories:
 
 ```bash
 mkdir -p ~/opensource
@@ -124,125 +126,125 @@ cd Karen
 uv sync --python 3.12
 ```
 
-已有源码时直接进入 Karen 目录运行 `uv sync`。`pyproject.toml` 将执行库指向 `../DynamicAgentGraph`；安装不修改执行库源码。
+If you already have the source code, run `uv sync` from the Karen directory. `pyproject.toml` points to `../DynamicAgentGraph`; installation does not modify the engine's source code.
 
-### 2. 准备本地向量模型
+### 2. Prepare the local embedding model
 
-启动 Ollama 服务；已经运行时跳过此步骤：
+Start the Ollama service. Skip this step if it is already running:
 
 ```bash
 ollama serve
 ```
 
-在另一个终端下载模型，已安装时无需重复下载：
+Download the model in another terminal. Skip the download if it is already installed:
 
 ```bash
 ollama pull bge-m3:latest
 ```
 
-Ollama 用于 embedding，默认 LLM 仍为云端 DeepSeek。Ollama 暂不可用时，已有记录可降级使用 BM25；向量处理失败会被记录。
+Ollama provides embeddings; the default LLM is still cloud-hosted DeepSeek. If Ollama is temporarily unavailable, existing records can fall back to BM25, and embedding failures are recorded.
 
-### 3. 配置密钥
+### 3. Configure API keys
 
-在 Karen 根目录创建 `.env`，填入自己的密钥：
+Create `.env` in the Karen repository root and fill in your keys:
 
 ```dotenv
 DEEPSEEK_API_KEY=your_deepseek_api_key
 TAVILY_API_KEY=your_tavily_api_key
 ```
 
-`DEEPSEEK_API_KEY` 必需；不使用网络搜索时可省略 `TAVILY_API_KEY`。`.env` 已被 Git 忽略。
-启动时使用 `uv run --env-file .env ...` 显式加载，也可以在 shell 中导出对应环境变量。
+`DEEPSEEK_API_KEY` is required. Omit `TAVILY_API_KEY` if you do not need web search. Git ignores `.env`.
+Load it explicitly with `uv run --env-file .env ...`, or export the corresponding environment variables in your shell.
 
-## 使用
+## Usage
 
-### 启动并查看运行过程
+### Start Karen and inspect its behavior
 
-在 Karen 目录运行：
+Run from the Karen directory:
 
 ```bash
 uv run --env-file .env karen --observe
 ```
 
-浏览器访问启动时打印的地址，默认是 `http://127.0.0.1:8765/`。页面每两秒刷新，服务随 Karen 退出关闭。端口被占用时可用 `--observe 8766`；不需要页面时省略 `--observe`，运行记录仍会保存。
+Open the URL printed at startup, which defaults to `http://127.0.0.1:8765/`. The dashboard refreshes every two seconds and shuts down when Karen exits. Use `--observe 8766` if the port is occupied. Omit `--observe` if you do not need the dashboard; runtime records are still saved.
 
-| 参数 | 用途 |
+| Option | Purpose |
 | --- | --- |
-| `--observe [PORT]` | 同时启动观测页面，默认端口 8765 |
-| `--timezone Asia/Shanghai` | 显式指定用户的 IANA 时区；默认读取本机时区 |
-| `--json` | 展示完整结果 JSON，便于调试 |
-| `--help` | 查看命令说明 |
+| `--observe [PORT]` | Starts the observation dashboard alongside Karen; default port: 8765 |
+| `--timezone Asia/Shanghai` | Explicitly sets the user's IANA timezone; defaults to the local machine's timezone |
+| `--json` | Displays the full result JSON for debugging |
+| `--help` | Shows command help |
 
-远程运行时应显式提供用户时区。日常显示直接回复或执行结果的 `answer`；用户要求的来源和影响结论的重要限制写入回答，不自动附加内部审计字段。
+When running remotely, explicitly provide the user's timezone. Normal output shows the direct response or the execution result's `answer`. Requested sources and material limitations belong in the answer; internal audit fields are not appended automatically.
 
-### 输入请求
+### Enter requests
 
-下面是可以尝试的输入，分别覆盖个人信息、记忆查询、资料整理和文件交付：
+These examples cover personal information, memory queries, research, and file delivery:
 
 ```text
-我喜欢历史和考古，也喜欢骑行。
-我有哪些爱好？
-帮我整理最近一个月北京的路亚水域信息，文字说明即可。
-把刚才整理的内容保存为 /tmp/beijing-lure.html，并用本机浏览器打开。
+I like history and archaeology, and I also enjoy cycling.
+What are my hobbies?
+Summarize information from the past month about lure-fishing waters in Beijing. A written summary is enough.
+Save the summary you just prepared as /tmp/beijing-lure.html and open it in my local browser.
 ```
 
-需要澄清时直接回答问题，Karen 会合并当前任务要求并重新判断；与旧任务无关的新请求独立处理。每项任务结束后继续等待下一条输入。
+Answer clarification questions directly. Karen merges the current task's requirements and reassesses them; unrelated new requests are handled separately. It waits for another input after each task finishes.
 
-输入 `/exit`、EOF 或 Ctrl+C 退出。正常退出等待原文和恢复状态持久化，未完成的后台模型任务留待下次恢复；强制终止可能丢失尚未落盘的信息。重新启动后可以召回已保存的记忆，但不会恢复此前尚未完成的澄清或执行会话。
+Exit with `/exit`, EOF, or Ctrl+C. Normal shutdown waits for original records and recovery state to be persisted; unfinished background model jobs can resume on the next startup. Forced termination may lose information that has not reached disk. After restarting, Karen can retrieve saved memories, but it does not restore an unfinished clarification or execution session.
 
-### 当前工具范围
+### Available tools
 
-CLI 默认注册并授权当前可用能力；Tavily 未配置时仅搜索工具不可用。
+The CLI registers and authorizes the capabilities currently available to it. Without Tavily configuration, only the search tool is unavailable.
 
-| 工具 | 用途与边界 |
+| Tool | Purpose and boundaries |
 | --- | --- |
-| `tavily.search` | 搜索公开网络资料，需要 `TAVILY_API_KEY` |
-| `web.fetch` | 读取当前 HTTP/HTTPS 网页文本，不提供任意历史日期快照 |
-| `file.read_text` / `file.write_text` | 读写 `/tmp` 下的 UTF-8 文本，默认大小限制 1 MiB；覆盖须显式指定 |
-| `browser.open_local_page` | 请求默认浏览器打开 `/tmp` 下已有的 HTML；打开请求成功不等于渲染成功 |
+| `tavily.search` | Searches public web sources; requires `TAVILY_API_KEY` |
+| `web.fetch` | Reads current HTTP/HTTPS page text; does not provide snapshots for arbitrary historical dates |
+| `file.read_text` / `file.write_text` | Reads or writes UTF-8 text under `/tmp`, with a default 1 MiB size limit; overwriting must be explicitly requested |
+| `browser.open_local_page` | Requests that the default browser open an existing HTML file under `/tmp`; a successful launch request does not establish successful rendering |
 
-自定义接入可传入 `ExecutionPolicy` 限定能力白名单，模型不能自行扩大权限。当前没有执行中暂停并等待用户确认的流程。
+Custom integrations can pass an `ExecutionPolicy` to restrict the capability allowlist. The model cannot expand its own permissions. Pausing execution to wait for user confirmation is not currently supported.
 
-### 本地数据与历史查看
+### Local data and historical records
 
-记忆全局有效，同一记忆目录同时只允许一个写入进程。目录名沿用当前实现的 **`.Karne`**：
+Memory is shared across projects and sessions. Only one process may write to a given memory directory at a time. The directory name retains the implementation's spelling, **`.Karne`**:
 
 ```text
 ~/.Karne/
-  context/          # m1/m2、向量和全文索引、m3 原文及附件
-  observability/    # 决策、模型调用和后台处理追踪
-  runs/             # DynamicAgentGraph 执行图、节点记录和产物
+  context/          # m1/m2, vector and full-text indexes, m3 originals and attachments
+  observability/    # Decisions, model calls, and background processing traces
+  runs/             # DynamicAgentGraph execution graphs, node records, and artifacts
 ```
 
-记忆与运行记录保存在本地；模型提取、判断、精排和回答会将所需输入发送到配置的 LLM 服务，网络搜索调用 Tavily。观测日志与用户记忆分开保存。
+Memories and runtime records are stored locally. Model extraction, decisions, reranking, and responses send the required inputs to the configured LLM service; web search calls Tavily. Observation logs are stored separately from user memory.
 
-Karen 退出后，仍可单独运行以下命令查看历史记录：
+After Karen exits, you can still view historical records with a standalone command:
 
 ```bash
 uv run karen-observe --open
 ```
 
-## 开发与进一步阅读
+## Development and further reading
 
-核心入口是 `Karen.advance(session, text)`：直接回应读取 `TaskTurn.response`，真实执行读取 `TaskTurn.result`，两者都没有时读取 `session.questions`；下一轮传回 `turn.session`。调用方可以独立使用 `IntentRecognizer`，或注入自己的执行引擎、记忆与模型客户端。
+The main entry point is `Karen.advance(session, text)`. Read `TaskTurn.response` for a direct response, `TaskTurn.result` for actual execution, or `session.questions` if neither is present. Pass `turn.session` into the next turn. Integrations can use `IntentRecognizer` independently or inject their own execution engine, memory, and model clients.
 
-| 文档 | 内容 |
+| Document | Contents |
 | --- | --- |
-| [输入路由](docs/INPUT_ROUTING.md) | 输入分类、直接回应、会话关联及取消边界 |
-| [多轮澄清](docs/CLARIFICATION_STATE.md) | 待决问题台账、状态转换与目标构建 |
-| [上下文记忆设计](docs/CONTEXT_MEMORY_DESIGN.md) / [接口与运行](docs/CONTEXT_MEMORY_IMPLEMENTATION.md) | m1/m2/m3、版本时间线、异步写入与同步召回 |
-| [运行观测](docs/OBSERVABILITY.md) | 追踪、诊断、读取范围与服务生命周期 |
-| [提示词维护](docs/PROMPT_POLICY.md) | 通用规则与 few-shot 的组织原则 |
-| [模型配置与预算](docs/MODEL_BUDGET_VERIFICATION_20261007.md) | 思考强度、阶段时限及截断后的有界恢复 |
-| [评测协议](docs/EVALUATION.md) / [完整评测报告](docs/EVALUATION_FULL_ACCEPTANCE_20261007.md) | 固定输入、判定标准、复现与逐例结果 |
+| [Input routing](docs/INPUT_ROUTING.md) | Input classification, direct responses, session relationships, and cancellation boundaries |
+| [Multi-turn clarification](docs/CLARIFICATION_STATE.md) | Pending-question ledger, state transitions, and goal construction |
+| [Contextual memory design](docs/CONTEXT_MEMORY_DESIGN.md) / [interfaces and operation](docs/CONTEXT_MEMORY_IMPLEMENTATION.md) | m1/m2/m3, version timelines, asynchronous writes, and synchronous retrieval |
+| [Observability](docs/OBSERVABILITY.md) | Tracing, diagnostics, read boundaries, and server lifecycle |
+| [Prompt maintenance](docs/PROMPT_POLICY.md) | Organizing general rules and few-shot examples |
+| [Model settings and budgets](docs/MODEL_BUDGET_VERIFICATION_20261007.md) | Reasoning effort, stage deadlines, and bounded recovery after truncation |
+| [Evaluation protocol](docs/EVALUATION.md) / [full evaluation report](docs/EVALUATION_FULL_ACCEPTANCE_20261007.md) | Fixed inputs, grading criteria, reproduction, and case results |
 
-当前默认模型为 `deepseek-flash`：输入理解、回应、执行节点和精排请求 low 思考，规划请求 medium；记忆提取、核验和查询理解使用非思考。具体客户端见 [模型装配](src/karen/models.py)，阶段组合见 [CLI 入口](src/karen/cli.py)；提示词集中在各模块的 `prompts.py`。
+The default model is `deepseek-flash`. Input understanding, responses, execution nodes, and reranking request low reasoning effort; planning requests medium. Memory extraction, verification, and query understanding use non-thinking mode. See [model configuration](src/karen/models.py) for clients and the [CLI entry point](src/karen/cli.py) for stage composition. Prompts live in each module's `prompts.py`.
 
-离线行为与边界检查：
+Run offline behavior and boundary checks with:
 
 ```bash
 uv run pytest
 uv run ruff check .
 ```
 
-离线检查使用可控响应，不消耗模型 API 额度。真实模型评测单独按评测协议运行，使用隔离目录，不读取用户全局记忆；模型服务和实时检索会产生费用及结果波动。修复保持通用，不为单个评测题增加专用分支或修改标签来提高分数。
+Offline checks use controlled responses and do not consume model API credits. Live model evaluations run separately under the evaluation protocol, use isolated directories, and do not read the user's global memory. Model services and live retrieval incur costs and can produce varying results. Fixes remain general: they must not introduce special branches for individual evaluation cases or change labels to improve scores.

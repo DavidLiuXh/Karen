@@ -584,3 +584,26 @@ async def test_cli_displays_direct_reply_without_execution_result(monkeypatch, c
     else:
         assert output == "Karen：好的，了解了，你住在北京。\n"
     assert len(displayed) == 1 and "好的，了解了" in displayed[0]
+
+
+@pytest.mark.parametrize("details,expected", [
+    ({"reason_code": "TOOL_TRANSPORT_FAILED", "exception_type": "ConnectError"}, "连接或传输失败"),
+    ({"reason_code": "TOOL_RESPONSE_INVALID"}, "无法解析的数据"),
+    ({"reason_code": "TOOL_HTTP_ERROR", "http_status": 401}, "凭据或权限"),
+    ({"reason_code": "TOOL_HTTP_ERROR", "http_status": 429}, "触发限流"),
+    ({"reason_code": "TOOL_HTTP_ERROR", "http_status": 503}, "暂时不可用"),
+    ({"reason_code": "TOOL_HTTP_ERROR", "http_status": 432}, "HTTP 432"),
+    ({"reason_code": "TOOL_HTTP_ERROR", "http_status": "private-provider-value"}, "Registered tool failed"),
+    ({}, "Registered tool failed"),
+])
+def test_tool_failure_presentation_explains_safe_cause_without_dumping_details(details, expected):
+    result = RunResult(
+        run_id="failed-search", execution_status="FAILED",
+        diagnostics=[{"code": "TOOL_FAILED", "phase": "execution",
+                      "message": "Registered tool failed",
+                      "details": {**details, "internal_only": "private-diagnostic-value"}}],
+    )
+    text = cli.format_result(result)
+    assert expected in text and "任务执行失败" in text
+    assert "private-diagnostic-value" not in text and "private-provider-value" not in text
+    assert "ConnectError" not in text

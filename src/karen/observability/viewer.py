@@ -6,7 +6,9 @@ import argparse
 import json
 import os
 import re
+import threading
 import webbrowser
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -15,6 +17,7 @@ from .checks import check_trace
 from .recorder import sanitize
 
 IDENTIFIER = re.compile(r"[a-f0-9]{32}")
+DEFAULT_PORT = 8765
 
 
 class TraceStore:
@@ -289,7 +292,7 @@ class TraceStore:
         }
 
 
-def create_server(root_dir, *, port=8765):
+def create_server(root_dir, *, port=DEFAULT_PORT):
     store = TraceStore(root_dir)
     asset = Path(__file__).with_name("dashboard.html").read_bytes()
 
@@ -346,10 +349,26 @@ def create_server(root_dir, *, port=8765):
     return ThreadingHTTPServer(("127.0.0.1", port), Handler)
 
 
+@contextmanager
+def background_server(root_dir, *, port=DEFAULT_PORT):
+    """Serve alongside the conversation and release the listener on every exit path."""
+    with create_server(root_dir, port=port) as server:
+        thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.1},
+            name="karen-observation-server", daemon=True,
+        )
+        thread.start()
+        try:
+            yield server
+        finally:
+            server.shutdown()
+            thread.join()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Karen 本地运行观测页面（只读）")
     parser.add_argument("--root", type=Path, default=Path.home() / ".Karne" / "observability")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--open", action="store_true", help="用本机浏览器打开页面")
     args = parser.parse_args()
     with create_server(args.root, port=args.port) as server:

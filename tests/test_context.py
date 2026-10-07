@@ -2131,7 +2131,8 @@ async def test_content_repair_reduces_scope_and_does_not_repeat_the_same_job(tmp
         assert len(first.input_data["events"]) == 7 and len(repaired.input_data["events"]) == 4
         assert repaired.input_data["events"][-1]["event_id"] == receipt.event_id
         assert repaired.input_data["previous_response_truncated"]
-        assert repaired.max_output_tokens == first.max_output_tokens == 8192
+        assert first.max_output_tokens == 8192
+        assert repaired.max_output_tokens == (16384 if code == "MODEL_RESPONSE_TRUNCATED" else 8192)
         assert 0 < repaired.timeout_seconds <= first.timeout_seconds
         assert (await service.load_event(receipt.event_id)).payload["content"] == "新的设备观察。"
         following = service.submit(event("其他设备的独立记录。", request="other-device"))
@@ -2196,3 +2197,97 @@ async def test_derived_memory_persists_canonical_source_without_an_extra_model_c
     cached = json.loads(service.storage.job(receipt.event_id)["extraction"])
     assert cached["summaries"][0]["evidence"][0]["quote"] == text
     assert len([r for r in model.requests if r.role == "memory_extract"]) == 1
+
+
+@pytest.mark.parametrize("role", ["memory_query", "memory_rerank"])
+@pytest.mark.parametrize("recovers", [True, False])
+async def test_recall_truncation_expands_once_without_changing_profiles_or_fusion(tmp_path, role, recovers):
+    class Model(MemoryModel):
+        def __init__(self, allowed_roles):
+            super().__init__()
+            self.allowed_roles = allowed_roles
+            self.truncations = []
+
+        async def generate(self, request):
+            assert request.role in self.allowed_roles
+            if request.role == role:
+                self.truncations.append(request)
+                if len(self.truncations) == 1 or not recovers:
+                    self.requests.append(request)
+                    raise ModelCallError("MODEL_RESPONSE_TRUNCATED", "Output limit", retryable=False)
+            return await super().generate(request)
+
+    base = Model({"memory_extract", "memory_verify", "memory_query"})
+    ranker = Model({"memory_rerank"})
+    service = ContextMemory(root_dir=tmp_path, model=base, rerank_model=ranker, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        await service.flush(service.submit(event("我住在北京。")))
+        result = await service.recall(query("我住在哪里？"))
+        model = base if role == "memory_query" else ranker
+        assert [r.max_output_tokens for r in model.truncations] == [4096, 8192]
+        first, retry = model.truncations
+        assert first.input_data == retry.input_data and first.output_schema == retry.output_schema
+        assert 0 < retry.timeout_seconds <= first.timeout_seconds
+        assert 7 < base.requests[-1].timeout_seconds <= 8
+        assert 19 < ranker.requests[0].timeout_seconds <= 20
+        assert result.m1 and result.m1[0].memory.value == "北京"
+        if not recovers:
+            code = "QUERY_ANALYSIS_FAILED" if role == "memory_query" else "RERANK_FAILED_FUSION_ORDER"
+            assert code in result.degradations
+            if role == "memory_rerank":
+                assert [h.fusion_rank for h in result.m1] == sorted(h.fusion_rank for h in result.m1)
+                assert all(h.relevance == "unverified" for h in result.m1)
+        else:
+            assert "RERANK_FAILED_FUSION_ORDER" not in result.degradations
+    finally:
+        await service.close()
+
+
+async def test_recall_retry_uses_remaining_deadline_and_cancellation_is_not_retried(tmp_path):
+    from karen.context.contracts import QueryAnalysis
+    from karen.context.retrieval import Retriever
+
+    class Model(MemoryModel):
+        async def generate(self, request):
+            self.requests.append(request)
+            await asyncio.sleep(0.03)
+            raise ModelCallError("MODEL_RESPONSE_TRUNCATED", "Output limit")
+
+    model = Model()
+    service = ContextMemory(root_dir=tmp_path, model=model, embeddings=LocalEmbeddings())
+    retriever = Retriever(service)
+    with pytest.raises(TimeoutError):
+        await retriever.call({"deadline": time.monotonic() + 1.55}, "memory_query",
+                             "Return JSON", {}, QueryAnalysis)
+    assert len(model.requests) == 2
+    assert 0 < model.requests[1].timeout_seconds < model.requests[0].timeout_seconds
+    task = asyncio.create_task(retriever.call({"deadline": time.monotonic() + 10}, "memory_query",
+                                             "Return JSON", {}, QueryAnalysis))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(model.requests) == 3
+
+
+async def test_memory_transport_cap_does_not_restart_a_truncated_background_job(tmp_path):
+    class Model(MemoryModel):
+        metadata = {"max_output_tokens": 8192}
+
+        async def generate(self, request):
+            self.requests.append(request)
+            raise ModelCallError("MODEL_RESPONSE_TRUNCATED", "Output limit", retryable=True)
+
+    model = Model()
+    service = ContextMemory(root_dir=tmp_path, model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        receipt = service.submit(event("我住在北京。"))
+        with pytest.raises(MemoryFlushError):
+            await service.flush(receipt)
+        status = await service.write_status(receipt)
+        assert status.derived == "failed" and status.attempts == 1
+        assert status.error_code == "MODEL_RESPONSE_TRUNCATED" and len(model.requests) == 1
+    finally:
+        await service.close()

@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dynamic_graph import GoalSpec, ModelRequest
 from dynamic_graph.contracts import default_output_schema
 from dynamic_graph.graph.schemas import SchemaSpec
-from dynamic_graph.models.client import ModelCallError, ModelClient
+from dynamic_graph.models.client import ModelCallError, ModelClient, expanded_output_budget
 from langgraph.graph import END, START, StateGraph
 from pydantic import (
     BaseModel,
@@ -833,6 +833,17 @@ class IntentRecognizer:
                     except ModelCallError as error:
                         if attempt or error.code not in {"MODEL_RESPONSE_INVALID", "MODEL_RESPONSE_TRUNCATED"}:
                             raise
+                        if error.code == "MODEL_RESPONSE_TRUNCATED":
+                            expanded = expanded_output_budget(request.max_output_tokens, self.model)
+                            if expanded <= request.max_output_tokens:
+                                raise
+                            self.observer.emit(
+                                "model.output_budget_expanded",
+                                data={"model_role": request.role,
+                                      "previous_budget": request.max_output_tokens,
+                                      "max_output_tokens": expanded, "next_attempt": 2},
+                            )
+                            request = replace(request, max_output_tokens=expanded)
                         previous_response = error.raw_response
                         errors = [{"type": error.code}]
                         syntax = deepcopy(error.details.get("json_syntax"))

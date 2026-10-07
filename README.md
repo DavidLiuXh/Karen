@@ -171,8 +171,20 @@ IntentSession 的运行状态没有跨进程恢复；详细对话与公共任务
 `close()` 不要求剩余模型调用全部成功；需要索引追平时显式 `await memory.flush()`。
 强制退出可能丢失未落盘队列；写入失败可查询，并在退出时报告。
 
-提取、核验、查询理解和精排注入通用 `ModelClient`，默认 DeepSeek；向量使用 LangChain
-`Embeddings` 接口，默认本机 BGE-M3。SQLite 保存事实与修订、float32 向量，FTS5 + jieba 提供 BM25。
+提取、核验、查询理解和精排注入通用 `ModelClient`，默认 DeepSeek。
+CLI 的输入路由、清晰度、意图、直接回应、执行节点和精排使用思考 `low`；规划传 `medium`。
+DeepSeek [官方接口文档](https://api-docs.deepseek.com/api/create-chat-completion/)目前把
+`medium` 映射为 `high`，观测记录同时展示请求强度和有效强度。
+记忆提取、核验和查询理解保持非思考。精排单阶段最多 20 秒，同步召回总期限 45 秒，查询理解最多 8 秒。
+
+首次输出预算保持不变：路由、意图、直接回应、规划和执行为 16384 tokens，清晰度及其复核、
+记忆提取和核验为 8192，查询理解和精排为 4096。
+出现 `MODEL_RESPONSE_TRUNCATED` 后只允许一次翻倍预算的完整重新生成，恢复上限 32768 tokens，
+同时遵守客户端更低的显式上限、原有次数和总期限。普通 JSON/schema 错误的修复不增加预算。
+精排连续截断仍沿用融合顺序并标记降级；部分输出不会作为成功结果使用。
+预算变化及实际请求参数可从可观测记录中查看。
+
+向量使用 LangChain `Embeddings` 接口，默认本机 BGE-M3。SQLite 保存事实与修订、float32 向量，FTS5 + jieba 提供 BM25。
 召回在本轮等待完成：粗检索 → RRF 融合 → 补齐版本 → 限制候选 → LLM 精排 → 必要原文查找。
 精排失败沿用融合顺序，标记 `degraded/unverified`；缺向量可用 BM25，存储不可用与无相关记忆明确区分。
 召回最终结果放入 `GoalSpec.context["memory"]`，当前明确要求优先于旧偏好，记忆不扩大工具授权。

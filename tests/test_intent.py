@@ -400,7 +400,7 @@ async def test_schema_repair_is_bounded_and_does_not_retry_transport_auth_failur
 
 
 @pytest.mark.parametrize("recovers", [True, False])
-async def test_truncated_intent_gets_one_compact_regeneration_within_original_budget(recovers):
+async def test_truncated_intent_gets_one_expanded_regeneration_within_original_deadline(recovers):
     error = ModelCallError("MODEL_RESPONSE_TRUNCATED", "Output limit reached",
                            retryable=False, raw_response="{" + "unfinished" * 2000)
     model = TaskIntentModel([error, ready() if recovers else error, ready()])
@@ -413,7 +413,7 @@ async def test_truncated_intent_gets_one_compact_regeneration_within_original_bu
         assert caught.value.code == "MODEL_RESPONSE_TRUNCATED"
     assert len(model.assessments) == 2
     first, repaired = model.assessments
-    assert repaired.max_output_tokens == first.max_output_tokens
+    assert repaired.max_output_tokens == first.max_output_tokens * 2
     assert 0 < repaired.timeout_seconds <= first.timeout_seconds
     assert repaired.input_data["previous_response_truncated"] is True
     assert len(repaired.input_data["previous_response"]) <= 4096

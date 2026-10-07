@@ -139,3 +139,40 @@ async def test_frozen_grader_http_request_keeps_legacy_generation_parameters(mon
     assert "thinking" not in calls[0] and "reasoning_effort" not in calls[0]
     assert "response_format" not in calls[0] and calls[0]["tools"]
     assert client.metadata["output_budget_enforced"] is False
+
+
+@pytest.mark.parametrize("effort,effective", [("low", "low"), ("medium", "high")])
+async def test_truncation_recovery_changes_actual_http_budget_once(monkeypatch, effort, effective):
+    from karen.intent import IntentRecognizer
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    calls = []
+    payload = {"decision": {"outcome": "needs_clarification", "questions": ["请提供收件人。"]}}
+
+    async def send(request):
+        calls.append(json.loads(request.content))
+        truncated = len(calls) == 1
+        return httpx.Response(200, request=request, json={
+            "id": "completion-recovery", "object": "chat.completion", "created": 1,
+            "model": "deepseek-flash", "choices": [{"index": 0,
+                "finish_reason": "length" if truncated else "stop",
+                "message": {"role": "assistant", "content": '{"decision":' if truncated else json.dumps(payload),
+                            "reasoning_content": "internal"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(send)) as http_client:
+        monkeypatch.setattr(karen.models, "ChatDeepSeek", partial(ChatDeepSeek, http_async_client=http_client))
+        client = deepseek_client(reasoning_effort=effort)
+        task = ModelRequest(role="clarity", system_instruction="Assess clarity",
+                            task_instruction="Return the required JSON", input_data={"text": "写邮件"},
+                            output_schema=Assessment.model_json_schema())
+        result = await IntentRecognizer(client)._validated(task, Assessment)
+        assert result.decision.outcome == "needs_clarification"
+        # A later independent request must retain the initial default.
+        assert (await client.generate(task)).payload == payload
+    assert [call["max_tokens"] for call in calls] == [16384, 32768, 16384]
+    assert all(call["thinking"] == {"type": "enabled"} for call in calls)
+    assert all(call["reasoning_effort"] == effort for call in calls)
+    assert client.metadata["reasoning_effort"] == effort
+    assert client.metadata["effective_reasoning_effort"] == effective

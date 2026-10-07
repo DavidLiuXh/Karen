@@ -27,8 +27,11 @@ Ollama 暂不可用时，已有记录可降级为 BM25；派生向量任务会�
 | `src/karen/context/retrieval.py` | LangGraph：analyze → retrieve → rank → assemble；装配阶段按需补查原文 |
 | `src/karen/context/prompts.py` | 独立的提取、核验、查询理解与精排指令 |
 
-`ContextMemory(root_dir=..., model=..., embeddings=...)` 使用现有通用 `ModelClient` 与 LangChain
+`ContextMemory(root_dir=..., model=..., embeddings=..., rerank_model=...)` 使用现有通用 `ModelClient` 与 LangChain
 `Embeddings`。LLM 无提供商专用逻辑；Ollama embedding 在装配边界创建，核对已安装模型摘要以识别 latest 标签变化。
+`rerank_model` 可单独注入精排客户端，省略时使用 `model`。CLI 注入思考 low 的精排客户端；
+提取、核验及查询理解使用非思考客户端。查询理解最多 8 秒、精排最多 20 秒，所有重试共享阶段剩余时间。
+首次输出预算保持 4096（查询/精排）和 8192（提取/核验）；截断后最多翻倍一次，总召回仍限制为 45 秒。
 其他 Embeddings 实现须提供稳定的 `model` 标识；不同模型标识、摘要或向量维度不会混用。
 
 | 调用 | 行为 |
@@ -36,7 +39,7 @@ Ollama 暂不可用时，已有记录可降级为 BM25；派生向量任务会�
 | `await start()` | 获取单写入目录锁，初始化/检查存储，恢复未登记文件尾部与任务 |
 | `submit(ContextEvent)` | 校验、脱敏并隔离输入，立即返回 WriteReceipt；不等待磁盘或模型 |
 | `async with foreground()` | 暂停发起新后台模型/embedding 调用，原文落盘继续；支持嵌套 |
-| `await recall(RecallQuery)` | 本轮等待最终召回结果；自动进入 foreground；总期限 20 秒 |
+| `await recall(RecallQuery)` | 本轮等待最终召回结果；自动进入 foreground；总期限 45 秒 |
 | `await search_details(DetailQuery)` | 直接读来源或按明确任务/会话/日期范围查 JSON 字段；无范围返回 needs_scope；`exclude_event_ids` 同时约束来源读取与范围扫描，召回补查沿用本轮排除列表 |
 | `await write_status(receipt)` | 分别报告 raw、derived、index 状态和安全错误码 |
 | `await flush(receipt=None)` | 等待指定事件或调用时水位内事件的派生与索引终态；失败返回汇总异常 |

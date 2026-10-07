@@ -37,15 +37,26 @@ async def test_memory_and_decision_clients_share_accounting_but_keep_profiles_se
 
     memory_client = MemoryModel()
     memory_client.metadata = {"thinking": False}
-    decision_client = ClarityAwareModel([
+    class DecisionModel(ClarityAwareModel):
+        async def generate(self, request):
+            if request.role == "memory_rerank":
+                self.requests.append(request)
+                return await MemoryModel().generate(request)
+            return await super().generate(request)
+
+    decision_client = DecisionModel([
         {"input_types": ["question"], "handling": "respond", "task_relation": "new", "reason": "读取已知记录"},
         {"decision": {"outcome": "reply", "answer": "你记录了35元。"}},
     ])
     decision_client.metadata = {"thinking": True}
+    planner_client = FakeModelClient()
+    planner_client.metadata = {"thinking": True, "reasoning_effort": "medium"}
     seen = []
 
-    def factory(*, thinking=True):
-        seen.append(thinking)
+    def factory(*, thinking=True, reasoning_effort="low"):
+        seen.append((thinking, reasoning_effort))
+        if reasoning_effort == "medium":
+            return planner_client
         return decision_client if thinking else memory_client
 
     monkeypatch.setattr(runner, "memory_embeddings", LocalEmbeddings)
@@ -60,13 +71,13 @@ async def test_memory_and_decision_clients_share_accounting_but_keep_profiles_se
         case, tmp_path / "case", client_factory=factory,
         judge_client_factory=lambda: FakeModelClient([{"passed": True, "reason": "匹配记录"}]),
     )
-    assert result["status"] == "passed" and seen == [True, False]
+    assert result["status"] == "passed" and seen == [(True, "low"), (True, "medium"), (False, "low")]
     assert result["agent_model"]["thinking"] is True
     assert result["memory_model"]["thinking"] is False
     for call in result["model_calls"]:
-        if call["role"].startswith("memory_"):
+        if call["role"].startswith("memory_") and call["role"] != "memory_rerank":
             assert call["model"]["thinking"] is False
-        elif call["role"].startswith("intent"):
+        elif call["role"].startswith("intent") or call["role"] == "memory_rerank":
             assert call["model"]["thinking"] is True
     assert len(result["model_calls"]) == len(memory_client.requests) + len(decision_client.requests) + 1
 

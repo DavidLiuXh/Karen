@@ -38,16 +38,17 @@ class DisplayAgent:
 
 
 async def test_cli_uses_thinking_for_decisions_and_nonthinking_for_memory(monkeypatch):
-    clients, memory_models, agents = [], [], []
+    clients, memory_models, agents, rerank_models = [], [], [], []
 
-    def client(*, thinking=True):
+    def client(*, thinking=True, reasoning_effort="low"):
         model = FakeModelClient()
-        model.metadata = {"thinking": thinking}
+        model.metadata = {"thinking": thinking, "reasoning_effort": reasoning_effort if thinking else None}
         clients.append(model)
         return model
 
     def memory(model, **kwargs):
         memory_models.append(model)
+        rerank_models.append(kwargs["rerank_model"])
         return MemoryStub()
 
     actual_karen = cli.Karen
@@ -65,10 +66,14 @@ async def test_cli_uses_thinking_for_decisions_and_nonthinking_for_memory(monkey
     monkeypatch.setattr(cli, "Karen", agent)
     monkeypatch.setattr(cli, "read_input", end_input)
     assert await cli.converse() == 0
-    assert len(clients) == 2
+    assert len(clients) == 3
     assert agents[0].intent.model.client is clients[0]
     assert agents[0].intent.model.metadata["thinking"] is True
-    assert memory_models[0].client is clients[1]
+    assert memory_models[0].client is clients[2]
+    assert agents[0].engine.models.planner.client is clients[1]
+    assert clients[1].metadata["reasoning_effort"] == "medium"
+    assert rerank_models[0] is agents[0].intent.model
+    assert rerank_models[0].metadata["reasoning_effort"] == "low"
     assert memory_models[0].metadata["thinking"] is False
 
 

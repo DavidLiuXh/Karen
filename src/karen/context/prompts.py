@@ -186,3 +186,10 @@ quote 必须逐字匹配该字段，不得拼接不连续句子、改标点或�
 非法动作状态须依据原文映射到 requested/planned/attempted/completed/failed/cancelled 或省略状态，
 不能重复非法值；修复事实核验时不得伪造变化、匹配关系、来源或改变用户事实。
 """
+
+
+TRUNCATION_REPAIR = """
+The preceding response exceeded its output budget. Generate a fresh, complete JSON
+response using the original input and schema. Do not continue a partial response.
+Keep all required fields and evidence; omit redundant prose.
+"""

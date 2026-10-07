@@ -31,10 +31,11 @@ from .observability import ObservedModel, Observer
 from .response import format_result
 
 
-def create_memory(model, *, observer=None) -> ContextMemory:
+def create_memory(model, *, rerank_model=None, observer=None) -> ContextMemory:
     return ContextMemory(
         root_dir=Path.home() / ".Karne" / "context",
         model=model,
+        rerank_model=rerank_model,
         embeddings=memory_embeddings(),
         observer=observer,
     )
@@ -96,7 +97,10 @@ async def converse(*, json_output: bool = False, timezone: str | None = None) ->
             runs_dir=Path.home() / ".Karne" / "runs" if observer.root_dir else Path("runs"),
             sensitive_values=observer.sensitive_values,
         ),
-        models=ModelBindings(planner=model, worker=model),
+        models=ModelBindings(
+            planner=ObservedModel(deepseek_client(reasoning_effort="medium"), observer),
+            worker=model,
+        ),
     )
     for tool_factory in (
         file_read_text_tool,
@@ -110,7 +114,7 @@ async def converse(*, json_output: bool = False, timezone: str | None = None) ->
     else:
         print("Karen：未配置 TAVILY_API_KEY，Tavily 网络搜索暂不可用。")
     memory_model = ObservedModel(deepseek_client(thinking=False), observer)
-    memory = create_memory(memory_model, observer=observer)
+    memory = create_memory(memory_model, rerank_model=model, observer=observer)
     try:
         await memory.start()
     except (OSError, PersistenceError, RuntimeError):

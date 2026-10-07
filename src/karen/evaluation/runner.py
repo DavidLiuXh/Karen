@@ -37,9 +37,15 @@ class MeteredModel:
         self.client = client
         self.calls = calls if calls is not None else []
 
+    @property
+    def metadata(self):
+        return getattr(self.client, "metadata", {})
+
     async def generate(self, request):
         started = time.monotonic()
-        call = {"role": request.role, "model": getattr(self.client, "metadata", {})}
+        call = {"role": request.role, "model": self.metadata,
+                "max_output_tokens": request.max_output_tokens,
+                "timeout_seconds": request.timeout_seconds}
         self.calls.append(call)
         try:
             response = await self.client.generate(request)
@@ -122,11 +128,12 @@ async def judge(client, case, actual):
     return payload
 
 
-def create_engine(model, directory, search_fixture, *, live_search=False):
+def create_engine(model, directory, search_fixture, *, live_search=False, planner_model=None):
     if search_fixture and live_search:
         raise ValueError("Choose either fixed or live search for an evaluation case")
     engine = DynamicGraphEngine(
-        config=EngineConfig(runs_dir=directory / "execution"), models=ModelBindings(model, model)
+        config=EngineConfig(runs_dir=directory / "execution"),
+        models=ModelBindings(planner_model if planner_model is not None else model, model),
     )
     artifacts = directory / "artifacts"
     artifacts.mkdir()
@@ -211,13 +218,18 @@ async def evaluate_case(
     stage = "setup"
     try:
         intent = IntentRecognizer(meter, observer=observer)
+        planner_meter = meter
         if case["suite"] != "clamber":
+            planner_client = client_factory(reasoning_effort="medium")
+            result["planner_model"] = getattr(planner_client, "metadata", {})
+            planner_meter = MeteredModel(ObservedModel(planner_client, observer), calls=meter.calls)
             memory_client = client_factory(thinking=False)
             result["memory_model"] = getattr(memory_client, "metadata", {})
             memory_meter = MeteredModel(ObservedModel(memory_client, observer), calls=meter.calls)
             memory = ContextMemory(
                 root_dir=directory / "memory",
                 model=memory_meter,
+                rerank_model=meter,
                 embeddings=memory_embeddings(),
                 observer=observer,
             )
@@ -229,6 +241,7 @@ async def evaluate_case(
             memory = ContextMemory(
                 root_dir=directory / "memory",
                 model=memory_meter,
+                rerank_model=meter,
                 embeddings=memory_embeddings(),
                 observer=observer,
             )
@@ -238,6 +251,7 @@ async def evaluate_case(
             directory,
             case.get("search_fixture", case["suite"] == "karen-zh"),
             live_search=case.get("live_search", False),
+            planner_model=planner_meter,
         )
         agent = Karen(intent=intent, engine=engine, memory=memory, observer=observer)
         session = None
@@ -378,7 +392,7 @@ async def run(manifest_path, output, *, split="all", suites=(), case_ids=(), con
                 ),
                 "dag_source_sha256": source_hash(dag_project / "src"),
                 "karen_source_sha256": source_hash(project / "src"),
-                "model": "deepseek-flash (thinking enabled, low effort; memory non-thinking)",
+                "model": "deepseek-flash (planner medium/high; decisions and rerank low; extraction and query non-thinking)",
                 "embedding": "bge-m3:latest",
                 "judge": "deepseek-chat (custom grader, not official LongMemEval gpt-4o score)",
                 "selected_ids": [c["id"] for c in cases],

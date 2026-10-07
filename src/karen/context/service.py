@@ -39,10 +39,12 @@ class ContextMemory:
         root_dir: Path,
         model: ModelClient,
         embeddings: Embeddings,
+        rerank_model: ModelClient | None = None,
         observer: Observer | None = None,
     ):
         self.root_dir = Path(root_dir).expanduser().absolute()
         self.model = model
+        self.rerank_model = rerank_model if rerank_model is not None else model
         self.embeddings = embeddings
         self.observer = observer or Observer()
         self.storage = Storage(self.root_dir)

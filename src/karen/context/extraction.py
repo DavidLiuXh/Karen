@@ -6,7 +6,12 @@ import asyncio
 from dataclasses import replace
 from typing import TypedDict
 
-from dynamic_graph.models.client import ModelCallError, ModelClient, ModelRequest
+from dynamic_graph.models.client import (
+    ModelCallError,
+    ModelClient,
+    ModelRequest,
+    expanded_output_budget,
+)
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
@@ -111,6 +116,21 @@ class Extractor:
                         raise ModelCallError(error.code, "Memory content repair exhausted",
                             usage=error.usage, provider_request_id=error.provider_request_id,
                             details=error.details) from error
+                    if error.code == "MODEL_RESPONSE_TRUNCATED":
+                        expanded = expanded_output_budget(request.max_output_tokens, self.model)
+                        if expanded <= request.max_output_tokens:
+                            raise ModelCallError(
+                                error.code, "Memory output budget cannot expand",
+                                usage=error.usage, provider_request_id=error.provider_request_id,
+                                details=error.details,
+                            ) from error
+                        self.observer.emit(
+                            "model.output_budget_expanded",
+                            data={"model_role": request.role,
+                                  "previous_budget": request.max_output_tokens,
+                                  "max_output_tokens": expanded, "next_attempt": 2},
+                        )
+                        request = replace(request, max_output_tokens=expanded)
                     payload = error.raw_response
                     feedback = {"code": error.code}
                     if error.details.get("json_syntax"):

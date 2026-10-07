@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from itertools import zip_longest
 from typing import TypedDict
 
 import numpy as np
-from dynamic_graph.models.client import ModelRequest
+from dynamic_graph.models.client import ModelCallError, ModelRequest, expanded_output_budget
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
@@ -23,8 +24,10 @@ from .contracts import (
     RecallResult,
     TimeRange,
 )
-from .prompts import MEMORY_SYSTEM, QUERY, RERANK
+from .prompts import MEMORY_SYSTEM, QUERY, RERANK, TRUNCATION_REPAIR
 from .storage import digest, encode, terms
+
+RECALL_TIMEOUT_SECONDS = 45
 
 FALLBACK_STOP_WORDS = frozenset(
     {
@@ -263,9 +266,9 @@ class Retriever:
         self.service.observer.emit("memory.degraded", status="degraded", data=details)
 
     async def recall(self, query):
-        state = {"query": query, "deadline": time.monotonic() + 20, "degraded": []}
+        state = {"query": query, "deadline": time.monotonic() + RECALL_TIMEOUT_SECONDS, "degraded": []}
         try:
-            async with asyncio.timeout(20):
+            async with asyncio.timeout(RECALL_TIMEOUT_SECONDS):
                 async for update in self.graph.astream(state, stream_mode="updates"):
                     for values in update.values():
                         state.update(values)
@@ -291,9 +294,12 @@ class Retriever:
             )
 
     async def call(self, state, role, instruction, inputs, schema):
-        remaining = min(state["deadline"] - time.monotonic() - 1.5, 8)
+        model = self.service.rerank_model if role == "memory_rerank" else self.service.model
+        remaining = min(state["deadline"] - time.monotonic() - 1.5,
+                        20 if role == "memory_rerank" else 8)
         if remaining <= 0:
             raise TimeoutError("RECALL_DEADLINE")
+        deadline = time.monotonic() + remaining
         request = ModelRequest(
             role=role,
             system_instruction=MEMORY_SYSTEM,
@@ -304,8 +310,27 @@ class Retriever:
             timeout_seconds=remaining,
         )
         async with asyncio.timeout(remaining):
-            response = await self.service.model.generate(request)
-        return schema.model_validate(response.payload)
+            for attempt in range(2):
+                try:
+                    response = await model.generate(
+                        replace(request, timeout_seconds=max(0, deadline - time.monotonic()))
+                    )
+                    return schema.model_validate(response.payload)
+                except ModelCallError as error:
+                    if attempt or error.code != "MODEL_RESPONSE_TRUNCATED":
+                        raise
+                    expanded = expanded_output_budget(request.max_output_tokens, model)
+                    if expanded <= request.max_output_tokens:
+                        raise
+                    self.service.observer.emit(
+                        "model.output_budget_expanded",
+                        data={"model_role": role, "previous_budget": request.max_output_tokens,
+                              "max_output_tokens": expanded, "next_attempt": 2},
+                    )
+                    request = replace(
+                        request, max_output_tokens=expanded,
+                        task_instruction=instruction + TRUNCATION_REPAIR,
+                    )
 
     async def analyze(self, state):
         query = state["query"]

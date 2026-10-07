@@ -21,7 +21,9 @@
         }
       }
     ],
-    "gold": {}
+    "gold": {
+      "clarifying_question": null
+    }
   },
   {
     "id": "prompt-generalization-optional-en-v1",
@@ -45,7 +47,9 @@
         }
       }
     ],
-    "gold": {}
+    "gold": {
+      "clarifying_question": null
+    }
   },
   {
     "id": "prompt-generalization-partial-object-v1",
@@ -83,7 +87,9 @@
         }
       }
     ],
-    "gold": {}
+    "gold": {
+      "clarifying_question": null
+    }
   },
   {
     "id": "prompt-generalization-ambiguous-action-en-v1",
@@ -103,7 +109,9 @@
         }
       }
     ],
-    "gold": {}
+    "gold": {
+      "clarifying_question": null
+    }
   },
   {
     "id": "prompt-generalization-no-valid-prerequisite-en-v1",
@@ -123,7 +131,9 @@
         }
       }
     ],
-    "gold": {}
+    "gold": {
+      "clarifying_question": null
+    }
   },
   {
     "id": "prompt-generalization-valid-prerequisite-zh-v1",
@@ -143,7 +153,9 @@
         }
       }
     ],
-    "gold": {}
+    "gold": {
+      "clarifying_question": null
+    }
   },
   {
     "id": "prompt-generalization-analyze-incompatibility-en-v1",
@@ -163,7 +175,9 @@
         }
       }
     ],
-    "gold": {}
+    "gold": {
+      "clarifying_question": null
+    }
   },
   {
     "id": "prompt-generalization-task-timezone-v1",
@@ -186,7 +200,9 @@
         }
       }
     ],
-    "gold": {}
+    "gold": {
+      "clarifying_question": null
+    }
   },
   {
     "id": "prompt-generalization-public-lookup-v1",
@@ -209,7 +225,9 @@
         }
       }
     ],
-    "gold": {}
+    "gold": {
+      "clarifying_question": null
+    }
   },
   {
     "id": "prompt-generalization-compatible-preferences-v1",

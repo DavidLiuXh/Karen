@@ -56,3 +56,30 @@ uv run --env-file .env karen --wechat --timezone Asia/Shanghai --observe
 Complete the live-account checklist in [English](WEIXIN.md#verification) or
 [中文](WEIXIN_cn.md#验证). Automated results must not be read as proof of live message
 acceptance, read receipts, context-token lifetime or unrestricted proactive delivery.
+
+## Live text-delivery incident and fix — 2026-10-08
+
+After the initial validation, the owner bound an account and received a progress
+notification but no final answer. The task completed in about 30 seconds. Karen
+incorrectly required an explicit `ret=0` from `sendmessage`; Tencent's pinned
+implementation accepts a valid JSON object with `ret` omitted. The notification
+was therefore marked failed, and response ordering blocked the saved answer behind it.
+
+Sending now follows that response contract while still rejecting invalid JSON,
+HTTP errors and nonzero API error codes. Progress notifications have an explicit
+outbox flag, are attempted once, and cannot block final text, files or response
+memory capture. Completion supersedes unsent progress. Startup transactionally
+migrates the original notification format and preserves response IDs and failed
+notification diagnostics; required response chunks still retain strict ordering.
+
+The focused channel/observation suite passed **90 tests** in 6.23 seconds, including
+optional `ret`, malformed/rejected responses, failed progress, completion during
+an in-flight notification, and recovery of the incident's original SQLite format
+across repeated restarts without agent execution. Ruff and `git diff --check` passed.
+
+The owner's idle service was gracefully restarted. Its previously pending final
+text was sent with its original client ID; the outbox is now `sent`, a `weixin.sent`
+event is recorded, and the actual response was captured in memory. The earlier
+notification remains auditable as `superseded` with its original error and attempts.
+This verifies live server acceptance of that final text, not a read receipt. Live
+file delivery and the remaining manual checklist are still unverified.

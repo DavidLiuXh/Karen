@@ -12,6 +12,9 @@ from ...intent import IntentSession
 from .api import WeixinError
 from .auth import acquire_lock, private_root
 
+PROGRESS_TEXT = "已收到，任务仍在处理中，完成后我会回复。"
+PROGRESS_ITEM = json.dumps({"type": 1, "text_item": {"text": PROGRESS_TEXT}}, ensure_ascii=False)
+
 
 def text_items(text):
     """Keep each text request below 4 KB without breaking Unicode characters."""
@@ -58,7 +61,8 @@ class WeixinStore:
                     id INTEGER PRIMARY KEY, inbox_id INTEGER NOT NULL,
                     client_id TEXT NOT NULL UNIQUE, item TEXT, file_path TEXT, file_name TEXT,
                     status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
-                    next_attempt REAL NOT NULL DEFAULT 0, error_code TEXT
+                    next_attempt REAL NOT NULL DEFAULT 0, error_code TEXT,
+                    is_progress INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS outbox_status ON outbox(status, id);
                 CREATE TABLE IF NOT EXISTS files (
@@ -68,6 +72,19 @@ class WeixinStore:
             self._set("owner", credentials.owner_id, initialize=True)
             if self._get("owner") != credentials.owner_id:
                 raise WeixinError("WEIXIN_OWNER_CHANGED")
+            with self.db:
+                columns = {row["name"] for row in self.db.execute("PRAGMA table_info(outbox)")}
+                if "is_progress" not in columns:
+                    self.db.execute("BEGIN")
+                    self.db.execute("ALTER TABLE outbox ADD COLUMN is_progress INTEGER NOT NULL DEFAULT 0")
+                    # Identify the exact notification written by the original on-disk format.
+                    self.db.execute("UPDATE outbox SET is_progress=1 WHERE item=? AND file_path IS NULL",
+                                    (PROGRESS_ITEM,))
+                self.db.execute("""
+                    UPDATE outbox SET status='superseded' WHERE is_progress=1
+                    AND status IN ('pending', 'failed')
+                    AND inbox_id IN (SELECT id FROM inbox WHERE status='done')
+                """)
         except BaseException:
             self.close()
             raise
@@ -169,6 +186,11 @@ class WeixinStore:
                 "UPDATE inbox SET status='done', response=?, session=?, trace_id=?, record_response=? WHERE id=?",
                 (text, serialized, trace_id, int(record and bool(text)), row["id"]),
             )
+            # A completed response replaces an unsent progress notification.
+            self.db.execute("""
+                UPDATE outbox SET status='superseded' WHERE inbox_id=? AND is_progress=1
+                AND status IN ('pending', 'failed')
+            """, (row["id"],))
             for item in text_items(text):
                 self.db.execute(
                     "INSERT INTO outbox(inbox_id, client_id, item) VALUES (?, ?, ?)",
@@ -186,7 +208,7 @@ class WeixinStore:
             SELECT o.*, i.message, i.trace_id FROM outbox o JOIN inbox i ON i.id=o.inbox_id
             WHERE o.status='pending' AND NOT EXISTS (
                 SELECT 1 FROM outbox earlier WHERE earlier.inbox_id=o.inbox_id
-                AND earlier.id<o.id AND earlier.status!='sent'
+                AND earlier.id<o.id AND earlier.is_progress=0 AND earlier.status!='sent'
             ) ORDER BY o.id LIMIT 1
         """).fetchone()
         return row if row and row["next_attempt"] <= time.time() else None
@@ -194,10 +216,8 @@ class WeixinStore:
     def progress(self, row):
         with self.db:
             self.db.execute(
-                "INSERT INTO outbox(inbox_id, client_id, item) VALUES (?, ?, ?)",
-                (row["id"], uuid4().hex, json.dumps({
-                    "type": 1, "text_item": {"text": "已收到，任务仍在处理中，完成后我会回复。"},
-                }, ensure_ascii=False)),
+                "INSERT INTO outbox(inbox_id, client_id, item, is_progress) VALUES (?, ?, ?, 1)",
+                (row["id"], uuid4().hex, PROGRESS_ITEM),
             )
 
     def uploaded(self, row, item):
@@ -210,18 +230,20 @@ class WeixinStore:
 
     def failed(self, row, error):
         attempts = row["attempts"] + 1
-        status = "pending" if error.retryable and attempts < 5 else "failed"
+        status = "pending" if error.retryable and attempts < 5 and not row["is_progress"] else "failed"
         with self.db:
             self.db.execute("""
-                UPDATE outbox SET status=?, attempts=?, next_attempt=?, error_code=? WHERE id=?
+                UPDATE outbox SET status=?, attempts=?, next_attempt=?, error_code=?
+                WHERE id=? AND status='pending'
             """, (status, attempts, time.time() + min(30, 2 ** attempts), error.code, row["id"]))
-        return status
+        # finish() can supersede a notification while its HTTP send is in flight.
+        return self.db.execute("SELECT status FROM outbox WHERE id=?", (row["id"],)).fetchone()[0]
 
     def delivered_responses(self):
         return self.db.execute("""
             SELECT i.* FROM inbox i WHERE i.record_response=1 AND i.response_recorded=0
             AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.inbox_id=i.id
-                            AND o.file_path IS NULL AND o.status!='sent')
+                            AND o.file_path IS NULL AND o.is_progress=0 AND o.status!='sent')
         """).fetchall()
 
     def recorded(self, row):
@@ -232,14 +254,15 @@ class WeixinStore:
         with self.db:
             rows = self.db.execute("""
                 SELECT DISTINCT i.id, i.message FROM inbox i JOIN outbox o ON o.inbox_id=i.id
-                WHERE o.status='failed'
+                WHERE o.status='failed' AND o.is_progress=0
             """).fetchall()
             for row in rows:
                 message = json.loads(row["message"])
                 message["context_token"] = context_token
                 self.db.execute("UPDATE inbox SET message=? WHERE id=?", (json.dumps(message), row["id"]))
             return self.db.execute("""
-                UPDATE outbox SET status='pending', attempts=0, next_attempt=0 WHERE status='failed'
+                UPDATE outbox SET status='pending', attempts=0, next_attempt=0
+                WHERE status='failed' AND is_progress=0
             """).rowcount
 
     def counts(self):

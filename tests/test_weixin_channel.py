@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import sqlite3
 import tempfile
 import time
 from contextlib import asynccontextmanager
@@ -28,7 +29,7 @@ from karen.channels.weixin import ILinkClient, WeixinChannel, WeixinError, Weixi
 from karen.channels.weixin.api import API_URL
 from karen.channels.weixin.auth import Credentials
 from karen.channels.weixin.media import prepare_file_tool
-from karen.channels.weixin.storage import text_items
+from karen.channels.weixin.storage import PROGRESS_ITEM, text_items
 from karen.observability import Observer
 
 
@@ -197,6 +198,81 @@ def test_delivered_text_is_recorded_even_if_its_file_is_still_pending(store):
     store.sent(store.next_output())
     assert len(store.delivered_responses()) == 1
     assert store.next_output()["file_path"] == "/private/snapshot"
+
+
+@pytest.mark.parametrize("retryable", [True, False])
+def test_progress_failure_cannot_block_final_response_or_memory(store, retryable):
+    store.accept({"msgs": [incoming()]}, "owner")
+    row = store.next_input()
+    store.progress(row)
+    progress = store.next_output()
+    assert store.failed(progress, WeixinError("NETWORK", retryable=retryable)) == "failed"
+    assert store.next_output() is None  # Optional notifications are not retried.
+    assert store.retry_failed("new-context") == 0
+    store.finish(row, IntentSession(), "最终回答")
+    final = store.next_output()
+    assert final["item"] != PROGRESS_ITEM
+    assert store.delivered_responses() == []
+    store.sent(final)
+    assert [r["response"] for r in store.delivered_responses()] == ["最终回答"]
+    assert store.counts()["outbox"] == {"sent": 1, "superseded": 1}
+
+
+def test_completion_supersedes_progress_even_if_send_failure_arrives_late(store):
+    store.accept({"msgs": [incoming()]}, "owner")
+    row = store.next_input()
+    store.progress(row)
+    progress = store.next_output()  # HTTP request is in flight when the agent completes.
+    store.finish(row, IntentSession(), "最终回答")
+    assert store.failed(progress, WeixinError("NETWORK", retryable=True)) == "superseded"
+    assert store.next_output()["is_progress"] == 0
+    assert store.retry_failed("new-context") == 0
+
+
+async def test_restart_migrates_legacy_failed_progress_and_sends_saved_reply(tmp_path, credentials):
+    root = tmp_path / "legacy"
+    store = WeixinStore(root, credentials)
+    store.accept({"msgs": [incoming()]}, "owner")
+    row = store.next_input()
+    store.progress(row)
+    progress = store.next_output()
+    store.finish(row, IntentSession(), "已保存的回答")
+    final = store.next_output()
+    path = store.root / "state.sqlite3"
+    store.close()
+    # Recreate the original schema and the exact state observed in the live incident.
+    with sqlite3.connect(path) as db:
+        db.execute("ALTER TABLE outbox DROP COLUMN is_progress")
+        db.execute("UPDATE outbox SET status='failed', attempts=5, error_code=? WHERE id=?",
+                   ("WEIXIN_SEND_UNCONFIRMED", progress["id"]))
+    for _ in range(2):  # Migration/recovery remains safe across repeated starts.
+        store = WeixinStore(root, credentials)
+        assert store.next_output()["client_id"] == final["client_id"]
+        assert store.counts()["outbox"] == {"pending": 1, "superseded": 1}
+        store.close()
+    store = WeixinStore(root, credentials)
+    sends = []
+
+    def handle(request):
+        assert request.url.path.endswith("sendmessage")
+        sends.append(json.loads(request.content)["msg"])
+        return httpx.Response(200, json={})  # Tencent may omit ret on success.
+
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            value = channel(store, credentials, client=ILinkClient(http, token="fake-bearer"))
+            task = asyncio.create_task(value.deliver())
+            try:
+                await until(lambda: value.agent.displayed)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        assert value.agent.inputs == []
+        assert [msg["item_list"][0]["text_item"]["text"] for msg in sends] == ["已保存的回答"]
+        assert sends[0]["client_id"] == final["client_id"]
+        assert store.counts()["outbox"] == {"sent": 1, "superseded": 1}
+    finally:
+        store.close()
 
 
 async def test_channel_replies_once_and_excludes_unknown_users_from_agent(store, credentials):

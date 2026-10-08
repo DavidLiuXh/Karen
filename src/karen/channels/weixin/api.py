@@ -112,11 +112,9 @@ class ILinkClient:
                "item_list": [item]}
         if run_id:
             msg["run_id"] = run_id
-        result = await self.request("ilink/bot/sendmessage", body={"msg": msg})
-        # Do not infer acknowledgement from an empty/invalid success response.
-        if result.get("ret") != 0:
-            raise WeixinError("WEIXIN_SEND_UNCONFIRMED", retryable=True)
-        return result
+        # Tencent's sendMessage response may omit ret on success. request() still
+        # requires a JSON object and rejects HTTP failures and nonzero error codes.
+        return await self.request("ilink/bot/sendmessage", body={"msg": msg})
 
     async def typing(self, peer, context_token, *, active):
         config = await self.request("ilink/bot/getconfig", body={

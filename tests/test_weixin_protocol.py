@@ -68,16 +68,34 @@ async def test_transport_classifies_errors_without_leaking_responses(status, bod
     assert failed.value.retryable is retryable
 
 
-async def test_transport_bounds_stream_and_requires_explicit_ack():
+async def test_transport_bounds_stream():
     async with httpx.AsyncClient(transport=httpx.MockTransport(
         lambda r: httpx.Response(200, content=b"12345")
     )) as http:
         with pytest.raises(WeixinError, match="TOO_LARGE"):
             await ILinkClient(http).transfer("GET", API_URL, limit=4)
+
+
+@pytest.mark.parametrize("body", [{}, {"ret": 0}, {"errcode": 0}, {"message_id": "123"}])
+async def test_send_accepts_protocol_success_with_optional_ret(body):
     async with httpx.AsyncClient(transport=httpx.MockTransport(
-        lambda r: httpx.Response(200, json={})
+        lambda r: httpx.Response(200, json=body)
     )) as http:
-        with pytest.raises(WeixinError, match="UNCONFIRMED"):
+        assert await ILinkClient(http, token="secret").send(
+            "owner", {}, context_token="ctx", client_id="id",
+        ) == body
+
+
+@pytest.mark.parametrize("body,code", [
+    (b"", "RESPONSE_INVALID"), (b"not json", "RESPONSE_INVALID"),
+    (b"[]", "RESPONSE_INVALID"), (b'{"ret": 1}', "API_REJECTED"),
+    (b'{"errcode": 1}', "API_REJECTED"), (b'{"ret": -14}', "SESSION_EXPIRED"),
+])
+async def test_send_rejects_invalid_or_failed_responses(body, code):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, content=body)
+    )) as http:
+        with pytest.raises(WeixinError, match=code):
             await ILinkClient(http, token="secret").send(
                 "owner", {}, context_token="ctx", client_id="id",
             )

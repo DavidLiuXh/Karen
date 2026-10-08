@@ -73,7 +73,9 @@ as authorization to send a file. Preparation is not delivery confirmation.
 
 Responses are split into Unicode-safe text messages of at most 4 KB. After 15 seconds
 of execution, a progress acknowledgement is queued while the task continues.
-Typing signals are best effort. A slow task does not stop receiving subsequent
+Progress notifications and typing signals are best effort. Progress is attempted once;
+an unsent notification is superseded when the final response is ready and never blocks
+that response. A slow task does not stop receiving subsequent
 messages or delivering previous results; subsequent tasks run in arrival order.
 
 ## Durability and recovery
@@ -85,7 +87,7 @@ messages or delivering previous results; subsequent tasks run in arrival order.
 | Pending task at restart | Processed in order |
 | Completed task, unsent result at restart | Deliver the persisted result without rerunning the task |
 | Process dies while executing | Mark the outcome uncertain and notify the owner; never automatically redo potentially completed side effects |
-| Network / HTTP 429 / HTTP 5xx during send | Retry the outbox entry with its original client ID, up to five attempts with bounded backoff |
+| Network / HTTP 429 / HTTP 5xx during final text/file send | Retry the outbox entry with its original client ID, up to five attempts with bounded backoff |
 | Permanent send rejection / exhausted retries | Retain the failed entry; `/retry` requeues delivery using the new inbound context token |
 | Missing or expired credentials | Stop with a visible diagnostic; rebind explicitly |
 
@@ -106,7 +108,9 @@ whether a side effect finished just before a crash. Delayed replies rely on Weix
 accepting their context token; no unverified time window or unrestricted proactive
 push capability is assumed. Execution-time approval actions and unsolicited proactive
 notifications are outside this channel's current scope.
-A successful send means the server acknowledged `ret=0`, not a read receipt from the owner.
+A successful send requires an HTTP success and a valid JSON object without a nonzero
+`ret` or `errcode`. Tencent's implementation also accepts a response that omits `ret`,
+including `{}`. This is server acceptance, not a read receipt from the owner.
 
 ## Local data and observation
 

@@ -11,7 +11,8 @@ def redact(value, *, sensitive_values=(), paths=None, prefix=""):
         for key, item in value.items():
             path = prefix + "/" + key.replace("~", "~0").replace("/", "~1")
             if re.search(
-                r"(?i)(?:^|[_-])(api[_-]?key|authorization|password|access[_-]?token|secret|private[_-]?key)$",
+                r"(?i)(?:^|[_-])(api[_-]?key|authorization|password|(?:access|bot|context)[_-]?token|"
+                r"typing[_-]?ticket|aes[_-]?key|encrypt(?:ed)?[_-]?query[_-]?param|secret|private[_-]?key)$",
                 key,
             ):
                 result[key] = "[REDACTED]"

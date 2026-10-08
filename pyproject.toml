@@ -18,6 +18,9 @@ dependencies = [
   "pydantic>=2.11,<3",
   "prompt-toolkit>=3.0,<4",
   "tzlocal>=5.3,<6",
+  "httpx>=0.28,<1",
+  "cryptography>=44,<49",
+  "qrcode>=8,<9",
 ]
 
 [dependency-groups]

@@ -173,9 +173,24 @@ Open the URL printed at startup, which defaults to `http://127.0.0.1:8765/`. The
 | `--observe [PORT]` | Starts the observation dashboard alongside Karen; default port: 8765 |
 | `--timezone Asia/Shanghai` | Explicitly sets the user's IANA timezone; defaults to the local machine's timezone |
 | `--json` | Displays the full result JSON for debugging |
+| `--wechat` | Uses personal Weixin; offers QR binding on first start |
+| `--wechat-login` | Binds or refreshes Weixin credentials without starting the model |
 | `--help` | Shows command help |
 
 When running remotely, explicitly provide the user's timezone. Normal output shows the direct response or the execution result's `answer`. Requested sources and material limitations belong in the answer; internal audit fields are not appended automatically.
+
+### Use personal Weixin
+
+```bash
+uv run karen --wechat-login
+uv run --env-file .env karen --wechat --timezone Asia/Shanghai --observe
+```
+
+Scan with your personal Weixin account and confirm on your phone. Karen accepts only
+the binding owner's private messages and supports text, persistent clarification,
+file attachments and delivery retries. The dashboard includes channel events.
+See [personal Weixin setup and recovery](docs/WEIXIN.md) for limits, file delivery,
+durability guarantees and the live-account acceptance checklist.
 
 ### Enter requests
 
@@ -214,6 +229,7 @@ Memory is shared across projects and sessions. Only one process may write to a g
   context/          # m1/m2, vector and full-text indexes, m3 originals and attachments
   observability/    # Decisions, model calls, and background processing traces
   runs/             # DynamicAgentGraph execution graphs, node records, and artifacts
+  weixin/           # Private channel credentials, durable inbox/outbox, file snapshots
 ```
 
 Memories and runtime records are stored locally. Model extraction, decisions, reranking, and responses send the required inputs to the configured LLM service; web search calls Tavily. Observation logs are stored separately from user memory.

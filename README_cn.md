@@ -173,9 +173,22 @@ uv run --env-file .env karen --observe
 | `--observe [PORT]` | 同时启动观测页面，默认端口 8765 |
 | `--timezone Asia/Shanghai` | 显式指定用户的 IANA 时区；默认读取本机时区 |
 | `--json` | 展示完整结果 JSON，便于调试 |
+| `--wechat` | 使用个人微信交互，首次启动扫码绑定 |
+| `--wechat-login` | 仅绑定或刷新微信凭据，不启动模型 |
 | `--help` | 查看命令说明 |
 
 远程运行时应显式提供用户时区。日常显示直接回复或执行结果的 `answer`；用户要求的来源和影响结论的重要限制写入回答，不自动附加内部审计字段。
+
+### 通过个人微信使用
+
+```bash
+uv run karen --wechat-login
+uv run --env-file .env karen --wechat --timezone Asia/Shanghai --observe
+```
+
+用本人的微信扫描二维码并在手机上确认。Karen 只接受绑定者的私聊，支持文字交互、
+跨重启继续澄清、文件收发及投递重试。观测页面包含微信渠道事件。
+限制、恢复规则和真实账号验收步骤见[个人微信接入说明](docs/WEIXIN_cn.md)。
 
 ### 输入请求
 
@@ -214,6 +227,7 @@ CLI 默认注册并授权当前可用能力；Tavily 未配置时仅搜索工具
   context/          # m1/m2、向量和全文索引、m3 原文及附件
   observability/    # 决策、模型调用和后台处理追踪
   runs/             # DynamicAgentGraph 执行图、节点记录和产物
+  weixin/           # 私有凭据、持久化收件箱/发件箱、文件快照
 ```
 
 记忆与运行记录保存在本地；模型提取、判断、精排和回答会将所需输入发送到配置的 LLM 服务，网络搜索调用 Tavily。观测日志与用户记忆分开保存。

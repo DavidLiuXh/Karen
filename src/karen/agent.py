@@ -90,14 +90,19 @@ class Karen:
         *,
         policy: ExecutionPolicy | None = None,
         cancellation_token: CancellationToken | None = None,
+        received_at: datetime | None = None,
     ) -> TaskTurn:
         if session.completed:
             session = session.new_request()
         from .intent.recognizer import Message
 
         Message(role="user", content=user_input)
-        received_at = datetime.now(UTC)
-        session = session.anchor_time()
+        received_at = received_at or datetime.now(UTC)
+        if received_at.tzinfo is None or received_at.utcoffset() is None:
+            raise ValueError("received_at must be timezone-aware")
+        received_at = received_at.astimezone(UTC)
+        if session.reference_time_utc is None:
+            session = session.model_copy(update={"reference_time_utc": received_at})
         trace_id = uuid4().hex
         with self.observer.span(
             "input", trace_id=trace_id, conversation_id=session.conversation_id, turn_id=uuid4().hex

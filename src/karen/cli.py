@@ -85,13 +85,15 @@ async def read_input() -> str:
 
 
 async def converse(
-    *, json_output: bool = False, timezone: str | None = None, observe_port: int | None = None
+    *, json_output: bool = False, timezone: str | None = None, observe_port: int | None = None,
+    wechat: bool = False,
 ) -> int:
     try:
         session = IntentSession(timezone=timezone) if timezone is not None else IntentSession()
     except (ValueError, ZoneInfoNotFoundError, OSError):
         print("Karen：无法确定有效的用户时区，请使用 --timezone 指定 IANA 时区，如 Asia/Shanghai。")
         return 1
+    credentials = await bind_weixin() if wechat else None
     backend = deepseek_client()
     observer = create_observer()
     async with AsyncExitStack() as resources:
@@ -152,6 +154,28 @@ async def converse(
                 memory=memory,
                 observer=observer,
             )
+            if wechat:
+                import httpx
+
+                from .channels.weixin import (
+                    ILinkClient,
+                    WeixinChannel,
+                    WeixinStore,
+                    prepare_file_tool,
+                )
+
+                store = WeixinStore(Path.home() / ".Karne" / "weixin", credentials)
+                resources.callback(store.close)
+                engine.register_tool(prepare_file_tool(store))
+                http = await resources.enter_async_context(httpx.AsyncClient(trust_env=False))
+                channel = WeixinChannel(
+                    agent=agent, client=ILinkClient(http, token=credentials.token,
+                                                  base_url=credentials.base_url),
+                    store=store, credentials=credentials, initial_session=session, observer=observer,
+                )
+                print("Karen：个人微信渠道已启动，仅处理扫码绑定者的私聊。Ctrl+C 退出。", file=sys.stderr)
+                await channel.run()
+                return 0
             exit_code = 0
             while True:
                 try:
@@ -218,10 +242,36 @@ async def converse(
                 raise
 
 
+async def bind_weixin(*, force=False):
+    """Binding does not require a model key and never prints a bearer credential."""
+    import httpx
+
+    from .channels.weixin import load_credentials, login, save_credentials
+    from .channels.weixin.auth import acquire_lock
+
+    root = Path.home() / ".Karne" / "weixin"
+
+    async def read_code():
+        print("请在下面输入微信要求的验证码：", file=sys.stderr)
+        return await read_input()
+
+    with acquire_lock(root):
+        previous = load_credentials(root)
+        if previous and not force:
+            return previous
+        async with httpx.AsyncClient(trust_env=False) as http:
+            credentials = await login(http, previous=previous, read_code=read_code)
+        save_credentials(root, credentials)
+    print("Karen：微信绑定成功。凭据已保存在 ~/.Karne/weixin（仅当前用户可读）。", file=sys.stderr)
+    return credentials
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Karen 任务与意图澄清")
     parser.add_argument("--json", action="store_true", help="展示完整执行结果 JSON")
     parser.add_argument("--timezone", help="用户的 IANA 时区，默认读取本机时区")
+    parser.add_argument("--wechat", action="store_true", help="通过个人微信对话，首次启动扫码绑定")
+    parser.add_argument("--wechat-login", action="store_true", help="仅扫码绑定或刷新微信凭据，不启动模型")
     parser.add_argument(
         "--observe", nargs="?", const=DEFAULT_PORT, type=int, metavar="PORT",
         help=f"同时启动本地观测页面，默认端口 {DEFAULT_PORT}，可指定其他端口",
@@ -229,13 +279,34 @@ def main() -> None:
     args = parser.parse_args()
     if args.observe is not None and not 1 <= args.observe <= 65535:
         parser.error("--observe 端口必须在 1–65535 之间")
+    if args.wechat_login and (args.wechat or args.json or args.observe is not None):
+        parser.error("--wechat-login 单独使用；绑定后用 --wechat 启动")
+    if args.wechat and args.json:
+        parser.error("--json 仅适用于命令行对话")
     try:
+        if args.wechat_login:
+            asyncio.run(bind_weixin(force=True))
+            raise SystemExit(0)
+        options = {"wechat": True} if args.wechat else {}
         raise SystemExit(asyncio.run(converse(
-            json_output=args.json, timezone=args.timezone, observe_port=args.observe
+            json_output=args.json, timezone=args.timezone, observe_port=args.observe, **options,
         )))
     except KeyboardInterrupt:
         raise SystemExit(130) from None
     except PersistenceError:
+        raise SystemExit(1) from None
+    except Exception as exc:
+        import sqlite3
+
+        from .channels.weixin import WeixinError
+
+        if not isinstance(exc, (WeixinError, OSError, sqlite3.Error)) or not (args.wechat or args.wechat_login):
+            raise
+        code = (exc.code if isinstance(exc, WeixinError) else
+                "WEIXIN_STORAGE_FAILED" if isinstance(exc, sqlite3.Error) else type(exc).__name__)
+        print(f"Karen：微信渠道未能继续运行（{code}）。", file=sys.stderr)
+        if code in {"WEIXIN_SESSION_EXPIRED", "WEIXIN_LOGIN_REQUIRED"}:
+            print("请执行 karen --wechat-login 重新扫码，再启动 --wechat。", file=sys.stderr)
         raise SystemExit(1) from None
 
 

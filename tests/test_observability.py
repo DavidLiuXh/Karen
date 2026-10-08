@@ -34,6 +34,22 @@ def read_events(root):
     ]
 
 
+async def test_weixin_channel_events_are_visible_without_an_agent_task_and_redacted(tmp_path):
+    observer = Observer(tmp_path)
+    await observer.start()
+    with observer.span("weixin.delivery"):
+        observer.emit("weixin.delivery_failed", status="error", data={
+            "error_code": "WEIXIN_NETWORK_FAILED", "context_token": "secret",
+        })
+    await observer.close()
+    listing = TraceStore(tmp_path).tasks()
+    assert listing["tasks"] == []
+    event = listing["channel_events"][0]
+    assert event["event_type"] == "weixin.delivery_failed"
+    assert event["data"]["context_token"] == "[REDACTED]"
+    assert TraceStore(tmp_path).trace(event["trace_id"])["events"]
+
+
 async def test_concurrent_turns_keep_causal_identity_and_actual_usage(tmp_path):
     observer = Observer(tmp_path)
     await observer.start()
@@ -215,6 +231,25 @@ def test_partial_tail_and_corrupt_line_do_not_invent_finished_state(tmp_path):
     assert detail["coverage"]["invalid_lines"] == 1
     assert detail["coverage"]["unfinished_tail"]
     assert all(check["status"] == "unknown" for check in detail["checks"])
+
+
+def test_input_list_waits_for_input_record_but_preserves_failed_input(tmp_path):
+    directory = tmp_path / "traces"
+    directory.mkdir()
+    trace_id = uuid4().hex
+    path = directory / f"{trace_id}.jsonl"
+    start = {"trace_id": trace_id, "stage": "input", "event_type": "span.started",
+             "timestamp_utc": "2026-10-07T00:00:00Z", "data": {}}
+    path.write_text(json.dumps(start) + "\n")
+    store = TraceStore(tmp_path)
+    assert store.tasks()["tasks"] == []
+    received = {**start, "event_type": "input.received", "data": {"text": "完整用户输入"}}
+    with path.open("a") as handle:
+        handle.write(json.dumps(received) + "\n")
+    assert store.tasks()["tasks"][0]["input"] == "完整用户输入"
+    finished = {**start, "event_type": "span.finished", "status": "failed"}
+    path.write_text(json.dumps(start) + "\n" + json.dumps(finished) + "\n")
+    assert store.tasks()["tasks"][0]["status"] == "failed"
 
 
 def test_viewer_refuses_arbitrary_paths_and_symlink_records(tmp_path):

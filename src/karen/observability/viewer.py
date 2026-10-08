@@ -137,6 +137,11 @@ class TraceStore:
             request = next(
                 (e for e in events if e.get("event_type") in {"turn.input", "input.received"}), {}
             )
+            if (not request and not finished and started["stage"] == "input"
+                    and not coverage["invalid_lines"] and not coverage["unfinished_tail"]):
+                # The asynchronous writer can expose span.started before input.received.
+                # Wait for the input record instead of publishing a transient blank task.
+                continue
             tasks.append(
                 {
                     "trace_id": path.stem,

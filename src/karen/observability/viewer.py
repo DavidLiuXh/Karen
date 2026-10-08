@@ -107,7 +107,7 @@ class TraceStore:
 
     def tasks(self):
         paths, limited = self._files()
-        tasks, gaps, total_bytes = [], [], 0
+        tasks, gaps, channel_events, total_bytes = [], [], [], 0
         for path in paths:
             if total_bytes >= 8 * 1024 * 1024:
                 limited = True
@@ -117,6 +117,7 @@ class TraceStore:
                 tail, _ = self._events(path, 64 * 1024, tail=True)
                 events.extend(tail)
             total_bytes += min(path.stat().st_size, 128 * 1024)
+            channel_events.extend(e for e in events if e["event_type"].startswith("weixin."))
             roots = [e for e in events if e.get("stage") in {"input", "turn"}]
             started = next(
                 (
@@ -164,7 +165,9 @@ class TraceStore:
             if health.get("dropped") or health.get("write_failures"):
                 gaps.append(health)
         tasks.sort(key=lambda t: t["timestamp_utc"], reverse=True)
-        return {"tasks": tasks, "coverage": {"partial": limited, "gaps": gaps}}
+        channel_events.sort(key=lambda e: e["timestamp_utc"], reverse=True)
+        return {"tasks": tasks, "channel_events": channel_events[:20],
+                "coverage": {"partial": limited, "gaps": gaps}}
 
     def trace(self, trace_id):
         if not IDENTIFIER.fullmatch(trace_id):

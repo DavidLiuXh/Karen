@@ -342,6 +342,10 @@
       <h2>最近交互</h2>
       <div id="tasks"></div>
       <footer id="listCoverage"></footer>
+      <details id="channelLog" hidden>
+        <summary>最近微信渠道事件</summary>
+        <div id="channelEvents"></div>
+      </details>
     </aside>
     <main>
       <div id="detail" class="empty">
@@ -355,6 +359,16 @@
       "span.finished": "结束",
       decision: "决策证据",
       "turn.input": "用户输入",
+      "weixin.started": "微信渠道启动",
+      "weixin.stopped": "微信渠道停止",
+      "weixin.received": "微信消息接收",
+      "weixin.processed": "微信请求处理完成",
+      "weixin.sent": "微信发送已获服务端确认",
+      "weixin.poll_failed": "微信接收失败",
+      "weixin.delivery_failed": "微信发送失败",
+      "weixin.processing_failed": "微信请求处理失败",
+      "weixin.input_failed": "微信输入无法处理",
+      "weixin.memory_warning": "微信响应记忆写入异常",
       "model.request": "模型请求",
       "model.response": "模型返回",
       "model.error": "模型错误",
@@ -455,6 +469,24 @@
         holder.append(button);
       }
       if (!data.tasks.length) holder.append(el("p", "暂无记录", "empty"));
+      const channelHolder = document.querySelector("#channelEvents");
+      channelHolder.replaceChildren();
+      const channelEvents = data.channel_events || [];
+      document.querySelector("#channelLog").hidden = !channelEvents.length;
+      for (const event of channelEvents) {
+        const button = el("button", undefined, "task");
+        button.append(
+          el("strong", labels[event.event_type] || event.event_type),
+          el("span", stamp(event.timestamp_utc), "meta"),
+        );
+        if (event.data.error_code) button.append(pill(event.data.error_code, "failed"));
+        button.onclick = () => {
+          selected = event.trace_id;
+          snapshot = null;
+          refresh();
+        };
+        channelHolder.append(button);
+      }
       document.querySelector("#listCoverage").textContent =
         (data.coverage.partial ? "列表扫描达到上限，仅展示部分记录。 " : "") +
         (data.coverage.gaps.length
@@ -468,6 +500,33 @@
       );
       target.className = "";
       target.replaceChildren();
+      const channelOnly =
+        data.events.some((e) => e.event_type.startsWith("weixin.")) &&
+        !data.events.some((e) => ["input", "turn"].includes(e.stage));
+      if (channelOnly) {
+        target.append(el("h2", "微信渠道轨迹"));
+        for (const event of data.events.filter((e) => e.event_type.startsWith("weixin."))) {
+          payload(
+            target,
+            stamp(event.timestamp_utc) + " · " + (labels[event.event_type] || event.event_type),
+            event.data,
+            event.event_id,
+          );
+          const taskId = event.data.trace_id;
+          if (typeof taskId === "string" && /^[a-f0-9]{32}$/.test(taskId) && taskId !== selected) {
+            const button = el("button", "查看对应任务");
+            button.onclick = () => {
+              selected = taskId;
+              snapshot = null;
+              refresh();
+            };
+            target.append(button);
+          }
+        }
+        for (const detail of target.querySelectorAll("details"))
+          detail.open = open.has(detail.dataset.key);
+        return;
+      }
       const input = data.events.find(
         (e) => e.trace_id === selected && e.event_type === "turn.input",
       );

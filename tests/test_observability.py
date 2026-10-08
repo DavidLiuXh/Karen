@@ -34,6 +34,22 @@ def read_events(root):
     ]
 
 
+async def test_weixin_channel_events_are_visible_without_an_agent_task_and_redacted(tmp_path):
+    observer = Observer(tmp_path)
+    await observer.start()
+    with observer.span("weixin.delivery"):
+        observer.emit("weixin.delivery_failed", status="error", data={
+            "error_code": "WEIXIN_NETWORK_FAILED", "context_token": "secret",
+        })
+    await observer.close()
+    listing = TraceStore(tmp_path).tasks()
+    assert listing["tasks"] == []
+    event = listing["channel_events"][0]
+    assert event["event_type"] == "weixin.delivery_failed"
+    assert event["data"]["context_token"] == "[REDACTED]"
+    assert TraceStore(tmp_path).trace(event["trace_id"])["events"]
+
+
 async def test_concurrent_turns_keep_causal_identity_and_actual_usage(tmp_path):
     observer = Observer(tmp_path)
     await observer.start()

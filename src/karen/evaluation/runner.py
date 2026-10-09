@@ -28,6 +28,7 @@ from karen.models import deepseek_client, memory_embeddings
 from karen.observability import ObservedModel, Observer
 from karen.response import format_result
 
+from .clarification import assess_steps, summarize_dimensions, trace_origins
 from .datasets import PROTOCOL_VERSION, parse_date
 from .prompts import JUDGE_SCHEMA, JUDGE_SYSTEM
 
@@ -196,8 +197,14 @@ def frozen_judge_client():
 
 
 async def evaluate_case(
-    case, directory, *, client_factory=deepseek_client, judge_client_factory=frozen_judge_client
+    case, directory, *, client_factory=deepseek_client, judge_client_factory=frozen_judge_client,
+    protocol_version=PROTOCOL_VERSION,
 ):
+    if protocol_version not in {"1", "2"}:
+        raise ValueError("Unsupported evaluation protocol")
+    adapter = case.get("adapter", "intent" if case["suite"] == "clamber" else "agent")
+    if adapter not in {"intent", "agent"}:
+        raise ValueError("Unknown evaluation adapter")
     directory.mkdir()
     observer = Observer(directory / "observability")
     await observer.start()
@@ -215,11 +222,16 @@ async def evaluate_case(
         "checks": [],
         "agent_model": getattr(client, "metadata", {}),
     }
+    if protocol_version == "2":
+        result.update(protocol_version="2", adapter=adapter, expected_steps=[{
+            "expected": step["expected"],
+            **({"policy_expectation": step["policy_expectation"]} if "policy_expectation" in step else {}),
+        } for step in case["steps"]])
     stage = "setup"
     try:
         intent = IntentRecognizer(meter, observer=observer)
         planner_meter = meter
-        if case["suite"] != "clamber":
+        if adapter != "intent":
             planner_client = client_factory(reasoning_effort="medium")
             result["planner_model"] = getattr(planner_client, "metadata", {})
             planner_meter = MeteredModel(ObservedModel(planner_client, observer), calls=meter.calls)
@@ -264,7 +276,7 @@ async def evaluate_case(
                     user_context={"provided_context": case["context"]} if case["context"] else {},
                 )
             stage = "interaction"
-            if case["suite"] == "clamber":
+            if adapter == "intent":
                 # Intent-only benchmark. A ready goal is NOT a completed task execution.
                 session = await intent.advance(session, step["text"])
                 actual = {
@@ -303,6 +315,20 @@ async def evaluate_case(
         stage = "grading"
         # Do not spend judge calls on cases already failing a hard contract.
         result["judge"] = None
+        if protocol_version == "2":
+            judge_client = judge_client_factory()
+            result["judge_model"] = getattr(judge_client, "metadata", {})
+            judge_meter = MeteredModel(judge_client)
+            result["dimensions"] = await assess_steps(judge_meter, case, result["steps"])
+            meter.calls.extend(judge_meter.calls)
+            for dimension in result["dimensions"]:
+                grade = dimension["public_quality"]
+                if grade and grade["verdict"] == "fail":
+                    result["checks"].append(grade["reason"])
+            verdicts = {d["public_quality"]["verdict"] for d in result["dimensions"] if d["public_quality"]}
+            result["status"] = ("failed" if result["checks"] else "judge_error" if "error" in verdicts
+                                else "disputed" if "disputed" in verdicts else "passed")
+            return result
         if not result["checks"]:
             # The frozen grader retains its original transport when the agent backend changes.
             judge_client = judge_client_factory()
@@ -332,6 +358,8 @@ async def evaluate_case(
         if memory is not None:
             await memory.close()
         await observer.close()
+        if protocol_version == "2":
+            result["clarification_origins"] = trace_origins(directory)
         result["seconds"] = round(time.monotonic() - started, 3)
         result["model_calls"] = meter.calls
         (directory / "result.json").write_text(
@@ -363,7 +391,8 @@ async def run(manifest_path, output, *, split="all", suites=(), case_ids=(), con
     manifest_path, output = Path(manifest_path), Path(output)
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
-    if manifest["protocol_version"] != PROTOCOL_VERSION:
+    protocol = manifest["protocol_version"]
+    if protocol not in {PROTOCOL_VERSION, "2"}:
         raise ValueError("Unsupported evaluation protocol")
     cases = [
         case
@@ -383,7 +412,7 @@ async def run(manifest_path, output, *, split="all", suites=(), case_ids=(), con
     (output / "run.json").write_text(
         json.dumps(
             {
-                "protocol_version": PROTOCOL_VERSION,
+                "protocol_version": protocol,
                 "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
                 "karen_revision": revision(project),
                 "dag_revision": revision(dag_project),
@@ -394,7 +423,8 @@ async def run(manifest_path, output, *, split="all", suites=(), case_ids=(), con
                 "karen_source_sha256": source_hash(project / "src"),
                 "model": "deepseek-flash (planner medium/high; decisions and rerank low; extraction and query non-thinking)",
                 "embedding": "bge-m3:latest",
-                "judge": "deepseek-chat (custom grader, not official LongMemEval gpt-4o score)",
+                "judge": ("deepseek-flash non-thinking contextual grader v2" if protocol == "2" else
+                          "deepseek-chat (custom grader, not official LongMemEval gpt-4o score)"),
                 "selected_ids": [c["id"] for c in cases],
                 "concurrency": concurrency,
                 "source_integrity": "running",
@@ -410,12 +440,18 @@ async def run(manifest_path, output, *, split="all", suites=(), case_ids=(), con
     async def evaluate(case):
         async with semaphore:
             print(f"START {case['id']}", flush=True)
-            result = await evaluate_case(case, output / case["id"])
+            result = await evaluate_case(case, output / case["id"], **(
+                {"protocol_version": protocol,
+                 "judge_client_factory": lambda: deepseek_client(thinking=False)} if protocol == "2" else {}
+            ))
             results.append(result)
             with (output / "results.jsonl").open("a") as stream:
                 stream.write(json.dumps(result, ensure_ascii=False) + "\n")
             print(f"{result['status'].upper()} {case['id']} {result['checks']}", flush=True)
-            (output / "summary.json").write_text(json.dumps(summarize(results), indent=2) + "\n")
+            summary = summarize(results)
+            if protocol == "2":
+                summary = {"groups": summary, "dimensions": summarize_dimensions(results)}
+            (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
 
     await asyncio.gather(*(evaluate(case) for case in cases))
     metadata_path = output / "run.json"

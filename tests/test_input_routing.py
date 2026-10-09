@@ -426,18 +426,14 @@ async def test_cancel_pending_task_does_not_call_assessor_or_engine(tmp_path):
         ],
     )
     pending = await agent.advance(IntentSession(timezone="UTC"), "写邮件")
+    before_cancel = len(model.requests)
     cancelled = await agent.advance(pending.session, "不用做了")
     assert cancelled.response == "好的，已取消当前待澄清的任务。"
     assert (
         cancelled.session.request_id == pending.session.request_id and cancelled.session.completed
     )
     assert cancelled.session.questions == () and cancelled.result is None
-    assert [r.role for r in model.requests] == [
-        "intent_router",
-        "intent_clarity",
-        "intent",
-        "intent_router",
-    ]
+    assert [r.role for r in model.requests[before_cancel:]] == ["intent_router"]
     assert executor.requests == []
     next_turn = await agent.advance(cancelled.session, "你好")
     assert next_turn.session.request_id != pending.session.request_id

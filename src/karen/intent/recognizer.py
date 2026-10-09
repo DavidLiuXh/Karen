@@ -31,8 +31,8 @@ from tzlocal import get_localzone_name
 
 from ..observability import Observer
 from ..prompts import RESPONSE_INSTRUCTION
+from .policy import CLARIFICATION_POLICY_VERSION
 from .prompts import (
-    CLARITY_INSTRUCTION,
     CLARITY_REVIEW_INSTRUCTION,
     CLARITY_SYSTEM_INSTRUCTION,
     CLARITY_TASK_INSTRUCTION,
@@ -43,6 +43,8 @@ from .prompts import (
     INTENT_SYSTEM_INSTRUCTION,
     INTENT_TASK_INSTRUCTION,
     MEMORY_CONTEXT_INSTRUCTION,
+    PROPOSED_CLARIFICATION_INSTRUCTION,
+    REJECTED_CLARIFICATION_INSTRUCTION,
     ROUTING_INSTRUCTION,
     STRUCTURE_REPAIR_INSTRUCTION,
 )
@@ -249,6 +251,7 @@ class ClarificationItem(IntentContract):
 
 
 class ClarityAssessment(IntentContract):
+    resolution_action: Literal["ask_user", "external_lookup", "safe_default", "cover_alternatives", "proceed"] = "proceed"
     question_updates: list[QuestionUpdate] = Field(
         default_factory=list, description="每个 pending 问题恰好更新一次；已解决问题可重复确认完全相同的状态与引文，不能改写。未回答仍 pending，不能因只回答其他问题就删除。",
     )
@@ -291,6 +294,7 @@ class IntentSession(IntentContract):
     goal: GoalSpec | None = None
     reply: Text | None = None
     routing: InputRouting | None = None
+    public_lookup: dict[str, JsonValue] | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -364,6 +368,11 @@ class IntentState(TypedDict):
     decision: Clarification | Ready | Reply
     memory_context: dict | None
     clarity: ClarityAssessment
+    decision_origin: str
+    decision_deadline: float
+    proposed_questions: list[str]
+    clarification_reviewed: bool
+    clarification_required: bool
 
 
 class IntentRecognizer:
@@ -389,6 +398,9 @@ class IntentRecognizer:
             ),
         )
         graph.add_node("respond", self.observer.node("intent.respond", self._respond, lambda r: r))
+        graph.add_node("review_clarification", self.observer.node(
+            "intent.review_clarification", self._review_clarification, lambda r: r,
+        ))
         graph.add_node("finish_reply", self._finish_reply)
         graph.add_node(
             "cancel",
@@ -402,6 +414,7 @@ class IntentRecognizer:
         )
         graph.add_conditional_edges("check_clarity", self._after_clarity)
         graph.add_conditional_edges("respond", self._route)
+        graph.add_conditional_edges("review_clarification", self._after_clarification_review)
         graph.add_edge("finish_reply", END)
         graph.add_edge("cancel", END)
         graph.add_conditional_edges("assess", self._route)
@@ -462,10 +475,12 @@ class IntentRecognizer:
             max_output_tokens=8192,
         )
         loop = asyncio.get_running_loop()
+        if state.get("decision_deadline") is not None:
+            request = replace(request, timeout_seconds=max(0, state["decision_deadline"] - loop.time()))
         deadline = loop.time() + request.timeout_seconds
         source_texts = [m.content for m in state["session"].messages]
         requirement_texts = [m.content for m in state["session"].messages if m.role == "user"]
-        context_values = [state["session"].user_context]
+        context_values = [state["session"].user_context, state["session"].public_lookup]
         while context_values:
             value = context_values.pop()
             if isinstance(value, str):
@@ -682,7 +697,8 @@ class IntentRecognizer:
             resolution_source="user", blocking_reason="此前的必要问题尚未得到回答或撤销。",
         ) for item in pending.values() if item.question_id not in existing and item.text not in texts]
         clarity = clarity.model_copy(update={"questions": [*retained, *clarity.questions]})
-        result = {"clarity": clarity, "session": session}
+        result = {"clarity": clarity, "session": session,
+                  "decision_origin": state.get("decision_origin", "intent_clarity")}
         self.observer.emit("intent.clarity_resolution", data={
             "user_questions": clarity.questions,
             "external_information_needed": clarity.external_information_needed,
@@ -704,6 +720,35 @@ class IntentRecognizer:
                 "intent.routing_refined", data={"routing": routing, "basis": "external_information"}
             )
         return result
+
+    async def _review_clarification(self, state: IntentState) -> dict:
+        """Every downstream proposal must pass the same necessity gate, once."""
+        origin = state["decision_origin"]
+        if state.get("clarification_reviewed"):
+            raise ModelCallError("MODEL_RESPONSE_INVALID", "A rejected clarification was proposed again")
+        questions = list(state["decision"].questions)
+        checked = await self._check_clarity({**state, "proposed_questions": questions})
+        required = isinstance(checked.get("decision"), Clarification)
+        self.observer.emit("intent.clarification_reviewed", data={
+            "policy_version": CLARIFICATION_POLICY_VERSION, "origin": origin,
+            "proposed_questions": questions, "accepted": required,
+            "reason": checked["decision"].reason if required else checked["clarity"].reason,
+        })
+        return {**checked, "clarification_reviewed": True, "clarification_required": required}
+
+    @staticmethod
+    def _after_clarification_review(state: IntentState):
+        return "clarify" if state["clarification_required"] else state["session"].routing.handling
+
+    async def reassess_after_lookup(self, session: IntentSession, observations: dict, *, memory_context=None):
+        """Recheck the same request against read-only observations, without a fake user turn."""
+        if session.goal is None:
+            raise ValueError("Public lookup reassessment requires an assessed goal")
+        updated = session.model_copy(update={"goal": None, "public_lookup": deepcopy(observations)})
+        state = await self.graph.ainvoke({"session": updated,
+                                        "memory_context": deepcopy(memory_context),
+                                        "decision_origin": "post_lookup"})
+        return state["session"]
 
     async def classify(
         self, session: IntentSession, user_input: str, *, memory_context: dict | None = None
@@ -962,11 +1007,13 @@ class IntentRecognizer:
         request = ModelRequest(
             role="intent_response",
             system_instruction=DIRECT_RESPONSE_INSTRUCTION,
-            task_instruction="直接回应本轮输入；必要信息缺失时提出简短澄清。" + CLARITY_INSTRUCTION,
+            task_instruction="直接回应本轮输入；必要信息缺失时提出简短澄清。",
             input_data=inputs,
             output_schema=DirectAssessment.model_json_schema(),
         )
         loop = asyncio.get_running_loop()
+        if state.get("clarification_reviewed"):
+            request = replace(request, timeout_seconds=max(0, state["decision_deadline"] - loop.time()))
         deadline = loop.time() + request.timeout_seconds
         assessment = await self._validated(request, DirectAssessment)
         memory = state.get("memory_context") or {}
@@ -986,14 +1033,17 @@ class IntentRecognizer:
             self.observer.emit("intent.evidence_coverage", data={
                 "stage": "reply", "coverage": assessment.evidence_coverage,
             })
-        return {"decision": assessment.decision}
+        return {"decision": assessment.decision, "decision_deadline": deadline,
+                "decision_origin": "intent_response_review" if any(
+                    memory.get(layer) for layer in ("m1", "m2", "details")
+                ) else "intent_response"}
 
-    @staticmethod
-    def _finish_reply(state: IntentState) -> dict:
+    def _finish_reply(self, state: IntentState) -> dict:
         session = state["session"]
         if session.questions:
             raise ValueError("UNRESOLVED_QUESTIONS_BLOCK_RESPONSE")
         answer = state["decision"].answer
+        self._emit_policy_decision(state, "proceed")
         return {
             "session": session.model_copy(
                 update={
@@ -1037,6 +1087,18 @@ class IntentRecognizer:
             inputs["evidence_to_consider"] = IntentRecognizer._evidence_items(inputs["memory"])
         if state.get("clarity") is not None:
             inputs["clarity"] = state["clarity"].model_dump(mode="json")
+        if session.public_lookup is not None:
+            inputs["public_lookup"] = deepcopy(session.public_lookup)
+        if state.get("proposed_questions"):
+            inputs["proposed_clarification"] = {
+                "questions": state["proposed_questions"],
+                "instruction": PROPOSED_CLARIFICATION_INSTRUCTION,
+            }
+        if state.get("clarification_reviewed"):
+            inputs["clarification_review"] = {
+                "rejected": True,
+                "instruction": REJECTED_CLARIFICATION_INSTRUCTION,
+            }
         return inputs
 
     @staticmethod
@@ -1138,12 +1200,16 @@ class IntentRecognizer:
             output_schema=Assessment.model_json_schema(),
         )
         loop = asyncio.get_running_loop()
+        if state.get("clarification_reviewed"):
+            request = replace(request, timeout_seconds=max(0, state["decision_deadline"] - loop.time()))
         deadline = loop.time() + request.timeout_seconds
         assessment = await self._validated(request, Assessment)
+        origin = "intent"
         memory = state.get("memory_context") or {}
         if isinstance(assessment.decision, Ready) and any(
             memory.get(layer) for layer in ("m1", "m2", "details")
         ):
+            origin = "intent_goal_review"
             assessment = await self._validated(
                 replace(
                     request,
@@ -1160,17 +1226,17 @@ class IntentRecognizer:
                 "stage": "goal", "coverage": assessment.decision.goal.evidence_coverage
                 if isinstance(assessment.decision, Ready) else [],
             })
-        return {"decision": assessment.decision}
+        return {"decision": assessment.decision, "decision_deadline": deadline,
+                "decision_origin": origin}
 
     @staticmethod
-    def _route(state: IntentState) -> Literal["clarify", "build_goal", "finish_reply"]:
+    def _route(state: IntentState) -> Literal["review_clarification", "build_goal", "finish_reply"]:
         decision = state["decision"]
         if isinstance(decision, Clarification):
-            return "clarify"
+            return "review_clarification"
         return "finish_reply" if isinstance(decision, Reply) else "build_goal"
 
-    @staticmethod
-    def _clarify(state: IntentState) -> dict:
+    def _clarify(self, state: IntentState) -> dict:
         session = state["session"]
         items = list(session.clarification_items)
         clarity = state.get("clarity")
@@ -1191,6 +1257,7 @@ class IntentRecognizer:
             "clarification_items": tuple(items), "displayed_question_ids": requested[:3],
         })
         questions = session.questions
+        self._emit_policy_decision(state, "ask_user", questions=questions)
         messages = (
             *session.messages,
             Message(role="assistant", content="\n".join(questions)),
@@ -1199,14 +1266,26 @@ class IntentRecognizer:
             "session": session.model_copy(update={"messages": messages})
         }
 
-    @staticmethod
-    def _build_goal(state: IntentState) -> dict:
+    def _emit_policy_decision(self, state, action, *, questions=()):
+        clarity = state.get("clarity")
+        if action == "proceed" and clarity and clarity.resolution_action in {"safe_default", "cover_alternatives"}:
+            action = clarity.resolution_action
+        self.observer.emit("intent.clarification_decision", data={
+            "policy_version": CLARIFICATION_POLICY_VERSION,
+            "origin": state.get("decision_origin", "memory_guard"), "action": action,
+            "questions": questions, "reason": state["decision"].reason,
+            "gaps": [q.model_dump(mode="json") for q in clarity.questions] if clarity else [],
+            "after_public_lookup": state["session"].public_lookup is not None,
+        })
+
+    def _build_goal(self, state: IntentState) -> dict:
         session = state["session"]
         if session.questions:
             raise ValueError("UNRESOLVED_QUESTIONS_BLOCK_EXECUTION")
         decision = state["decision"]
         draft = decision.goal
         context = {
+            "clarification_policy_version": CLARIFICATION_POLICY_VERSION,
             "timezone": session.timezone,
             "time_context": session.time_context(),
             "response_instruction": RESPONSE_INSTRUCTION,
@@ -1225,6 +1304,8 @@ class IntentRecognizer:
         clarity = state.get("clarity")
         if clarity and clarity.external_information_needed:
             context["information_to_verify"] = clarity.external_information_needed
+        if session.public_lookup is not None:
+            context["public_lookup"] = deepcopy(session.public_lookup)
         goal = GoalSpec(
             request_id=session.request_id,
             objective=draft.objective,
@@ -1237,4 +1318,5 @@ class IntentRecognizer:
             output_schema=draft.output_schema,
             context=context,
         )
+        self._emit_policy_decision(state, "external_lookup" if context.get("information_to_verify") else "proceed")
         return {"session": session.model_copy(update={"goal": goal})}

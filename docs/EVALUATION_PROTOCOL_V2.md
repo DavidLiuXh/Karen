@@ -27,6 +27,11 @@ The usual `run` command accepts either version. Original runs are never overwrit
 Runtime errors, judge errors and disputed references remain visible. Public quality
 judgments cannot overwrite hard action/contract checks. The aggregate result retains
 the public-label interpretation; product-policy dimensions are explicitly separate.
+Each dimension also reports `case_status_counts`: a correct action cannot hide a
+failed quality grade or judge error. Unannotated product cases are `unscored`.
+These counts cover that dimension's annotated checks; missing quality references
+remain ungraded. `confusion` counts each turn once; `error_breakdown` explains the
+error category without adding duplicate entries to the confusion matrix.
 
 Example independent annotation, frozen before running:
 

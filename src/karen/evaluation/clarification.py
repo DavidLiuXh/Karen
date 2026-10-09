@@ -127,13 +127,30 @@ def summarize_dimensions(results):
     """Errors remain in action denominators; unannotated product cases stay unscored."""
     summary = {}
     for source in ("public", "product"):
-        matrix, quality = Counter(), Counter()
+        matrix, quality, errors, case_statuses = Counter(), Counter(), Counter(), Counter()
         total = correct = 0
         questions_graded = repeated = 0
         for result in results:
             expected_steps = result.get("expected_steps", [])
             actual_steps = result.get("steps", [])
             dimensions = result.get("dimensions", [])
+            agreements = [action_agreement(
+                step.get("policy_expectation", {}) if source == "product" else step["expected"],
+                actual_steps[index] if index < len(actual_steps) else None,
+            ) for index, step in enumerate(expected_steps)]
+            annotated = [a for a in agreements if a["expected_ask"] is not None]
+            grades = [d[f"{source}_quality"] for d in dimensions if d.get(f"{source}_quality")]
+            if not annotated:
+                status = "unscored"
+            elif any(not a["matched"] for a in annotated) or any(g["verdict"] == "fail" for g in grades):
+                status = "failed"
+            elif any(g["verdict"] == "error" for g in grades):
+                status = "judge_error"
+            elif any(g["verdict"] == "disputed" for g in grades):
+                status = "disputed"
+            else:
+                status = "passed"
+            case_statuses[status] += 1
             for index, expected in enumerate(expected_steps):
                 wanted = expected.get("policy_expectation", {}) if source == "product" else expected["expected"]
                 actual = actual_steps[index] if index < len(actual_steps) else None
@@ -144,7 +161,7 @@ def summarize_dimensions(results):
                 correct += int(agreement["matched"])
                 if agreement["actual_ask"] is None:
                     matrix["error"] += 1
-                    matrix["missed_ask_error" if agreement["expected_ask"] else "nonask_error"] += 1
+                    errors["missed_ask_error" if agreement["expected_ask"] else "nonask_error"] += 1
                 else:
                     matrix[("tp" if agreement["actual_ask"] else "fn") if agreement["expected_ask"]
                            else ("fp" if agreement["actual_ask"] else "tn")] += 1
@@ -155,12 +172,14 @@ def summarize_dimensions(results):
                         if grade.get("dimension") == "question_quality" and grade["verdict"] != "error":
                             questions_graded += 1
                             repeated += int(grade.get("repeats_answered_information", False))
-        required = matrix["tp"] + matrix["fn"] + matrix["missed_ask_error"]
-        not_required = matrix["fp"] + matrix["tn"] + matrix["nonask_error"]
+        required = matrix["tp"] + matrix["fn"] + errors["missed_ask_error"]
+        not_required = matrix["fp"] + matrix["tn"] + errors["nonask_error"]
         summary[source] = {
             "annotated_turns": total, "correct_actions": correct,
             "action_accuracy": correct / total if total else None,
             "confusion": dict(matrix),
+            "error_breakdown": dict(errors),
+            "case_status_counts": dict(case_statuses),
             "clarification_recall": matrix["tp"] / required if required else None,
             "overclarification_rate": matrix["fp"] / not_required if not_required else None,
             "quality_counts": dict(quality),

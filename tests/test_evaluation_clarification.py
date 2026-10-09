@@ -89,9 +89,21 @@ def test_dimension_reporting_keeps_errors_and_unannotated_cases_explicit():
     assert summary["public"]["action_accuracy"] == 1 / 3
     assert summary["public"]["clarification_recall"] == 0.5
     assert summary["public"]["overclarification_rate"] == 1
+    assert sum(summary["public"]["confusion"].values()) == 3
     assert summary["product"]["annotated_turns"] == 0
     assert summary["product"]["action_accuracy"] is None
     assert summary["multi_turn_completion"]["rate"] is None
+
+
+def test_product_quality_failures_and_grader_errors_do_not_become_green_cases():
+    c = case()
+    rows = [{"suite": "karen-policy", "expected_steps": c["steps"],
+             "steps": [{"outcome": "clarification"}], "status": "passed",
+             "dimensions": [{"product_quality": {"dimension": "question_quality", "verdict": verdict}}]}
+            for verdict in ("pass", "fail", "error")]
+    product = summarize_dimensions(rows)["product"]
+    assert product["action_accuracy"] == 1
+    assert product["case_status_counts"] == {"passed": 1, "failed": 1, "judge_error": 1}
 
 
 def test_freezing_v2_preserves_original_labels_and_refuses_overwrite(tmp_path):

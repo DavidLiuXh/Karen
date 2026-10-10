@@ -289,7 +289,7 @@ class Retriever:
                 coverage={
                     "complete": False,
                     "dialogue_dependency": dependency,
-                    "requires_history": dependency == "needed",
+                    "requires_history": bool(analysis and analysis.requires_task_selection),
                 },
             )
 
@@ -872,7 +872,7 @@ class Retriever:
             "complete": not degraded,
             "query_kind": analysis.kind,
             "dialogue_dependency": analysis.dialogue_dependency,
-            "requires_history": analysis.dialogue_dependency == "needed",
+            "requires_history": analysis.requires_task_selection,
             "detail_status": detail_status,
             "pending_events": len(self.service._pending),
             "visibility": "committed_snapshot_plus_selected_raw_events",

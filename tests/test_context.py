@@ -1297,6 +1297,38 @@ async def test_rerank_fallback_does_not_use_only_generic_shared_words(memory):
     assert "RERANK_FAILED_FUSION_ORDER" in result.degradations
 
 
+async def test_fusion_fallback_keeps_distinct_entity_facets_without_broadening_specific_queries(tmp_path):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            response = await super().generate(request)
+            if request.role == "memory_query":
+                response.payload["entities"] = ["Orion device"]
+                response.payload["needed_fact_keys"] = ["device.usage"]
+            return response
+
+    backend = Model()
+    service = ContextMemory(root_dir=tmp_path, model=backend, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        for index, text in enumerate((
+            "Orion device captures invoices.", "Orion device archives portraits.",
+            "Nova device captures invoices.",
+        )):
+            await service.flush(service.submit(event(text, request=f"source-{index}")))
+        backend.fail_rank = True
+        broad = await service.recall(query("How can I improve Orion device?"))
+        assert {h.memory.text for h in broad.m2} == {
+            "Orion device captures invoices.", "Orion device archives portraits.",
+        }
+        assert all(h.relevance == "unverified" for h in broad.m2)
+        assert [h.fusion_rank for h in broad.m2] == sorted(h.fusion_rank for h in broad.m2)
+        backend.kind = "detail"
+        specific = await service.recall(query("Orion device invoices quality"))
+        assert [h.memory.text for h in specific.m2] == ["Orion device captures invoices."]
+    finally:
+        await service.close()
+
+
 async def test_fusion_fallback_matches_original_quotes_when_summary_is_translated(tmp_path):
     class Model(MemoryModel):
         async def generate(self, request):

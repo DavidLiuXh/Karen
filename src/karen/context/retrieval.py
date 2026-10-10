@@ -572,7 +572,14 @@ class Retriever:
                 if memories[mid].fact_key in keywords
                 or (
                     any(entity and entity in evidence_text[mid] for entity in analysis.entities)
-                    and bool((query_words & evidence_words[mid]) - entity_words)
+                    and (
+                        bool((query_words & evidence_words[mid]) - entity_words)
+                        # Broad contextual tasks may need distinct facets of the
+                        # same object. Fact-key hints are not hard constraints.
+                        # An exact entity match is positive coarse evidence;
+                        # retain it as unverified for contextual tasks only.
+                        or analysis.kind == "relevance"
+                    )
                 )
                 or len((query_words & evidence_words[mid]) - entity_words) >= 2
             ]

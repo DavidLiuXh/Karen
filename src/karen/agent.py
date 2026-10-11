@@ -5,20 +5,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from dynamic_graph import (
-    CancellationToken,
-    DynamicGraphEngine,
-    ExecutionPolicy,
-    GoalSpec,
-    RunResult,
-)
+from dynamic_graph import CancellationToken, DynamicGraphEngine, ExecutionPolicy, RunResult
 
 from .capabilities import all_capabilities_policy
 from .context import ContextEvent, ContextMemory, RecallQuery, RecallResult
 from .context.contracts import MemoryError
 from .intent import IntentRecognizer, IntentSession
 from .observability import Observer
-from .prompts import PUBLIC_LOOKUP_OBJECTIVE
 
 
 @dataclass(frozen=True)
@@ -211,21 +204,6 @@ class Karen:
             )
             self.observer.emit("intent.routing_refined", data={"routing": session.routing})
         session = await self.intent.advance(session, user_input, routing=session.routing, **kwargs)
-        if session.goal and session.goal.context.get("information_to_verify"):
-            queries = session.goal.context["information_to_verify"]
-            if not session.public_lookup or session.public_lookup.get("queries") != queries:
-                observations = await self._lookup_public_information(
-                    session, queries, policy, cancellation_token,
-                )
-                if observations["status"] != "completed":
-                    # A transport/tool failure is not a new question for the user.
-                    session = session.model_copy(update={
-                        "goal": None, "public_lookup": observations,
-                        "reply": "所需公共资料暂未能核实（" + observations["error_code"]
-                                 + "），尚未执行后续任务。请稍后重试。",
-                    })
-                else:
-                    session = await self.intent.reassess_after_lookup(session, observations, **kwargs)
         if session.goal is None:
             if session.reply is not None:
                 if session.routing.handling == "cancel":
@@ -297,45 +275,3 @@ class Karen:
         )
         self._capture(session, "task_result", public_result, warnings)
         return TaskTurn(session, result, recalled, tuple(warnings), trace_id)
-
-    async def _lookup_public_information(self, session, queries, policy, cancellation_token):
-        """Prepare public evidence under a narrower policy before business execution."""
-        base = policy if policy is not None else all_capabilities_policy(self.engine)
-        # Generic HTTP fetch can address private/local services. Only the public
-        # search capability is authorized during this preparation step.
-        allowed = [f"{cap.name}@{cap.version}" for cap in self.engine.list_capabilities()
-                   if cap.kind == "tool" and cap.name == "tavily.search"
-                   and cap.to_dict()["read_only"]
-                   and f"{cap.name}@{cap.version}" in base.allowed_tools]
-        if not allowed:
-            observations = {"queries": queries, "status": "unavailable",
-                            "error_code": "PUBLIC_LOOKUP_UNAVAILABLE"}
-            self.observer.emit("intent.public_lookup", status="failed", data=observations)
-            return observations
-        lookup_policy = base.model_copy(update={
-            "allowed_tools": allowed, "allowed_side_effect_tools": [], "allowed_evaluators": [],
-            "max_nodes": min(base.max_nodes, 8), "max_tool_calls": min(base.max_tool_calls, 8),
-            "max_model_calls": min(base.max_model_calls, 12),
-            "max_result_bytes": min(base.max_result_bytes, 65536),
-            "run_timeout_seconds": min(base.run_timeout_seconds, 120),
-        })
-        goal = GoalSpec(
-            request_id=session.request_id,
-            objective=PUBLIC_LOOKUP_OBJECTIVE,
-            inputs={"questions": queries},
-            context={"timezone": session.timezone, "time_context": session.time_context()},
-        )
-        with self.observer.span("intent.public_lookup"):
-            self.observer.emit("lookup.started", data={"queries": queries, "policy": lookup_policy})
-            result = await self.engine.run(goal=goal, policy=lookup_policy,
-                                           cancellation_token=cancellation_token)
-            completed = (result.execution_status == "COMPLETED" and result.output_complete
-                        and result.usage.get("tool_calls", 0) > 0)
-            observations = {
-                "queries": queries, "status": "completed" if completed else "failed",
-                "run_id": result.run_id, "outputs": result.outputs if completed else {},
-                "error_code": ("" if completed else result.diagnostics[0].code
-                               if result.diagnostics else "PUBLIC_LOOKUP_UNCONFIRMED"),
-            }
-            self.observer.emit("lookup.result", status="ok" if completed else "failed", data=observations)
-        return observations

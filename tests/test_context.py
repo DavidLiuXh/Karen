@@ -536,14 +536,18 @@ async def test_missing_external_history_still_clarifies_during_current_task(memo
     )
     async with service.foreground():
         first = await agent.advance(IntentSession(timezone="Asia/Shanghai"), "帮我整理一份报告")
-        before_followup = len(intent_model.requests)
         backend.dependency, backend.history_status = "needed", "unavailable"
         backend.requires_task_selection = True
         second = await agent.advance(first.session, "沿用上周那份报告的格式")
     assert second.session.request_id == first.session.request_id
     assert second.result is None and second.memory_result.coverage["requires_history"]
     assert "哪一次任务" in second.session.questions[0]
-    assert [r.role for r in intent_model.requests[before_followup:]] == ["intent_router"]
+    assert [r.role for r in intent_model.requests] == [
+        "intent_router",
+        "intent_clarity",
+        "intent",
+        "intent_router",
+    ]
     assert not executor.requests
 
 

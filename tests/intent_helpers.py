@@ -33,10 +33,7 @@ class ClarityAwareModel(FakeModelClient):
                     "known_referents": {},
                     "references": [],
                     "selection_criteria": [],
-                    "questions": [{"text": text, "kind": "missing_requirement",
-                                   "resolution_source": "user",
-                                   "blocking_reason": "脚本假设该提议必要；必要性由原始模型行为测试覆盖。"}
-                                  for text in request.input_data.get("proposed_clarification", {}).get("questions", [])],
+                    "questions": [],
                     "question_updates": [{
                         "question_id": item["question_id"], "status": "answered",
                         "evidence_quote": request.input_data["messages"][-1]["content"],

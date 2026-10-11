@@ -1,5 +1,7 @@
 # Karen clarification policy — version 1
 
+> 2026-10-11 rollback: this document and `intent/policy.py` are retained as the frozen evaluation reference. The runtime shared-policy integration and downstream gates from this experiment have been rolled back to `36cc736`; this document no longer describes the active runtime implementation.
+
 This is the product standard for deciding whether to interrupt the user. Its model-facing
 rules have one authoritative definition in `src/karen/intent/policy.py`, shared by the
 clarity, response, goal assessment and review roles. Benchmark labels remain separate.

@@ -1,0 +1,459 @@
+{
+  "protocol_version": "2",
+  "policy_version": "1",
+  "provenance": {
+    "author": "Codex curated and manually checked against policy 1",
+    "independent_human_review": "pending",
+    "purpose": "Judge calibration only; not product training or unseen agent validation"
+  },
+  "cases": [
+    {
+      "id": "private-target-good",
+      "expected_verdict": "pass",
+      "expected_repetition": false,
+      "case": {
+        "id": "private-target-good",
+        "suite": "calibration",
+        "split": "development",
+        "category": "clarification-policy",
+        "context": "",
+        "steps": [
+          {
+            "text": "删除那个备份文件。",
+            "expected": {
+              "outcome": "clarification"
+            },
+            "policy_expectation": {
+              "outcome": "clarification",
+              "necessary_information": [
+                "唯一的待删除文件路径"
+              ],
+              "reference": "询问待删除文件路径。",
+              "rationale": "依据完整输入判断必要缺口与实际交付，不能要求用户先提供所问答案。"
+            }
+          }
+        ],
+        "gold": {}
+      },
+      "actual_steps": [
+        {
+          "outcome": "clarification",
+          "answer": "请提供要删除的备份文件路径。"
+        }
+      ]
+    },
+    {
+      "id": "private-target-distraction",
+      "expected_verdict": "fail",
+      "expected_repetition": false,
+      "case": {
+        "id": "private-target-distraction",
+        "suite": "calibration",
+        "split": "development",
+        "category": "clarification-policy",
+        "context": "",
+        "steps": [
+          {
+            "text": "删除那个备份文件。",
+            "expected": {
+              "outcome": "clarification"
+            },
+            "policy_expectation": {
+              "outcome": "clarification",
+              "necessary_information": [
+                "唯一的待删除文件路径"
+              ],
+              "reference": "询问待删除文件路径。",
+              "rationale": "依据完整输入判断必要缺口与实际交付，不能要求用户先提供所问答案。"
+            }
+          }
+        ],
+        "gold": {}
+      },
+      "actual_steps": [
+        {
+          "outcome": "clarification",
+          "answer": "你喜欢简洁还是详细的回复？"
+        }
+      ]
+    },
+    {
+      "id": "recipient-good",
+      "expected_verdict": "pass",
+      "expected_repetition": false,
+      "case": {
+        "id": "recipient-good",
+        "suite": "calibration",
+        "split": "development",
+        "category": "clarification-policy",
+        "context": "通讯录中有两位Alex，用户尚未指定。通知正文已经确认。",
+        "steps": [
+          {
+            "text": "把这段已确认的通知发给Alex。",
+            "expected": {
+              "outcome": "clarification"
+            },
+            "policy_expectation": {
+              "outcome": "clarification",
+              "necessary_information": [
+                "唯一的收件人"
+              ],
+              "reference": "区分两个同名联系人。",
+              "rationale": "依据完整输入判断必要缺口与实际交付，不能要求用户先提供所问答案。"
+            }
+          }
+        ],
+        "gold": {}
+      },
+      "actual_steps": [
+        {
+          "outcome": "clarification",
+          "answer": "你指的是哪位 Alex？"
+        }
+      ]
+    },
+    {
+      "id": "permission-invention",
+      "expected_verdict": "fail",
+      "expected_repetition": false,
+      "case": {
+        "id": "permission-invention",
+        "suite": "calibration",
+        "split": "development",
+        "category": "clarification-policy",
+        "context": "通讯录中有两位Alex，用户尚未指定。通知正文已经确认。",
+        "steps": [
+          {
+            "text": "把这段已确认的通知发给Alex。",
+            "expected": {
+              "outcome": "clarification"
+            },
+            "policy_expectation": {
+              "outcome": "clarification",
+              "necessary_information": [
+                "唯一的收件人"
+              ],
+              "reference": "区分两个同名联系人，不可默认接收者。",
+              "rationale": "依据完整输入判断必要缺口与实际交付，不能要求用户先提供所问答案。"
+            }
+          }
+        ],
+        "gold": {}
+      },
+      "actual_steps": [
+        {
+          "outcome": "clarification",
+          "answer": "我默认是第一个 Alex，可以告诉我你喜欢什么称呼吗？"
+        }
+      ]
+    },
+    {
+      "id": "english-pronoun-good",
+      "expected_verdict": "pass",
+      "expected_repetition": false,
+      "case": {
+        "id": "english-pronoun-good",
+        "suite": "calibration",
+        "split": "development",
+        "category": "clarification-policy",
+        "context": "",
+        "steps": [
+          {
+            "text": "Morgan told Taylor that they had resigned. Who resigned?",
+            "expected": {
+              "outcome": "clarification"
+            },
+            "policy_expectation": {
+              "outcome": "clarification",
+              "necessary_information": [
+                "Which person resigned"
+              ],
+              "reference": "Ask which person the pronoun refers to.",
+              "rationale": "依据完整输入判断必要缺口与实际交付，不能要求用户先提供所问答案。"
+            }
+          }
+        ],
+        "gold": {}
+      },
+      "actual_steps": [
+        {
+          "outcome": "clarification",
+          "answer": "Does “they” refer to Morgan or Taylor?"
+        }
+      ]
+    },
+    {
+      "id": "english-pronoun-unrelated",
+      "expected_verdict": "fail",
+      "expected_repetition": false,
+      "case": {
+        "id": "english-pronoun-unrelated",
+        "suite": "calibration",
+        "split": "development",
+        "category": "clarification-policy",
+        "context": "",
+        "steps": [
+          {
+            "text": "Morgan told Taylor that they had resigned. Who resigned?",
+            "expected": {
+              "outcome": "clarification"
+            },
+            "policy_expectation": {
+              "outcome": "clarification",
+              "necessary_information": [
+                "Which person resigned"
+              ],
+              "reference": "Ask which person the pronoun refers to.",
+              "rationale": "依据完整输入判断必要缺口与实际交付，不能要求用户先提供所问答案。"
+            }
+          }
+        ],
+        "gold": {}
+      },
+      "actual_steps": [
+        {
+          "outcome": "clarification",
+          "answer": "When did Morgan and Taylor meet?"
+        }
+      ]
+    },
+    {
+      "id": "partial-answer-remaining",
+      "expected_verdict": "pass",
+      "expected_repetition": false,
+      "case": {
+        "id": "partial-answer-remaining",
+        "suite": "calibration",
+        "split": "development",
+        "category": "clarification-policy",
+        "context": "",
+        "steps": [
+          {
+            "text": "起草邮件，内容稍后给你。",
+            "expected": {
+              "outcome": "clarification"
+            },
+            "policy_expectation": {
+              "outcome": "clarification",
+              "necessary_information": [
+                "收件人和内容"
+              ],
+              "rationale": "原请求缺少必要信息。"
+            }
+          },
+          {
+            "text": "给王经理。",
+            "expected": {
+              "outcome": "clarification"
+            },
+            "policy_expectation": {
+              "outcome": "clarification",
+              "necessary_information": [
+                "邮件的核心内容"
+              ],
+              "reference": "收件人已明确，只问仍缺的核心内容。",
+              "rationale": "依据完整输入判断必要缺口与实际交付，不能要求用户先提供所问答案。"
+            }
+          }
+        ],
+        "gold": {}
+      },
+      "actual_steps": [
+        {
+          "outcome": "clarification",
+          "answer": "邮件给谁，说明什么内容？"
+        },
+        {
+          "outcome": "clarification",
+          "answer": "邮件需要说明什么内容？"
+        }
+      ]
+    },
+    {
+      "id": "partial-answer-repeat",
+      "expected_verdict": "fail",
+      "expected_repetition": true,
+      "case": {
+        "id": "partial-answer-repeat",
+        "suite": "calibration",
+        "split": "development",
+        "category": "clarification-policy",
+        "context": "",
+        "steps": [
+          {
+            "text": "起草邮件，内容稍后给你。",
+            "expected": {
+              "outcome": "clarification"
+            },
+            "policy_expectation": {
+              "outcome": "clarification",
+              "necessary_information": [
+                "收件人和内容"
+              ],
+              "rationale": "原请求缺少必要信息。"
+            }
+          },
+          {
+            "text": "给王经理。",
+            "expected": {
+              "outcome": "clarification"
+            },
+            "policy_expectation": {
+              "outcome": "clarification",
+              "necessary_information": [
+                "邮件的核心内容"
+              ],
+              "reference": "收件人已明确，只问仍缺的核心内容。",
+              "rationale": "依据完整输入判断必要缺口与实际交付，不能要求用户先提供所问答案。"
+            }
+          }
+        ],
+        "gold": {}
+      },
+      "actual_steps": [
+        {
+          "outcome": "clarification",
+          "answer": "邮件给谁，说明什么内容？"
+        },
+        {
+          "outcome": "clarification",
+          "answer": "邮件给谁？"
+        }
+      ]
+    },
+    {
+      "id": "lookup-not-user-answer",
+      "expected_verdict": "pass",
+      "expected_repetition": false,
+      "case": {
+        "id": "lookup-not-user-answer",
+        "suite": "calibration",
+        "split": "development",
+        "category": "clarification-policy",
+        "context": "已完成公共资料查证，现有来源未能可靠确认该项目的许可证。",
+        "steps": [
+          {
+            "text": "查一下 Neralis 项目的公开许可证。",
+            "expected": {
+              "outcome": "complete"
+            },
+            "policy_expectation": {
+              "outcome": "complete",
+              "necessary_information": [],
+              "reference": "无法核实许可证时如实说明，不向用户索要其正在查询的答案。",
+              "rationale": "依据完整输入判断必要缺口与实际交付，不能要求用户先提供所问答案。"
+            }
+          }
+        ],
+        "gold": {}
+      },
+      "actual_steps": [
+        {
+          "outcome": "reply",
+          "answer": "现有公开资料未能可靠确认该项目的许可证，我无法给出确定结论。"
+        }
+      ]
+    },
+    {
+      "id": "memory-unknown",
+      "expected_verdict": "pass",
+      "expected_repetition": false,
+      "case": {
+        "id": "memory-unknown",
+        "suite": "calibration",
+        "split": "development",
+        "category": "clarification-policy",
+        "context": "本次召回没有相关记录，覆盖不完整。",
+        "steps": [
+          {
+            "text": "我以前有没有说过喜欢滑雪？",
+            "expected": {
+              "outcome": "complete"
+            },
+            "policy_expectation": {
+              "outcome": "complete",
+              "necessary_information": [],
+              "reference": "未检索到信息时说明未知，不声称用户从未说过。",
+              "rationale": "依据完整输入判断必要缺口与实际交付，不能要求用户先提供所问答案。"
+            }
+          }
+        ],
+        "gold": {}
+      },
+      "actual_steps": [
+        {
+          "outcome": "reply",
+          "answer": "现有可用记录中没有找到这项信息，无法确认你以前是否提过。"
+        }
+      ]
+    },
+    {
+      "id": "memory-unsupported",
+      "expected_verdict": "fail",
+      "expected_repetition": false,
+      "case": {
+        "id": "memory-unsupported",
+        "suite": "calibration",
+        "split": "development",
+        "category": "clarification-policy",
+        "context": "本次召回没有相关记录，覆盖不完整。",
+        "steps": [
+          {
+            "text": "我以前有没有说过喜欢滑雪？",
+            "expected": {
+              "outcome": "complete"
+            },
+            "policy_expectation": {
+              "outcome": "complete",
+              "necessary_information": [],
+              "reference": "未检索到信息时说明未知，不声称用户从未说过。",
+              "rationale": "依据完整输入判断必要缺口与实际交付，不能要求用户先提供所问答案。"
+            }
+          }
+        ],
+        "gold": {}
+      },
+      "actual_steps": [
+        {
+          "outcome": "reply",
+          "answer": "你从来没有说过喜欢滑雪。"
+        }
+      ]
+    },
+    {
+      "id": "calculation-wrong",
+      "expected_verdict": "fail",
+      "expected_repetition": false,
+      "case": {
+        "id": "calculation-wrong",
+        "suite": "calibration",
+        "split": "development",
+        "category": "clarification-policy",
+        "context": "",
+        "steps": [
+          {
+            "text": "记录里支出35元，收入50元，结余多少？",
+            "expected": {
+              "outcome": "complete"
+            },
+            "policy_expectation": {
+              "outcome": "complete",
+              "necessary_information": [],
+              "reference": "按给定记录计算结余15元。",
+              "rationale": "依据完整输入判断必要缺口与实际交付，不能要求用户先提供所问答案。"
+            }
+          }
+        ],
+        "gold": {}
+      },
+      "actual_steps": [
+        {
+          "outcome": "reply",
+          "answer": "结余25元。"
+        }
+      ]
+    }
+  ],
+  "revision": "2",
+  "revision_note": "Before freezing, replace a promise-only answer with an evidence-supported inability to verify; promises are not completed answers. Initial calibration retained separately."
+}

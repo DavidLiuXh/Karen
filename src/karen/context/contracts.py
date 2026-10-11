@@ -375,6 +375,14 @@ class QueryAnalysis(Contract):
             "uncertain=无法确定是否需要当前任务之外的历史。已有澄清链不需要再次从记忆确认。"
         ),
     )
+    requires_task_selection: bool = Field(
+        default=False,
+        description=(
+            "是否必须唯一选定当前任务之外的旧任务/操作对象，才能继承其约定或继续操作。"
+            "仅从历史读取事实、偏好或经历为 false，即使 dialogue_dependency=needed；"
+            "需要执行旧任务或继承旧约定且当前上下文无法定位时为 true。"
+        ),
+    )
     time_mode: Literal["current", "effective_at", "known_at", "timeline", "unspecified"] = Field(
         default="current",
         description=(
@@ -400,6 +408,10 @@ class QueryAnalysis(Contract):
 
     @model_validator(mode="after")
     def valid_at(self):
+        if self.requires_task_selection and not self.uses_external_history:
+            raise PydanticCustomError(
+                "external_task_required", "Task selection requires external history",
+            )
         if self.at is not None and self.at.tzinfo is None:
             raise PydanticCustomError("at_timezone_required", "at must be timezone-aware")
         if self.time_mode in {"effective_at", "known_at"} and self.at is None:

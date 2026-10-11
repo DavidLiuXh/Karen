@@ -1,0 +1,254 @@
+{
+  "protocol_version": "2",
+  "clarification_policy_version": "1",
+  "policy_annotation_provenance": {
+    "author": "Codex, checked against policy 1 before first run",
+    "independent_human_review": "pending"
+  },
+  "purpose": "Initial product-policy regression; synthetic, not public CLAMBER or unseen generalization",
+  "cases": [
+    {
+      "id": "policy-draft-zh",
+      "suite": "karen-policy",
+      "adapter": "intent",
+      "split": "development",
+      "category": "clarification-policy",
+      "timezone": "Asia/Shanghai",
+      "reference_time": "2026-10-09T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "给客户起草一段通知，说明培训从本周五改到下周一，只给正文，不发送。",
+          "expected": {
+            "outcome": "complete"
+          },
+          "policy_expectation": {
+            "outcome": "complete",
+            "necessary_information": [],
+            "reference": "应交付或生成通知正文目标，保留时间变更与不发送要求，不追问客户名称或标题。",
+            "rationale": "根据产品策略1，判断是否存在实质且必须由用户解决的缺口。"
+          }
+        }
+      ],
+      "gold": {}
+    },
+    {
+      "id": "policy-draft-en",
+      "suite": "karen-policy",
+      "adapter": "intent",
+      "split": "development",
+      "category": "clarification-policy",
+      "timezone": "Asia/Shanghai",
+      "reference_time": "2026-10-09T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "Draft the body of an update for the client: design is finished and development starts next week. Do not send it.",
+          "expected": {
+            "outcome": "complete"
+          },
+          "policy_expectation": {
+            "outcome": "complete",
+            "necessary_information": [],
+            "reference": "Provide or form a goal for the draft using the given progress; do not require client/project names or a subject line.",
+            "rationale": "根据产品策略1，判断是否存在实质且必须由用户解决的缺口。"
+          }
+        }
+      ],
+      "gold": {}
+    },
+    {
+      "id": "policy-private-object",
+      "suite": "karen-policy",
+      "adapter": "intent",
+      "split": "development",
+      "category": "clarification-policy",
+      "timezone": "Asia/Shanghai",
+      "reference_time": "2026-10-09T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "把那个文件里的标题改为“季度总结”。",
+          "expected": {
+            "outcome": "clarification"
+          },
+          "policy_expectation": {
+            "outcome": "clarification",
+            "necessary_information": [
+              "唯一文件路径"
+            ],
+            "reference": "真实修改需要定位文件；只需追问具体文件，不能默认一个文件。",
+            "rationale": "根据产品策略1，判断是否存在实质且必须由用户解决的缺口。"
+          }
+        }
+      ],
+      "gold": {}
+    },
+    {
+      "id": "policy-relative-date",
+      "suite": "karen-policy",
+      "adapter": "intent",
+      "split": "development",
+      "category": "clarification-policy",
+      "timezone": "Asia/Shanghai",
+      "reference_time": "2026-10-09T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "查看明天北京有没有大风。",
+          "expected": {
+            "outcome": "complete",
+            "goal_contains": [
+              "2026-10-10"
+            ]
+          },
+          "policy_expectation": {
+            "outcome": "complete",
+            "necessary_information": [],
+            "reference": "依据2026-10-09与Asia/Shanghai将明天解析为2026-10-10，形成天气查询目标，不确认可计算日期。",
+            "rationale": "根据产品策略1，判断是否存在实质且必须由用户解决的缺口。"
+          }
+        }
+      ],
+      "gold": {}
+    },
+    {
+      "id": "policy-public-entity",
+      "suite": "karen-policy",
+      "adapter": "intent",
+      "split": "development",
+      "category": "clarification-policy",
+      "timezone": "Asia/Shanghai",
+      "reference_time": "2026-10-09T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "查询 Alacia valdiviae 的体长及公开来源。",
+          "expected": {
+            "outcome": "complete"
+          },
+          "policy_expectation": {
+            "outcome": "complete",
+            "necessary_information": [],
+            "reference": "保留精确名称并查证公共资料，不要求用户先定义这个名称或提供体长。",
+            "rationale": "根据产品策略1，判断是否存在实质且必须由用户解决的缺口。"
+          }
+        }
+      ],
+      "gold": {}
+    },
+    {
+      "id": "policy-unique-reference",
+      "suite": "karen-policy",
+      "adapter": "intent",
+      "split": "development",
+      "category": "clarification-policy",
+      "timezone": "Asia/Shanghai",
+      "reference_time": "2026-10-09T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "林告诉周，他已经提交了报告。是谁提交的？",
+          "expected": {
+            "outcome": "clarification"
+          },
+          "policy_expectation": {
+            "outcome": "clarification",
+            "necessary_information": [
+              "他指林还是周"
+            ],
+            "reference": "本次请求要求唯一的人物，而当前语句不能唯一确定指代；询问具体是哪一个。",
+            "rationale": "根据产品策略1，判断是否存在实质且必须由用户解决的缺口。"
+          }
+        }
+      ],
+      "gold": {}
+    },
+    {
+      "id": "policy-infeasible-analysis",
+      "suite": "karen-policy",
+      "adapter": "intent",
+      "split": "development",
+      "category": "clarification-policy",
+      "timezone": "Asia/Shanghai",
+      "reference_time": "2026-10-09T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "甲容量4，乙容量6，要求容量至少8。分析这两个候选是否有可行方案及原因。",
+          "expected": {
+            "outcome": "complete"
+          },
+          "policy_expectation": {
+            "outcome": "complete",
+            "necessary_information": [],
+            "reference": "分析得出两者均不满足条件即可；不要要求用户修改条件才能分析。",
+            "rationale": "根据产品策略1，判断是否存在实质且必须由用户解决的缺口。"
+          }
+        }
+      ],
+      "gold": {}
+    },
+    {
+      "id": "policy-partial-chain",
+      "suite": "karen-policy",
+      "adapter": "intent",
+      "split": "development",
+      "category": "clarification-policy",
+      "timezone": "Asia/Shanghai",
+      "reference_time": "2026-10-09T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "给我起草进度邮件，收件人和进度我还没说，只输出正文，不发送。",
+          "expected": {
+            "outcome": "clarification"
+          },
+          "policy_expectation": {
+            "outcome": "clarification",
+            "necessary_information": [
+              "核心进度"
+            ],
+            "reference": "询问仍未提供的核心进度，不强制要求收件人姓名或项目名等非核心背景。",
+            "rationale": "根据产品策略1，判断是否存在实质且必须由用户解决的缺口。"
+          }
+        },
+        {
+          "text": "收件人是王经理。",
+          "expected": {
+            "outcome": "clarification"
+          },
+          "policy_expectation": {
+            "outcome": "clarification",
+            "necessary_information": [
+              "核心进度"
+            ],
+            "reference": "保留已给收件人，只问核心进度，不重复问收件人。",
+            "rationale": "根据产品策略1，判断是否存在实质且必须由用户解决的缺口。"
+          }
+        },
+        {
+          "text": "设计已完成，下周开始开发，中文正文即可。",
+          "expected": {
+            "outcome": "complete"
+          },
+          "policy_expectation": {
+            "outcome": "complete",
+            "necessary_information": [],
+            "reference": "依据完整澄清链交付或生成中文邮件草稿目标，保留王经理和给定进度，不再问项目名。",
+            "rationale": "根据产品策略1，判断是否存在实质且必须由用户解决的缺口。"
+          }
+        }
+      ],
+      "gold": {}
+    }
+  ]
+}

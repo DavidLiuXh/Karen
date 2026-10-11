@@ -27,7 +27,7 @@ from .contracts import (
 from .prompts import MEMORY_SYSTEM, QUERY, RERANK, TRUNCATION_REPAIR
 from .storage import digest, encode, terms
 
-RECALL_TIMEOUT_SECONDS = 45
+RECALL_TIMEOUT_SECONDS = 120
 
 FALLBACK_STOP_WORDS = frozenset(
     {
@@ -289,14 +289,14 @@ class Retriever:
                 coverage={
                     "complete": False,
                     "dialogue_dependency": dependency,
-                    "requires_history": dependency == "needed",
+                    "requires_history": bool(analysis and analysis.requires_task_selection),
                 },
             )
 
     async def call(self, state, role, instruction, inputs, schema):
         model = self.service.rerank_model if role == "memory_rerank" else self.service.model
         remaining = min(state["deadline"] - time.monotonic() - 1.5,
-                        20 if role == "memory_rerank" else 8)
+                        60 if role == "memory_rerank" else 15)
         if remaining <= 0:
             raise TimeoutError("RECALL_DEADLINE")
         deadline = time.monotonic() + remaining
@@ -572,7 +572,14 @@ class Retriever:
                 if memories[mid].fact_key in keywords
                 or (
                     any(entity and entity in evidence_text[mid] for entity in analysis.entities)
-                    and bool((query_words & evidence_words[mid]) - entity_words)
+                    and (
+                        bool((query_words & evidence_words[mid]) - entity_words)
+                        # Broad contextual tasks may need distinct facets of the
+                        # same object. Fact-key hints are not hard constraints.
+                        # An exact entity match is positive coarse evidence;
+                        # retain it as unverified for contextual tasks only.
+                        or analysis.kind == "relevance"
+                    )
                 )
                 or len((query_words & evidence_words[mid]) - entity_words) >= 2
             ]
@@ -872,7 +879,7 @@ class Retriever:
             "complete": not degraded,
             "query_kind": analysis.kind,
             "dialogue_dependency": analysis.dialogue_dependency,
-            "requires_history": analysis.dialogue_dependency == "needed",
+            "requires_history": analysis.requires_task_selection,
             "detail_status": detail_status,
             "pending_events": len(self.service._pending),
             "visibility": "committed_snapshot_plus_selected_raw_events",

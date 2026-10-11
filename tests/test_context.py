@@ -46,6 +46,7 @@ class MemoryModel:
         self.fail_extract = False
         self.slow_extract = None
         self.dependency = "none"
+        self.requires_task_selection = False
         self.history_status = "none"
         self.kind = "relevance"
         self.time_mode = "current"
@@ -115,6 +116,7 @@ class MemoryModel:
             result = {
                 "search_text": data["text"],
                 "dialogue_dependency": self.dependency,
+                "requires_task_selection": self.requires_task_selection,
                 "kind": self.kind,
                 "time_mode": self.time_mode,
                 "needed_fact_keys": ["profile.residence.city"] if "住" in data["text"] else [],
@@ -535,6 +537,7 @@ async def test_missing_external_history_still_clarifies_during_current_task(memo
     async with service.foreground():
         first = await agent.advance(IntentSession(timezone="Asia/Shanghai"), "帮我整理一份报告")
         backend.dependency, backend.history_status = "needed", "unavailable"
+        backend.requires_task_selection = True
         second = await agent.advance(first.session, "沿用上周那份报告的格式")
     assert second.session.request_id == first.session.request_id
     assert second.result is None and second.memory_result.coverage["requires_history"]
@@ -546,6 +549,38 @@ async def test_missing_external_history_still_clarifies_during_current_task(memo
         "intent_router",
     ]
     assert not executor.requests
+
+
+@pytest.mark.parametrize("requires_task_selection", [False, True])
+async def test_failed_rerank_preserves_facts_but_does_not_authorize_old_task_continuation(
+    memory, requires_task_selection,
+):
+    from test_input_routing import reply, routing
+
+    from karen import IntentRecognizer, IntentSession
+
+    service, backend = memory
+    await service.flush(service.submit(event("我住在北京。", request="old-task")))
+    backend.dependency = "needed"
+    backend.requires_task_selection = requires_task_selection
+    backend.kind = "detail"
+    backend.fail_rank = True
+    text = "继续之前那次任务，沿用北京住所。" if requires_task_selection else "我之前说住在哪里？"
+    recalled = await service.recall(query(text))
+    assert recalled.m1 or recalled.m2 or recalled.details
+    assert "RERANK_FAILED_FUSION_ORDER" in recalled.degradations
+    assert recalled.history.status == "unavailable"
+    assert recalled.coverage["requires_history"] is requires_task_selection
+    model = FakeModelClient([routing("respond", types=["question"]), reply("你之前说住在北京。")])
+    result = await IntentRecognizer(model).advance(
+        IntentSession(), text, memory_context=recalled.context(),
+    )
+    if requires_task_selection:
+        assert result.questions and result.reply is None and result.goal is None
+        assert not any(r.role == "intent_response" for r in model.requests)
+    else:
+        assert result.reply == "你之前说住在北京。" and not result.questions
+        assert not recalled.related_request_ids and not recalled.history.messages
 
 
 async def test_details_require_scope_decode_unicode_and_preserve_field_pointer(memory):
@@ -694,6 +729,7 @@ async def test_ambiguous_history_clarifies_then_reassesses_current_task(memory):
     async with service.foreground():
         service.submit(event("给甲客户写中文邮件", request="old-task"))
         model.dependency, model.history_status = "needed", "ambiguous"
+        model.requires_task_selection = True
         turn = await agent.advance(
             IntentSession(
                 conversation_id="conversation",
@@ -1158,6 +1194,7 @@ async def test_unavailable_storage_preserves_history_dependency_for_clarificatio
     def unavailable(*args):
         raise PersistenceError("TEST_STORAGE_UNAVAILABLE")
 
+    model.requires_task_selection = True
     monkeypatch.setattr(service.storage, "retrieval_snapshot", unavailable)
     intent = TaskIntentModel()
     agent = Karen(
@@ -1262,6 +1299,38 @@ async def test_rerank_fallback_does_not_use_only_generic_shared_words(memory):
     generic = await service.recall(query("我们需要了解太阳的温度"))
     assert generic.m1 == [] and generic.m2 == []
     assert "RERANK_FAILED_FUSION_ORDER" in result.degradations
+
+
+async def test_fusion_fallback_keeps_distinct_entity_facets_without_broadening_specific_queries(tmp_path):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            response = await super().generate(request)
+            if request.role == "memory_query":
+                response.payload["entities"] = ["Orion device"]
+                response.payload["needed_fact_keys"] = ["device.usage"]
+            return response
+
+    backend = Model()
+    service = ContextMemory(root_dir=tmp_path, model=backend, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        for index, text in enumerate((
+            "Orion device captures invoices.", "Orion device archives portraits.",
+            "Nova device captures invoices.",
+        )):
+            await service.flush(service.submit(event(text, request=f"source-{index}")))
+        backend.fail_rank = True
+        broad = await service.recall(query("How can I improve Orion device?"))
+        assert {h.memory.text for h in broad.m2} == {
+            "Orion device captures invoices.", "Orion device archives portraits.",
+        }
+        assert all(h.relevance == "unverified" for h in broad.m2)
+        assert [h.fusion_rank for h in broad.m2] == sorted(h.fusion_rank for h in broad.m2)
+        backend.kind = "detail"
+        specific = await service.recall(query("Orion device invoices quality"))
+        assert [h.memory.text for h in specific.m2] == ["Orion device captures invoices."]
+    finally:
+        await service.close()
 
 
 async def test_fusion_fallback_matches_original_quotes_when_summary_is_translated(tmp_path):
@@ -2229,8 +2298,8 @@ async def test_recall_truncation_expands_once_without_changing_profiles_or_fusio
         first, retry = model.truncations
         assert first.input_data == retry.input_data and first.output_schema == retry.output_schema
         assert 0 < retry.timeout_seconds <= first.timeout_seconds
-        assert 7 < base.requests[-1].timeout_seconds <= 8
-        assert 19 < ranker.requests[0].timeout_seconds <= 20
+        assert 14 < base.requests[-1].timeout_seconds <= 15
+        assert 59 < ranker.requests[0].timeout_seconds <= 60
         assert result.m1 and result.m1[0].memory.value == "北京"
         if not recovers:
             code = "QUERY_ANALYSIS_FAILED" if role == "memory_query" else "RERANK_FAILED_FUSION_ORDER"

@@ -1,0 +1,754 @@
+{
+  "annotation_provenance": "agent-authored before running; not independently human validated",
+  "scope": "eight new synthetic cases, not public dataset performance",
+  "cases": [
+    {
+      "id": "current-fact",
+      "input": {
+        "query": "Where do I currently live?",
+        "current_request_id": "new-request",
+        "current_task_messages": [],
+        "analysis": {
+          "kind": "facts",
+          "dialogue_dependency": "none",
+          "requires_task_selection": false,
+          "time_mode": "current"
+        },
+        "primary_ids": [
+          "old",
+          "new",
+          "noise"
+        ],
+        "memories": [
+          {
+            "memory_id": "old",
+            "layer": "m1",
+            "text": "I used to live in Tallinn.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "superseded",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-10T00:00:00Z",
+            "request_id": "task-old",
+            "sources": [
+              {
+                "event_id": "event-old",
+                "source_role": "user",
+                "occurred_at": "2026-09-10T00:00:00Z",
+                "quote": "I used to live in Tallinn.",
+                "pointer": "/payload/content",
+                "sequence": 1
+              }
+            ]
+          },
+          {
+            "memory_id": "new",
+            "layer": "m1",
+            "text": "I moved to Porto and now live there.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-11T00:00:00Z",
+            "request_id": "task-new",
+            "sources": [
+              {
+                "event_id": "event-new",
+                "source_role": "user",
+                "occurred_at": "2026-09-11T00:00:00Z",
+                "quote": "I moved to Porto and now live there.",
+                "pointer": "/payload/content",
+                "sequence": 2
+              }
+            ],
+            "supersedes": [
+              "old"
+            ]
+          },
+          {
+            "memory_id": "noise",
+            "layer": "m1",
+            "text": "I like winter hiking.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-12T00:00:00Z",
+            "request_id": "task-noise",
+            "sources": [
+              {
+                "event_id": "event-noise",
+                "source_role": "user",
+                "occurred_at": "2026-09-12T00:00:00Z",
+                "quote": "I like winter hiking.",
+                "pointer": "/payload/content",
+                "sequence": 3
+              }
+            ]
+          }
+        ],
+        "history_candidates": []
+      },
+      "required_groups": [
+        [
+          "new"
+        ]
+      ],
+      "irrelevant_ids": [
+        "noise"
+      ],
+      "history_status": "none",
+      "allowed_tasks": []
+    },
+    {
+      "id": "accumulation",
+      "input": {
+        "query": "How many lanterns did I buy for the same party in total?",
+        "current_request_id": "new-request",
+        "current_task_messages": [],
+        "analysis": {
+          "kind": "detail",
+          "dialogue_dependency": "none",
+          "requires_task_selection": false,
+          "time_mode": "current"
+        },
+        "primary_ids": [
+          "first",
+          "extra",
+          "noise"
+        ],
+        "memories": [
+          {
+            "memory_id": "first",
+            "layer": "m2",
+            "text": "I bought 3 lanterns for my party.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-10T00:00:00Z",
+            "request_id": "task-first",
+            "sources": [
+              {
+                "event_id": "event-first",
+                "source_role": "user",
+                "occurred_at": "2026-09-10T00:00:00Z",
+                "quote": "I bought 3 lanterns for my party.",
+                "pointer": "/payload/content",
+                "sequence": 1
+              }
+            ]
+          },
+          {
+            "memory_id": "extra",
+            "layer": "m2",
+            "text": "I bought another 2 lanterns for that same party.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-11T00:00:00Z",
+            "request_id": "task-extra",
+            "sources": [
+              {
+                "event_id": "event-extra",
+                "source_role": "user",
+                "occurred_at": "2026-09-11T00:00:00Z",
+                "quote": "I bought another 2 lanterns for that same party.",
+                "pointer": "/payload/content",
+                "sequence": 2
+              }
+            ]
+          },
+          {
+            "memory_id": "noise",
+            "layer": "m2",
+            "text": "My colleague bought 20 lanterns for a different event.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-12T00:00:00Z",
+            "request_id": "task-noise",
+            "sources": [
+              {
+                "event_id": "event-noise",
+                "source_role": "user",
+                "occurred_at": "2026-09-12T00:00:00Z",
+                "quote": "My colleague bought 20 lanterns for a different event.",
+                "pointer": "/payload/content",
+                "sequence": 3
+              }
+            ]
+          }
+        ],
+        "history_candidates": []
+      },
+      "required_groups": [
+        [
+          "first"
+        ],
+        [
+          "extra"
+        ]
+      ],
+      "irrelevant_ids": [
+        "noise"
+      ],
+      "history_status": "none",
+      "allowed_tasks": []
+    },
+    {
+      "id": "absent-fact",
+      "input": {
+        "query": "What piano brand did my brother buy?",
+        "current_request_id": "new-request",
+        "current_task_messages": [],
+        "analysis": {
+          "kind": "facts",
+          "dialogue_dependency": "none",
+          "requires_task_selection": false,
+          "time_mode": "current"
+        },
+        "primary_ids": [
+          "noise1",
+          "noise2"
+        ],
+        "memories": [
+          {
+            "memory_id": "noise1",
+            "layer": "m1",
+            "text": "I like hiking in autumn.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-10T00:00:00Z",
+            "request_id": "task-noise1",
+            "sources": [
+              {
+                "event_id": "event-noise1",
+                "source_role": "user",
+                "occurred_at": "2026-09-10T00:00:00Z",
+                "quote": "I like hiking in autumn.",
+                "pointer": "/payload/content",
+                "sequence": 1
+              }
+            ]
+          },
+          {
+            "memory_id": "noise2",
+            "layer": "m1",
+            "text": "It rained on my trip.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-11T00:00:00Z",
+            "request_id": "task-noise2",
+            "sources": [
+              {
+                "event_id": "event-noise2",
+                "source_role": "user",
+                "occurred_at": "2026-09-11T00:00:00Z",
+                "quote": "It rained on my trip.",
+                "pointer": "/payload/content",
+                "sequence": 2
+              }
+            ]
+          }
+        ],
+        "history_candidates": []
+      },
+      "required_groups": [],
+      "irrelevant_ids": [
+        "noise1",
+        "noise2"
+      ],
+      "history_status": "none",
+      "allowed_tasks": []
+    },
+    {
+      "id": "distinct-uses",
+      "input": {
+        "query": "如何改善我的双筒望远镜使用效果？",
+        "current_request_id": "new-request",
+        "current_task_messages": [],
+        "analysis": {
+          "kind": "relevance",
+          "dialogue_dependency": "none",
+          "requires_task_selection": false,
+          "time_mode": "current"
+        },
+        "primary_ids": [
+          "birds",
+          "stars",
+          "noise"
+        ],
+        "memories": [
+          {
+            "memory_id": "birds",
+            "layer": "m2",
+            "text": "我用双筒望远镜观察飞鸟。",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-10T00:00:00Z",
+            "request_id": "task-birds",
+            "sources": [
+              {
+                "event_id": "event-birds",
+                "source_role": "user",
+                "occurred_at": "2026-09-10T00:00:00Z",
+                "quote": "我用双筒望远镜观察飞鸟。",
+                "pointer": "/payload/content",
+                "sequence": 1
+              }
+            ]
+          },
+          {
+            "memory_id": "stars",
+            "layer": "m2",
+            "text": "我也用同一副双筒望远镜看星空。",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-11T00:00:00Z",
+            "request_id": "task-stars",
+            "sources": [
+              {
+                "event_id": "event-stars",
+                "source_role": "user",
+                "occurred_at": "2026-09-11T00:00:00Z",
+                "quote": "我也用同一副双筒望远镜看星空。",
+                "pointer": "/payload/content",
+                "sequence": 2
+              }
+            ]
+          },
+          {
+            "memory_id": "noise",
+            "layer": "m2",
+            "text": "我的自行车轮胎漏气了。",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-12T00:00:00Z",
+            "request_id": "task-noise",
+            "sources": [
+              {
+                "event_id": "event-noise",
+                "source_role": "user",
+                "occurred_at": "2026-09-12T00:00:00Z",
+                "quote": "我的自行车轮胎漏气了。",
+                "pointer": "/payload/content",
+                "sequence": 3
+              }
+            ]
+          }
+        ],
+        "history_candidates": []
+      },
+      "required_groups": [
+        [
+          "birds"
+        ],
+        [
+          "stars"
+        ]
+      ],
+      "irrelevant_ids": [
+        "noise"
+      ],
+      "history_status": "none",
+      "allowed_tasks": []
+    },
+    {
+      "id": "unresolved-conflict",
+      "input": {
+        "query": "Do my records establish whether I can eat peanuts?",
+        "current_request_id": "new-request",
+        "current_task_messages": [],
+        "analysis": {
+          "kind": "facts",
+          "dialogue_dependency": "none",
+          "requires_task_selection": false,
+          "time_mode": "current"
+        },
+        "primary_ids": [
+          "yes",
+          "no",
+          "noise"
+        ],
+        "memories": [
+          {
+            "memory_id": "yes",
+            "layer": "m1",
+            "text": "I am allergic to peanuts.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "conflicted",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-10T00:00:00Z",
+            "request_id": "task-yes",
+            "sources": [
+              {
+                "event_id": "event-yes",
+                "source_role": "user",
+                "occurred_at": "2026-09-10T00:00:00Z",
+                "quote": "I am allergic to peanuts.",
+                "pointer": "/payload/content",
+                "sequence": 1
+              }
+            ],
+            "conflict_group_id": "conflict-1"
+          },
+          {
+            "memory_id": "no",
+            "layer": "m1",
+            "text": "I have no peanut allergy.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "conflicted",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-10T00:00:00Z",
+            "request_id": "task-no",
+            "sources": [
+              {
+                "event_id": "event-no",
+                "source_role": "user",
+                "occurred_at": "2026-09-11T00:00:00Z",
+                "quote": "I have no peanut allergy.",
+                "pointer": "/payload/content",
+                "sequence": 2
+              }
+            ],
+            "conflict_group_id": "conflict-1"
+          },
+          {
+            "memory_id": "noise",
+            "layer": "m1",
+            "text": "I avoid loud music.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-12T00:00:00Z",
+            "request_id": "task-noise",
+            "sources": [
+              {
+                "event_id": "event-noise",
+                "source_role": "user",
+                "occurred_at": "2026-09-12T00:00:00Z",
+                "quote": "I avoid loud music.",
+                "pointer": "/payload/content",
+                "sequence": 3
+              }
+            ]
+          }
+        ],
+        "history_candidates": []
+      },
+      "required_groups": [
+        [
+          "yes"
+        ],
+        [
+          "no"
+        ]
+      ],
+      "irrelevant_ids": [
+        "noise"
+      ],
+      "history_status": "none",
+      "allowed_tasks": []
+    },
+    {
+      "id": "prior-target",
+      "input": {
+        "query": "Continue the Alpine report using its agreed output format.",
+        "current_request_id": "new-request",
+        "current_task_messages": [],
+        "analysis": {
+          "kind": "relevance",
+          "dialogue_dependency": "needed",
+          "requires_task_selection": true,
+          "time_mode": "current"
+        },
+        "primary_ids": [
+          "alpine",
+          "delta"
+        ],
+        "memories": [
+          {
+            "memory_id": "alpine",
+            "layer": "m2",
+            "text": "The Alpine report must be delivered as Markdown.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-10T00:00:00Z",
+            "request_id": "task-alpine",
+            "sources": [
+              {
+                "event_id": "event-alpine",
+                "source_role": "user",
+                "occurred_at": "2026-09-10T00:00:00Z",
+                "quote": "The Alpine report must be delivered as Markdown.",
+                "pointer": "/payload/content",
+                "sequence": 1
+              }
+            ]
+          },
+          {
+            "memory_id": "delta",
+            "layer": "m2",
+            "text": "The unrelated Delta report must be delivered as a slide deck.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-11T00:00:00Z",
+            "request_id": "task-delta",
+            "sources": [
+              {
+                "event_id": "event-delta",
+                "source_role": "user",
+                "occurred_at": "2026-09-11T00:00:00Z",
+                "quote": "The unrelated Delta report must be delivered as a slide deck.",
+                "pointer": "/payload/content",
+                "sequence": 2
+              }
+            ]
+          }
+        ],
+        "history_candidates": [
+          {
+            "event_id": "event-alpine",
+            "request_id": "task-alpine",
+            "event_type": "user_message",
+            "occurred_at": "2026-09-10T00:00:00Z",
+            "payload_preview": "The Alpine report must be delivered as Markdown."
+          },
+          {
+            "event_id": "event-delta",
+            "request_id": "task-delta",
+            "event_type": "user_message",
+            "occurred_at": "2026-09-11T00:00:00Z",
+            "payload_preview": "The unrelated Delta report must be delivered as a slide deck."
+          }
+        ]
+      },
+      "required_groups": [
+        [
+          "alpine"
+        ]
+      ],
+      "irrelevant_ids": [
+        "delta"
+      ],
+      "history_status": "selected",
+      "allowed_tasks": [
+        "task-alpine"
+      ]
+    },
+    {
+      "id": "current-overrides",
+      "input": {
+        "query": "I now want a short plain-text answer; what did the measurement show?",
+        "current_request_id": "new-request",
+        "current_task_messages": [],
+        "analysis": {
+          "kind": "detail",
+          "dialogue_dependency": "none",
+          "requires_task_selection": false,
+          "time_mode": "current"
+        },
+        "primary_ids": [
+          "format",
+          "result",
+          "noise"
+        ],
+        "memories": [
+          {
+            "memory_id": "format",
+            "layer": "m2",
+            "text": "For a previous report I requested an elaborate HTML document.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-10T00:00:00Z",
+            "request_id": "task-format",
+            "sources": [
+              {
+                "event_id": "event-format",
+                "source_role": "user",
+                "occurred_at": "2026-09-10T00:00:00Z",
+                "quote": "For a previous report I requested an elaborate HTML document.",
+                "pointer": "/payload/content",
+                "sequence": 1
+              }
+            ]
+          },
+          {
+            "memory_id": "result",
+            "layer": "m2",
+            "text": "The recorded measurement was 7.2 cm.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-11T00:00:00Z",
+            "request_id": "task-result",
+            "sources": [
+              {
+                "event_id": "event-result",
+                "source_role": "user",
+                "occurred_at": "2026-09-11T00:00:00Z",
+                "quote": "The recorded measurement was 7.2 cm.",
+                "pointer": "/payload/content",
+                "sequence": 2
+              }
+            ]
+          },
+          {
+            "memory_id": "noise",
+            "layer": "m2",
+            "text": "I prefer spicy noodles.",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-12T00:00:00Z",
+            "request_id": "task-noise",
+            "sources": [
+              {
+                "event_id": "event-noise",
+                "source_role": "user",
+                "occurred_at": "2026-09-12T00:00:00Z",
+                "quote": "I prefer spicy noodles.",
+                "pointer": "/payload/content",
+                "sequence": 3
+              }
+            ]
+          }
+        ],
+        "history_candidates": []
+      },
+      "required_groups": [
+        [
+          "result"
+        ]
+      ],
+      "irrelevant_ids": [
+        "format",
+        "noise"
+      ],
+      "history_status": "none",
+      "allowed_tasks": []
+    },
+    {
+      "id": "negated-preference",
+      "input": {
+        "query": "请结合我的口味推荐晚餐方向。",
+        "current_request_id": "new-request",
+        "current_task_messages": [],
+        "analysis": {
+          "kind": "facts",
+          "dialogue_dependency": "none",
+          "requires_task_selection": false,
+          "time_mode": "current"
+        },
+        "primary_ids": [
+          "avoid",
+          "like",
+          "noise"
+        ],
+        "memories": [
+          {
+            "memory_id": "avoid",
+            "layer": "m1",
+            "text": "我不喜欢很辣的食物。",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-10T00:00:00Z",
+            "request_id": "task-avoid",
+            "sources": [
+              {
+                "event_id": "event-avoid",
+                "source_role": "user",
+                "occurred_at": "2026-09-10T00:00:00Z",
+                "quote": "我不喜欢很辣的食物。",
+                "pointer": "/payload/content",
+                "sequence": 1
+              }
+            ]
+          },
+          {
+            "memory_id": "like",
+            "layer": "m1",
+            "text": "我喜欢清淡的汤和蔬菜。",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-11T00:00:00Z",
+            "request_id": "task-like",
+            "sources": [
+              {
+                "event_id": "event-like",
+                "source_role": "user",
+                "occurred_at": "2026-09-11T00:00:00Z",
+                "quote": "我喜欢清淡的汤和蔬菜。",
+                "pointer": "/payload/content",
+                "sequence": 2
+              }
+            ]
+          },
+          {
+            "memory_id": "noise",
+            "layer": "m1",
+            "text": "我上个月换了电脑。",
+            "subject": "user",
+            "fact_key": "",
+            "state": "active",
+            "verification_state": "supported",
+            "recorded_at": "2026-09-12T00:00:00Z",
+            "request_id": "task-noise",
+            "sources": [
+              {
+                "event_id": "event-noise",
+                "source_role": "user",
+                "occurred_at": "2026-09-12T00:00:00Z",
+                "quote": "我上个月换了电脑。",
+                "pointer": "/payload/content",
+                "sequence": 3
+              }
+            ]
+          }
+        ],
+        "history_candidates": []
+      },
+      "required_groups": [
+        [
+          "avoid"
+        ],
+        [
+          "like"
+        ]
+      ],
+      "irrelevant_ids": [
+        "noise"
+      ],
+      "history_status": "none",
+      "allowed_tasks": []
+    }
+  ]
+}

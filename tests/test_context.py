@@ -396,7 +396,8 @@ async def test_rerank_failure_retains_fusion_order_and_marks_unverified(memory):
         h.relevance == "unverified" and h.rerank_rank is None for h in result.m1
     )
     no_answer = await service.recall(query("太阳表面温度是多少"))
-    assert no_answer.m1 == [] and no_answer.m2 == []
+    assert all(h.relevance == "unverified" for h in [*no_answer.m1, *no_answer.m2])
+    assert no_answer.history.status != "selected"
 
 
 async def test_embedding_failure_keeps_metadata_bm25_and_reports_index_failure(memory):
@@ -1290,18 +1291,19 @@ async def test_known_at_filters_future_raw_history_and_details(memory):
         assert result.history.status == "unavailable"
 
 
-async def test_rerank_fallback_does_not_use_only_generic_shared_words(memory):
+async def test_rerank_failure_returns_candidates_without_claiming_relevance(memory):
     service, model = memory
     await service.flush(service.submit(event("我们需要研究这个问题")))
     model.fail_rank = True
     result = await service.recall(query("我们需要研究那个问题"))
-    # Shared substantive topic words can be useful; ordinary connective words alone cannot.
+    # Coarse candidates are not semantic matches or selected conversation history.
     generic = await service.recall(query("我们需要了解太阳的温度"))
-    assert generic.m1 == [] and generic.m2 == []
+    assert generic.m2 and all(hit.relevance == "unverified" for hit in generic.m2)
+    assert generic.history.status != "selected" and generic.history.messages == []
     assert "RERANK_FAILED_FUSION_ORDER" in result.degradations
 
 
-async def test_fusion_fallback_keeps_distinct_entity_facets_without_broadening_specific_queries(tmp_path):
+async def test_fusion_fallback_preserves_candidates_for_semantic_verification(tmp_path):
     class Model(MemoryModel):
         async def generate(self, request):
             response = await super().generate(request)
@@ -1323,12 +1325,15 @@ async def test_fusion_fallback_keeps_distinct_entity_facets_without_broadening_s
         broad = await service.recall(query("How can I improve Orion device?"))
         assert {h.memory.text for h in broad.m2} == {
             "Orion device captures invoices.", "Orion device archives portraits.",
+            "Nova device captures invoices.",
         }
         assert all(h.relevance == "unverified" for h in broad.m2)
         assert [h.fusion_rank for h in broad.m2] == sorted(h.fusion_rank for h in broad.m2)
         backend.kind = "detail"
         specific = await service.recall(query("Orion device invoices quality"))
-        assert [h.memory.text for h in specific.m2] == ["Orion device captures invoices."]
+        assert {h.memory.text for h in specific.m2} == {h.memory.text for h in broad.m2}
+        assert all(h.relevance == "unverified" for h in specific.m2)
+        assert specific.history.status != "selected"
     finally:
         await service.close()
 
@@ -1354,7 +1359,8 @@ async def test_fusion_fallback_matches_original_quotes_when_summary_is_translate
         assert all(h.relevance == "unverified" for h in result.m2)
         assert "RERANK_FAILED_FUSION_ORDER" in result.degradations
         unrelated = await service.recall(query("ceramic workshop registration"))
-        assert unrelated.m1 == [] and unrelated.m2 == []
+        assert unrelated.m2 and all(h.relevance == "unverified" for h in unrelated.m2)
+        assert unrelated.history.status != "selected"
     finally:
         await service.close()
 
@@ -2358,5 +2364,35 @@ async def test_memory_transport_cap_does_not_restart_a_truncated_background_job(
         status = await service.write_status(receipt)
         assert status.derived == "failed" and status.attempts == 1
         assert status.error_code == "MODEL_RESPONSE_TRUNCATED" and len(model.requests) == 1
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("text", ["此刻常驻何处？", "Where is my home base now?"])
+@pytest.mark.parametrize("failure", ["MODEL_TIMEOUT", "MODEL_RESPONSE_TRUNCATED"])
+async def test_failed_ranking_keeps_semantic_facts_and_version_boundaries(tmp_path, text, failure):
+    class Model(MemoryModel):
+        async def generate(self, request):
+            if request.role == "memory_rerank":
+                raise ModelCallError(failure, "forced stage failure")
+            response = await super().generate(request)
+            if request.role == "memory_query":
+                response.payload.update(kind="facts", entities=[], needed_fact_keys=["常驻地点"])
+            return response
+
+    service = ContextMemory(root_dir=tmp_path, model=Model(), embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        await service.flush(service.submit(event("我住在北京", request="before")))
+        await service.flush(service.submit(event("我搬到上海并安顿下来了", request="after")))
+        result = await service.recall(query(text))
+        assert "RERANK_FAILED_FUSION_ORDER" in result.degradations
+        current = [h for h in result.m1 if h.memory.state == "active"]
+        assert [h.memory.value for h in current] == ["上海"]
+        assert all(h.relevance == "unverified" and h.rerank_rank is None for h in result.m1)
+        assert all(h.evidence_only for h in result.m1 if h.memory.state != "active")
+        assert all(h.memory.sources for h in result.m1)
+        assert result.history.status != "selected" and not result.related_request_ids
+        assert len(encode(result.context()).encode()) <= 12 * 1024
     finally:
         await service.close()

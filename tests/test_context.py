@@ -2305,7 +2305,7 @@ async def test_recall_truncation_expands_once_without_changing_profiles_or_fusio
         assert first.input_data == retry.input_data and first.output_schema == retry.output_schema
         assert 0 < retry.timeout_seconds <= first.timeout_seconds
         assert 14 < base.requests[-1].timeout_seconds <= 15
-        assert 59 < ranker.requests[0].timeout_seconds <= 60
+        assert 89 < ranker.requests[0].timeout_seconds <= 90
         assert result.m1 and result.m1[0].memory.value == "北京"
         if not recovers:
             code = "QUERY_ANALYSIS_FAILED" if role == "memory_query" else "RERANK_FAILED_FUSION_ORDER"

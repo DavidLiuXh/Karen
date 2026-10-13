@@ -27,7 +27,7 @@ from .contracts import (
 from .prompts import MEMORY_SYSTEM, QUERY, RERANK, TRUNCATION_REPAIR
 from .storage import digest, encode, terms
 
-RECALL_TIMEOUT_SECONDS = 120
+RECALL_TIMEOUT_SECONDS = 180
 
 FALLBACK_STOP_WORDS = frozenset(
     {
@@ -296,7 +296,7 @@ class Retriever:
     async def call(self, state, role, instruction, inputs, schema):
         model = self.service.rerank_model if role == "memory_rerank" else self.service.model
         remaining = min(state["deadline"] - time.monotonic() - 1.5,
-                        60 if role == "memory_rerank" else 15)
+                        90 if role == "memory_rerank" else 15)
         if remaining <= 0:
             raise TimeoutError("RECALL_DEADLINE")
         deadline = time.monotonic() + remaining

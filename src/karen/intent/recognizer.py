@@ -47,6 +47,9 @@ from .prompts import (
     STRUCTURE_REPAIR_INSTRUCTION,
 )
 
+# Generation, review and bounded repair share one stage deadline.
+INTENT_STAGE_TIMEOUT_SECONDS = 120
+
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 QuestionStatus = Literal["pending", "answered", "withdrawn", "not_required"]
 
@@ -457,6 +460,7 @@ class IntentRecognizer:
                 if key not in {"routing", "clarity"}
             },
             output_schema=ClarityAssessment.model_json_schema(),
+            timeout_seconds=INTENT_STAGE_TIMEOUT_SECONDS,
             # Thinking and the final structured answer share this budget.
             # Reviews retain this cap and the original shared deadline.
             max_output_tokens=8192,
@@ -965,6 +969,7 @@ class IntentRecognizer:
             task_instruction="直接回应本轮输入；必要信息缺失时提出简短澄清。" + CLARITY_INSTRUCTION,
             input_data=inputs,
             output_schema=DirectAssessment.model_json_schema(),
+            timeout_seconds=INTENT_STAGE_TIMEOUT_SECONDS,
         )
         loop = asyncio.get_running_loop()
         deadline = loop.time() + request.timeout_seconds
@@ -1136,6 +1141,7 @@ class IntentRecognizer:
             task_instruction=INTENT_TASK_INSTRUCTION,
             input_data=inputs,
             output_schema=Assessment.model_json_schema(),
+            timeout_seconds=INTENT_STAGE_TIMEOUT_SECONDS,
         )
         loop = asyncio.get_running_loop()
         deadline = loop.time() + request.timeout_seconds

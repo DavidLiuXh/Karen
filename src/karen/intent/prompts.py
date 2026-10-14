@@ -79,7 +79,13 @@ Schema 仅支持 type/properties/required/additionalProperties/items/enum、数�
 使用用户的语言。严格按照响应 schema 返回。"""
 
 CLARITY_INSTRUCTION = TASK_GAP_INSTRUCTION + """
-清晰度规则适用于直接回应和执行任务。按普通语义及完整上下文解析省略与指代；
+清晰度规则适用于直接回应和执行任务。先区分用户要求分析材料，还是要求选定对象执行操作。
+分析材料时，句法、因果关系和上下文可支持推断，但推断不等于用户明确指定；
+证据不足以唯一判定时，说明合理解释及不确定性本身可以完成分析，不要求用户先提供答案。
+对已提供材料的理解题，即使问法要求回答谁、何时或什么，仍可直接报告材料不能唯一确定；
+疑问词或单数问法不等于必须由用户选定答案。不要将材料中的行为主体与待执行操作的对象混淆。
+执行操作若依赖唯一对象，且不同候选会改变操作结果，则仍须获得足够定位依据。
+按普通语义及完整上下文解析省略与指代；
 有多个会改变交付的合理候选时，不能只凭位置、名称特征或最常见解释声称用户已明确。
 唯一对应须有输入或上下文依据，不臆测人物身份、性别、对象类别或未提及的例外。
 选择标准只用当前要求和适用记忆；只有必要标准仍缺失且影响交付时询问，
@@ -100,6 +106,9 @@ INTENT_TASK_INSTRUCTION += (
 CLARITY_TASK_INSTRUCTION = """找出实际阻碍本次回应/执行的缺口，不生成最终答案、交付物或目标。
 允许且必须做足以识别缺口的前置核对：对输入已列明的封闭条件、候选及材料，
 逐一检查兼容性；材料齐全不代表它们支持所要求的结果。不能仅以‘可交给执行推断’跳过这个检查。
+用户对所给材料的可验证断言是待核对的前提，不能将该断言本身作为它已成立的证据。
+对有限候选/封闭约束，reason 简短指出一个满足全部材料的可行条件，或指出不满足的材料；
+不能仅以“信息完整”“用户已说明成立”认定可交付。这是可核验的结论依据，不输出推理过程。
 公开资料未知或开放研究未完成不等于输入矛盾，不在这里执行检索或完成整个任务。
 1. 根据完整当前澄清链、可信时间与已支持相关记忆判断；不能重复问已回答的信息或可推算日期。
 2. 每项 questions 必须给出 text、kind、resolution_source、blocking_reason。
@@ -114,7 +123,7 @@ CLARITY_TASK_INSTRUCTION = """找出实际阻碍本次回应/执行的缺口，�
    unique_candidate 仅一个合理候选；explicit_identification 必须引用直接指定对应对象的连续原话；
    evidence 只填写逐字原话，不能添加‘用户上下文明确声明’等说明、引号或来源前缀。
    inferred 是句法/常见语义猜测，unresolved 是未解决。不能按姓名猜性别或身份。
-   requires_unique_resolution 只在必须选择唯一对象/答案时 true；兼容的多个用途可分别满足时 false。
+   requires_unique_resolution 只在交付必须先选定唯一对象时 true；分析可报告推断或歧义、多个用途可分别满足时 false。
 5. known_referents 只用于已明确的对象定位，不把推测定义、答案或泛化模板当成用户事实。
 6. selection_criteria 只用用户输入/适用记忆支持的实质标准。主观筛选缺必要标准时
    selection_criteria_required=true；已有适用偏好且有可行方案时，不为未选备选条件继续提问。
@@ -299,14 +308,22 @@ GOAL_REVIEW_INSTRUCTION += COMPACT_REVIEW_INSTRUCTION
 
 CLARITY_REVIEW_INSTRUCTION = """只核查 issues_to_check 中已定位的疑点，不重新扩展任务。
 original_input 是原始证据，issues_to_check 是待核验的猜测，不是正确结论。
-对指代：检查是否有不同于待解析句子的直接声明；仅按常见语义或姓名猜测不能当成消解证据。
+对指代：区分直接指定、上下文支持的推断与无法确定；不得把推断改称用户直接指定。
+句内的句法、因果及语义关系可以支持文本解释，不要求一定有句外的直接声明。
+若任务是理解或分析材料，可交付有依据的解释或明确的歧义结论，requires_unique_resolution=false；
+若必须选定唯一对象执行操作，多个候选仍会改变结果且无充分定位依据，则保留阻断。
+只依据姓名、身份刻板印象或任意选择不能成为推断依据。
 若多个解释可并列完整满足请求，则 requires_unique_resolution=false，删除相应澄清。
 对要求：按完整原文逐项检查量词、否定、范围、数值和时间，核对所有示例是否共享同一条件。
 存在唯一兼容条件时，不能把还没完成的推断或计算当成用户缺少条件。
 用户只要求分析矛盾/是否可行时，可以直接交付分析；不能要求用户先改材料。
-只保留由连续原话支持、确实阻碍实际交付的冲突；能同时满足时 requirement_conflicts=[]。
+对 issues_to_check.requirements 中每一对要求，必须恰好作出一次处置：
+仍阻碍交付则保留在 requirement_conflicts；撤销则放入 resolved_conflicts，原样返回两项要求，
+evidence_quote 引用支持判断的连续用户原文，resolution_basis 给出具体兼容解释或说明分析即可交付。
+封闭候选中须指出哪个候选满足全部材料；不存在这样的候选时不得清空冲突并交给后续推断。
+只说“可同时满足”或“没有冲突”不构成撤销依据。不新增、不遗漏或重复处置待核查要求。
 references 中恰好返回每个待核查 expression 一次，不添加其他指代。
 保留或修正候选与 resolution；不得将刚才的模型猜测当成用户的直接声明。
 不重新输出 known_referents、questions 或筛选标准；程序保留未涉及疑点的初评信息。
-按 ClarityReview schema 返回 references、requirement_conflicts 和简短 reason。
+按 ClarityReview schema 返回 references、requirement_conflicts、resolved_conflicts 和简短 reason。
 """

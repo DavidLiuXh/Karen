@@ -182,7 +182,7 @@ class ReferenceAssessment(IntentContract):
     evidence: str
     requires_unique_resolution: bool = Field(
         default=True,
-        description="只有唯一操作或真实单次事件的唯一指代才为 true；资料查询可分别列出多个版本/记录时为 false，单数用法不要求唯一答案。",
+        description="只有交付必须先选定唯一对象才为 true；文本解释可给出有依据的推断或歧义结论时为 false，不把分析对象的歧义当成用户缺少信息。",
     )
 
     @model_validator(mode="after")
@@ -229,7 +229,18 @@ class RequirementConflict(IntentContract):
     )
 
 
+class ResolvedConflict(IntentContract):
+    first_requirement: Text
+    second_requirement: Text
+    evidence_quote: Text = Field(description="支持撤销阻断的连续用户原文。")
+    resolution_basis: Text = Field(
+        max_length=1000,
+        description="指出满足全部约束的具体兼容解释，或说明请求本身只要求分析矛盾；不能只声称没有冲突。",
+    )
+
+
 class ClarityReview(IntentContract):
+    resolved_conflicts: list[ResolvedConflict] = Field(default_factory=list)
     references: list[ReferenceAssessment] = Field(default_factory=list)
     requirement_conflicts: list[RequirementConflict] = Field(default_factory=list)
     reason: Text = Field(max_length=1500)
@@ -546,7 +557,9 @@ class IntentRecognizer:
                     output_schema=ClarityReview.model_json_schema(),
                 ),
                 ClarityReview,
-                validate=lambda result: self._check_reference_review(ambiguous, result),
+                validate=lambda result: self._check_clarity_review(
+                    ambiguous, grounded_conflicts, requirement_texts, result
+                ),
             )
             checked_expressions = {ref.expression for ref in ambiguous}
             clarity = clarity.model_copy(update={
@@ -772,12 +785,20 @@ class IntentRecognizer:
         )})
 
     @staticmethod
-    def _check_reference_review(ambiguous, review: ClarityReview) -> None:
+    def _check_clarity_review(ambiguous, conflicts, source_texts, review: ClarityReview) -> None:
         expected = {ref.expression for ref in ambiguous}
         if len(review.references) != len(expected) or {
             ref.expression for ref in review.references
         } != expected:
             raise ValueError("INVALID_CLARITY_REVIEW_REFERENCES")
+        expected_pairs = {(c.first_requirement, c.second_requirement) for c in conflicts}
+        dispositions = [*review.requirement_conflicts, *review.resolved_conflicts]
+        actual_pairs = [(c.first_requirement, c.second_requirement) for c in dispositions]
+        if len(actual_pairs) != len(expected_pairs) or set(actual_pairs) != expected_pairs:
+            raise ValueError("CLARITY_REVIEW_MUST_RETAIN_OR_RESOLVE_EACH_CONFLICT")
+        for resolved in review.resolved_conflicts:
+            if not any(resolved.evidence_quote in text for text in source_texts):
+                raise ValueError("UNSUPPORTED_CONFLICT_RESOLUTION_EVIDENCE")
 
     async def _generate(self, request: ModelRequest):
         """Retry transient transport failures within one request's total time budget."""

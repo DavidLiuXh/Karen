@@ -1213,15 +1213,20 @@ async def test_dropped_requirement_conflict_needs_independent_source_check(incom
         "requirement_conflicts": [conflict] if incompatible else [],
         "reason": "仅核查原始要求及完整当前输入",
     }
+    text = "写介绍，全文最多400字，正文至少700字"
+    if not incompatible:
+        text += "。更正：正文至少200字。"
+        check["resolved_conflicts"] = [{
+            "first_requirement": conflict["first_requirement"],
+            "second_requirement": conflict["second_requirement"],
+            "evidence_quote": "更正：正文至少200字",
+            "resolution_basis": "用户纠正了正文下限，正文200至400字可以同时满足当前要求。",
+        }]
     model = RawModel([routing(), initial, check, ready()])
-    result = await IntentRecognizer(model).advance(
-        IntentSession(), "写介绍，全文最多400字，正文至少700字"
-    )
+    result = await IntentRecognizer(model).advance(IntentSession(), text)
     assert bool(result.questions) is incompatible
     audit = next(r for r in model.requests if r.role == "intent_clarity_review")
-    assert audit.input_data["original_input"]["messages"][0]["content"] == (
-        "写介绍，全文最多400字，正文至少700字"
-    )
+    assert audit.input_data["original_input"]["messages"][0]["content"] == text
     assert "quoted_requirements" not in audit.input_data
     assert "复核声称" not in str(audit.input_data)
     assert model.requests[1].timeout_seconds >= audit.timeout_seconds > 0
@@ -1249,6 +1254,12 @@ async def test_conflict_in_material_is_not_always_a_blocking_delivery_requiremen
         "requirement_conflicts": assessment["requirement_conflicts"] if not analyze_only else [],
         "reason": "仅分析材料的矛盾可直接交付；按材料写正文才需要修改要求",
     }
+    if analyze_only:
+        check["resolved_conflicts"] = [{
+            "first_requirement": "全文最多300字", "second_requirement": "正文至少600字",
+            "evidence_quote": "请判断这两项要求是否矛盾，只解释即可。",
+            "resolution_basis": "用户只要求分析，说明上限小于下限即可交付，不要求产出满足两项约束的正文。",
+        }]
     model = RawModel(
         [
             routing("respond" if analyze_only else "assess", types=["question"]),
@@ -1271,7 +1282,7 @@ async def test_conflict_in_material_is_not_always_a_blocking_delivery_requiremen
 async def test_overlapping_conflict_guesses_use_one_independent_whole_input_verdict():
     from dynamic_graph import FakeModelClient as RawModel
 
-    text = "规则是样本需有同一适用条件。材料甲和材料乙。推断唯一条件后输出结果。"
+    text = "规则是样本需有同一适用条件。材料甲和材料乙均为偶数。推断共同条件后输出结果。"
     first = {
         "first_requirement": "样本需有同一适用条件",
         "second_requirement": "材料甲和材料乙",
@@ -1284,7 +1295,12 @@ async def test_overlapping_conflict_guesses_use_one_independent_whole_input_verd
     }
     model = RawModel([
         routing(), assessment,
-        {"requirement_conflicts": [], "reason": "完整材料可同时满足要求"}, ready(),
+        {"requirement_conflicts": [], "resolved_conflicts": [{
+            "first_requirement": first["first_requirement"],
+            "second_requirement": first["second_requirement"],
+            "evidence_quote": "材料甲和材料乙均为偶数",
+            "resolution_basis": "偶数是两项材料共同满足的条件，无需用户补充。",
+        }], "reason": "完整材料可同时满足要求"}, ready(),
     ])
     result = await IntentRecognizer(model).advance(IntentSession(), text)
     assert result.goal and not result.questions
@@ -1306,9 +1322,9 @@ async def test_requirement_review_cannot_create_a_conflict_from_unprovided_quote
         "requirement_conflicts": [{**conflict, "second_requirement": "至少九项"}],
         "reason": "核验引用了未提供的数值",
     }
-    model = RawModel([routing(), assessment, review, ready()])
+    model = RawModel([routing(), assessment, review, review])
     original = IntentSession()
-    with pytest.raises(ModelCallError, match="unsupported evidence"):
+    with pytest.raises(ModelCallError):
         await IntentRecognizer(model).advance(original, "列出最多三项，至少五项")
     assert original.goal is None and original.messages == ()
 
@@ -1621,3 +1637,43 @@ async def test_nonuser_information_gaps_do_not_block_a_clear_goal(resolution_sou
         resolution_source == "external_lookup"
     )
     assert not any(r.role == "intent_clarity_review" for r in model.requests)
+
+
+@pytest.mark.parametrize("invalid_resolution", [False, True])
+async def test_conflict_cannot_disappear_without_grounded_disposition(invalid_resolution):
+    from dynamic_graph import FakeModelClient as RawModel
+
+    conflict = {"first_requirement": "只能输出两项", "second_requirement": "必须输出四项",
+                "question": "请确认输出数量？"}
+    initial = {"requirement_conflicts": [conflict], "references": [],
+               "known_referents": {}, "selection_criteria": [], "questions": [], "reason": "数量冲突"}
+    review = {"reason": "没有冲突", "requirement_conflicts": []}
+    if invalid_resolution:
+        review["resolved_conflicts"] = [{
+            "first_requirement": conflict["first_requirement"],
+            "second_requirement": conflict["second_requirement"],
+            "evidence_quote": "用户取消了四项要求", "resolution_basis": "按纠正后的两项交付",
+        }]
+    model = RawModel([routing(), initial, review, review])
+    with pytest.raises(ModelCallError):
+        await IntentRecognizer(model).advance(IntentSession(), "只能输出两项，必须输出四项")
+    assert [r.role for r in model.requests][-2:] == ["intent_clarity_review"] * 2
+    assert model.requests[-1].timeout_seconds < model.requests[-2].timeout_seconds
+
+
+@pytest.mark.parametrize("operation", [False, True])
+async def test_ambiguous_material_can_be_an_answer_but_not_an_operation_target(operation):
+    from dynamic_graph import FakeModelClient as RawModel
+
+    reference = {"expression": "她", "candidates": ["林", "周"], "resolution": "unresolved",
+                 "evidence": "林告诉周她已归还钥匙", "requires_unique_resolution": True}
+    initial = {"references": [reference], "requirement_conflicts": [], "known_referents": {},
+               "selection_criteria": [], "questions": [], "reason": "有两个合理指代"}
+    review = {"references": [{**reference, "requires_unique_resolution": operation}],
+              "reason": "文本解释可以说明歧义；通知操作需要唯一收件人"}
+    model = RawModel([routing("respond", types=["question"]), initial, review,
+                      reply("仅凭这句话无法唯一确定归还钥匙的人，林和周都有可能。")])
+    text = "林告诉周她已归还钥匙。" + ("请通知归还钥匙的人。" if operation else "这句话能确定谁归还钥匙吗？")
+    result = await IntentRecognizer(model).advance(IntentSession(), text)
+    assert bool(result.questions) is operation
+    assert bool(result.reply) is not operation

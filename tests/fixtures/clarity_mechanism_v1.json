@@ -1,0 +1,181 @@
+{
+  "provenance": "Agent-authored mechanism variants, frozen before live evaluation; not independently human validated.",
+  "cases": [
+    {
+      "id": "text-cause-en",
+      "suite": "clarity-mechanism",
+      "adapter": "intent",
+      "category": "mechanism",
+      "timezone": "UTC",
+      "reference_time": "2026-10-04T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "Nora emailed Sam because she wanted to reconnect. Who wanted to reconnect?",
+          "expected": {
+            "outcome": "reply"
+          }
+        }
+      ],
+      "gold": {
+        "answer": "Nora is the natural causal reading; explain uncertainty if needed, without asking the user to supply the answer."
+      },
+      "split": "development"
+    },
+    {
+      "id": "text-ambiguous-en",
+      "suite": "clarity-mechanism",
+      "adapter": "intent",
+      "category": "mechanism",
+      "timezone": "UTC",
+      "reference_time": "2026-10-04T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "Arun told Dev that he had finished the report. Can this sentence alone establish who finished it?",
+          "expected": {
+            "outcome": "reply"
+          }
+        }
+      ],
+      "gold": {
+        "answer": "No; either Arun or Dev could be the referent. Explain the ambiguity without asking for more information."
+      },
+      "split": "development"
+    },
+    {
+      "id": "text-ambiguous-zh",
+      "suite": "clarity-mechanism",
+      "adapter": "intent",
+      "category": "mechanism",
+      "timezone": "UTC",
+      "reference_time": "2026-10-04T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "林告诉周她归还了钥匙。这句话能唯一确定是谁归还的吗？",
+          "expected": {
+            "outcome": "reply"
+          }
+        }
+      ],
+      "gold": {
+        "answer": "不能唯一确定，林和周都可能是指代；直接说明歧义。"
+      },
+      "split": "development"
+    },
+    {
+      "id": "operation-target-en",
+      "suite": "clarity-mechanism",
+      "adapter": "intent",
+      "category": "mechanism",
+      "timezone": "UTC",
+      "reference_time": "2026-10-04T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "Arun told Dev that he had finished the report. Send the finisher a congratulatory message.",
+          "expected": {
+            "outcome": "clarification"
+          }
+        }
+      ],
+      "gold": {
+        "clarifying_question": "Ask which person finished the report before selecting the recipient."
+      },
+      "split": "development"
+    },
+    {
+      "id": "closed-conflict-en",
+      "suite": "clarity-mechanism",
+      "adapter": "intent",
+      "category": "mechanism",
+      "timezone": "UTC",
+      "reference_time": "2026-10-04T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "The shared property must be either negative or odd. Samples are 2 and 4. Infer their shared property from those options, then output its name.",
+          "expected": {
+            "outcome": "clarification"
+          }
+        }
+      ],
+      "gold": {
+        "clarifying_question": "Neither listed property holds for either sample. Ask to correct the options or samples; do not invent a shared property."
+      },
+      "split": "development"
+    },
+    {
+      "id": "closed-compatible-en",
+      "suite": "clarity-mechanism",
+      "adapter": "intent",
+      "category": "mechanism",
+      "timezone": "UTC",
+      "reference_time": "2026-10-04T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "The shared property must be either negative or odd. Samples are -2 and -4. Infer their shared property from those options, then output its name.",
+          "expected": {
+            "outcome": "complete"
+          }
+        }
+      ],
+      "gold": {
+        "answer": "negative"
+      },
+      "split": "development"
+    },
+    {
+      "id": "conflict-analysis-zh",
+      "suite": "clarity-mechanism",
+      "adapter": "intent",
+      "category": "mechanism",
+      "timezone": "UTC",
+      "reference_time": "2026-10-04T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "规则要求最多列两项，同时至少列四项。只分析这两个要求能否同时满足，不需要生成清单。",
+          "expected": {
+            "outcome": "reply"
+          }
+        }
+      ],
+      "gold": {
+        "answer": "不能同时满足；说明上下限矛盾，无需用户修改要求。"
+      },
+      "split": "development"
+    },
+    {
+      "id": "corrected-constraint-zh",
+      "suite": "clarity-mechanism",
+      "adapter": "intent",
+      "category": "mechanism",
+      "timezone": "UTC",
+      "reference_time": "2026-10-04T08:00:00+00:00",
+      "context": "",
+      "history": [],
+      "steps": [
+        {
+          "text": "写一份介绍，全文最多400字、正文至少700字。更正：正文至少200字。",
+          "expected": {
+            "outcome": "complete"
+          }
+        }
+      ],
+      "gold": {
+        "answer": "Follow the corrected 200-word minimum within the 400-word maximum; no clarification needed."
+      },
+      "split": "development"
+    }
+  ]
+}

@@ -31,6 +31,7 @@ from karen.response import format_result
 from .clarification import assess_steps, summarize_dimensions, trace_origins
 from .datasets import PROTOCOL_VERSION, parse_date
 from .prompts import JUDGE_SCHEMA, JUDGE_SYSTEM
+from .stages import stage_metrics
 
 
 class MeteredModel:
@@ -360,6 +361,7 @@ async def evaluate_case(
         await observer.close()
         if protocol_version == "2":
             result["clarification_origins"] = trace_origins(directory)
+        result["stage_metrics"] = stage_metrics(case, result)
         result["seconds"] = round(time.monotonic() - started, 3)
         result["model_calls"] = meter.calls
         (directory / "result.json").write_text(

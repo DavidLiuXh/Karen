@@ -79,3 +79,30 @@ clarity, direct response, assessment/review roles and the common policy exit whe
 Large original artifacts remain local; documentation records the reproducible commands
 and their limitations. The 24 seen CLAMBER records remain regression data, not training
 examples or evidence of generalization.
+
+## Stage diagnostics (2026-10-12)
+
+New results also contain `stage_metrics`, without changing existing scores or labels:
+public/product action agreement, packed evidence presence, recall degradation, execution
+status and runtime error are independent fields. This is recorded for both protocols;
+it does not retroactively modify historical artifacts or certify task completion.
+
+Optional per-step annotations must be frozen before a run:
+
+```json
+"evidence_expectation": {
+  "required_quote_groups": [["original source quote", "alternative equivalent quote"]]
+}
+```
+
+Every group requires at least one matching original source quote (or sourced m3 text).
+Summary text alone does not count. This measures presence, not factual correctness or
+successful use of the evidence. Unannotated cases are `unscored`; missing observations
+are `unobserved`; malformed groups are `annotation_error`. This metric covers the
+packed context, not extraction or coarse retrieval: diagnosing those stages still
+requires their saved trace/storage artifacts. Aggregate benchmark scores are unchanged.
+
+Fixed-input rerank experiments separately score required candidate groups, retained
+irrelevant candidates, candidate-ID validity and historical task selection. JSON validity
+alone is not a semantic pass. `tests/fixtures/rerank_acceptance_v1.json` is a small
+agent-authored synthetic fixture, not an independently validated benchmark.

@@ -27,7 +27,7 @@ from .contracts import (
 from .prompts import MEMORY_SYSTEM, QUERY, RERANK, TRUNCATION_REPAIR
 from .storage import digest, encode, terms
 
-RECALL_TIMEOUT_SECONDS = 120
+RECALL_TIMEOUT_SECONDS = 180
 
 FALLBACK_STOP_WORDS = frozenset(
     {
@@ -296,7 +296,7 @@ class Retriever:
     async def call(self, state, role, instruction, inputs, schema):
         model = self.service.rerank_model if role == "memory_rerank" else self.service.model
         remaining = min(state["deadline"] - time.monotonic() - 1.5,
-                        60 if role == "memory_rerank" else 15)
+                        90 if role == "memory_rerank" else 15)
         if remaining <= 0:
             raise TimeoutError("RECALL_DEADLINE")
         deadline = time.monotonic() + remaining
@@ -549,40 +549,10 @@ class Retriever:
             if r.relevance != "irrelevant"
         ]
         if "RERANK_FAILED_FUSION_ORDER" in degraded:
-            keywords = set(analysis.needed_fact_keys)
-            # Fallback needs positive lexical/slot evidence, not a cosine cutoff.
-            query_words = {
-                word
-                for word in terms(analysis.search_text)
-                if len(word) >= 2 and word not in FALLBACK_STOP_WORDS
-            }
-            entity_words = {word for entity in analysis.entities for word in terms(entity)}
-            evidence_text = {
-                mid: " ".join([
-                    memories[mid].text,
-                    *(source.quote for source in memories[mid].sources
-                      if source.event_id not in query.exclude_event_ids),
-                ])
-                for mid in state["primary"]
-            }
-            evidence_words = {mid: set(terms(text)) for mid, text in evidence_text.items()}
-            ranked = [
-                (mid, "unverified", None)
-                for mid in state["primary"]
-                if memories[mid].fact_key in keywords
-                or (
-                    any(entity and entity in evidence_text[mid] for entity in analysis.entities)
-                    and (
-                        bool((query_words & evidence_words[mid]) - entity_words)
-                        # Broad contextual tasks may need distinct facets of the
-                        # same object. Fact-key hints are not hard constraints.
-                        # An exact entity match is positive coarse evidence;
-                        # retain it as unverified for contextual tasks only.
-                        or analysis.kind == "relevance"
-                    )
-                )
-                or len((query_words & evidence_words[mid]) - entity_words) >= 2
-            ]
+            # A failed semantic ranking cannot be replaced by exact slot-name
+            # or token matching. Keep the bounded, scope-filtered coarse results;
+            # consumers must verify relevance against their original sources.
+            ranked = [(mid, "unverified", None) for mid in state["primary"]]
         m1, m2, included, used = [], [], set(), 0
         memory_groups = []
         root_counts = {"m1": 0, "m2": 0}

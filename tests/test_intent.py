@@ -109,6 +109,7 @@ async def test_recalled_uses_are_reviewed_before_goal_creation():
     review_request = next(r for r in model.requests if r.role == "intent_goal_review")
     assert review_request.input_data["memory"] == memory
     assert review_request.input_data["messages"] == draft_request.input_data["messages"]
+    assert 119 < draft_request.timeout_seconds <= 120
     assert 0 < review_request.timeout_seconds < draft_request.timeout_seconds
     assert "待审查的模型产物，不能当成新证据" in review_request.task_instruction
     assert session.goal is None and session.messages == ()

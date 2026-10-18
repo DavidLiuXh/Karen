@@ -305,6 +305,14 @@ def create_server(root_dir, *, port=DEFAULT_PORT):
     asset = Path(__file__).with_name("dashboard.html").read_bytes()
 
     class Handler(BaseHTTPRequestHandler):
+        def handle(self):
+            try:
+                super().handle()
+            except (BrokenPipeError, ConnectionResetError):
+                # Browsers can cancel polling requests during refresh or navigation.
+                # Cover headers and error responses as well as successful bodies.
+                self.close_connection = True
+
         def do_GET(self):
             host = self.headers.get("Host", "")
             if host not in {

@@ -81,6 +81,16 @@ If reranking fails, Karen retains the fused order and explicitly records degrade
 
 Start the local read-only dashboard alongside Karen with `--observe` to investigate questions such as “Why did it ask for clarification?”, “Why was this memory retrieved?”, and “Why did the tool fail?” Normal responses present the result the user needs; internal data such as memory IDs, full model requests, and diagnostics remain in the observation records.
 
+The dashboard supports Chinese and English. These screenshots show an actual weather-query run, cropped to the task details; user input and recorded evidence retain their original language.
+
+**Run overview.** Inspect completion status, elapsed time, model calls, failed events, and process checks. Coverage warnings remain visible: a completed task does not imply that every observation record is complete.
+
+![Karen observability overview showing a completed weather query, runtime metrics, and record coverage warnings](docs/images/observability-overview.jpg)
+
+**Execution graph and timeline.** Two search nodes feed an answer-synthesis node. The searchable timeline connects retrieval, goal construction, and engine execution to the same task.
+
+![Karen execution graph with two search nodes and an answer-synthesis node, above a filtered task timeline](docs/images/observability-execution.jpg)
+
 ## Evaluation results
 
 **As of 2026-10-07, the latest code has not completed a full rerun of the fixed evaluation set.** The table below shows the most recent saved full run, for Karen **`6a0f483`**, before subsequent changes to general prompt rules, reasoning settings, and recovery from truncated output.

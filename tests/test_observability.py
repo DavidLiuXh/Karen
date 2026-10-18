@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import socket
+import socketserver
 import threading
 import urllib.error
 import urllib.request
@@ -390,6 +392,48 @@ def test_readonly_http_server_and_host_validation(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as error:
             opener.open(urllib.request.Request(base + "/api/tasks", data=b"{}"))
         assert error.value.code == 501
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+@pytest.mark.parametrize("failure", [ConnectionResetError, BrokenPipeError, RuntimeError])
+@pytest.mark.parametrize("write_number", [1, 2], ids=["headers", "body"])
+@pytest.mark.parametrize("path", ["/api/tasks", "/unknown"])
+def test_http_disconnects_do_not_interrupt_service(
+    tmp_path, monkeypatch, failure, write_number, path,
+):
+    server = create_server(tmp_path, port=0)
+    errors = []
+    monkeypatch.setattr(server, "handle_error", lambda *args: errors.append(True))
+    original_write = socketserver._SocketWriter.write
+    writes = 0
+
+    def interrupted_write(writer, data):
+        nonlocal writes
+        if writer._sock.getsockname() == server.server_address:
+            writes += 1
+            if writes == write_number:
+                raise failure("simulated response interruption")
+        return original_write(writer, data)
+
+    monkeypatch.setattr(socketserver._SocketWriter, "write", interrupted_write)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with socket.create_connection(server.server_address, timeout=2) as client:
+            client.sendall(
+                f"GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{server.server_port}\r\n\r\n".encode()
+            )
+            # Read until the interrupted request is closed by the server.
+            while client.recv(65536):
+                pass
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://127.0.0.1:{server.server_port}/api/tasks", timeout=2) as response:
+            assert json.load(response)["tasks"] == []
+        # Expected transport disconnects are quiet; unrelated errors remain visible.
+        assert errors == ([True] if failure is RuntimeError else [])
     finally:
         server.shutdown()
         server.server_close()

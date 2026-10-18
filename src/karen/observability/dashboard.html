@@ -44,6 +44,8 @@
       color: #bed3d0;
       font-size: 12px;
     }
+    .header-tools { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    header { gap: 16px; flex-wrap: wrap; }
     .live {
       font-size: 12px;
       color: #cee8da;
@@ -331,29 +333,163 @@
   <header>
     <div>
       <h1>
-        Karen <span style="font-weight: 400; color: #b7d0c8">/ 运行观测</span>
+        Karen <span style="font-weight: 400; color: #b7d0c8" data-i18n="/ 运行观测">/ 运行观测</span>
       </h1>
-      <p>从输入、决策到执行与后台记忆的可核对记录</p>
+      <p data-i18n="从输入、决策到执行与后台记忆的可核对记录">从输入、决策到执行与后台记忆的可核对记录</p>
     </div>
-    <div class="live" id="connection">每 2 秒刷新 · 本地只读</div>
+    <div class="header-tools">
+      <label for="language">语言 / Language</label>
+      <select id="language"><option value="zh-CN">中文</option><option value="en">English</option></select>
+      <div class="live" id="connection">每 2 秒刷新 · 本地只读</div>
+    </div>
   </header>
   <div class="layout">
     <aside>
-      <h2>最近交互</h2>
+      <h2 data-i18n="最近交互">最近交互</h2>
       <div id="tasks"></div>
       <footer id="listCoverage"></footer>
       <details id="channelLog" hidden>
-        <summary>最近微信渠道事件</summary>
+        <summary data-i18n="最近微信渠道事件">最近微信渠道事件</summary>
         <div id="channelEvents"></div>
       </details>
     </aside>
     <main>
       <div id="detail" class="empty">
-        尚无运行记录。启动 Karen 并输入一个任务后，记录会出现在这里。
+        <span data-i18n="尚无运行记录。启动 Karen 并输入一个任务后，记录会出现在这里。">尚无运行记录。启动 Karen 并输入一个任务后，记录会出现在这里。</span>
       </div>
     </main>
   </div>
   <script>
+    // UI copy only: source text, identifiers and JSON payloads remain unchanged.
+    const english = {
+      "开始": "Started",
+      "结束": "Finished",
+      "决策证据": "Decision evidence",
+      "用户输入": "User input",
+      "微信渠道启动": "WeChat channel started",
+      "微信渠道停止": "WeChat channel stopped",
+      "微信消息接收": "WeChat message received",
+      "微信请求处理完成": "WeChat request processed",
+      "微信发送已获服务端确认": "WeChat delivery acknowledged by server",
+      "微信接收失败": "WeChat polling failed",
+      "微信发送失败": "WeChat delivery failed",
+      "微信请求处理失败": "WeChat processing failed",
+      "微信输入无法处理": "WeChat input could not be processed",
+      "微信响应记忆写入异常": "WeChat response memory write failed",
+      "模型请求": "Model request",
+      "模型返回": "Model response",
+      "模型错误": "Model error",
+      "模型自动重试": "Model retry",
+      "记忆入队": "Memory queued",
+      "原文已持久化": "Source persisted",
+      "原文持久化失败": "Source persistence failed",
+      "召回降级原因": "Retrieval degradation reason",
+      "记忆重试／终止": "Memory retry / termination",
+      "索引完成": "Indexing completed",
+      "向量请求": "Embedding request",
+      "原文补查范围": "Source lookup scope",
+      "原文补查结果": "Source lookup result",
+      "最终召回": "Retrieval result",
+      "执行目标与权限": "Execution goal and permissions",
+      "执行结果": "Execution result",
+      "实际展示回复": "Displayed response",
+      "节点开始": "Node started",
+      "节点返回": "Node returned",
+      "节点失败": "Node failed",
+      "状态提交": "State committed",
+      "执行图已保存": "Execution graph saved",
+      "引擎启动": "Engine started",
+      "输入路由": "Input routing",
+      "待澄清任务已取消": "Pending clarification task cancelled",
+      "引擎结束": "Engine finished",
+      "执行图已编译": "Execution graph compiled",
+      "执行完成": "Completed",
+      "执行失败": "Failed",
+      "已取消": "Cancelled",
+      "结果不完整": "Incomplete result",
+      "等待澄清": "Awaiting clarification",
+      "已回应": "Replied",
+      "未捕获输入": "Input not captured",
+      "未结束": "Unfinished",
+      "有降级": "Degraded",
+      "暂无记录": "No records yet",
+      "列表扫描达到上限，仅展示部分记录。 ": "List scan limit reached; only some records are shown. ",
+      "有观测记录丢失；任务执行可能仍已完成。": "Some observation records are missing; execution may still have completed.",
+      "微信渠道轨迹": "WeChat channel trace",
+      "查看对应任务": "View related task",
+      "任务详情": "Task details",
+      "任务 ": "Task ",
+      " · 多轮澄清与后台工作按同一任务关联": " · Clarification rounds and background work are grouped by task",
+      "响应": "Response",
+      "记录已裁剪": "Record truncated",
+      "召回降级（": "Retrieval degraded (",
+      "）：": "): ",
+      "；": "; ",
+      "引擎目录扫描达到上限，可能有更早的执行记录未显示。": "Engine directory scan limit reached; earlier runs may not be shown.",
+      "已观察到执行启动，但同级 runs 目录没有匹配记录；可能尚未写入、目录不同或超出扫描范围。": "Execution started, but no matching record was found in the sibling runs directory; it may be pending, elsewhere, or outside the scan limit.",
+      "记录存在裁剪、丢失或坏行，不能将缺少事件解释为步骤未发生。展开覆盖信息查看具体缺口。": "Records contain truncation, gaps, or invalid lines. Missing events do not prove a step never occurred. Expand coverage for details.",
+      "本轮状态": "Turn status",
+      "未结束／可能中断": "Unfinished / possibly interrupted",
+      "本轮耗时": "Turn duration",
+      " 秒": " s",
+      "尚未结束": "Not finished yet",
+      "当前／最后阶段": "Current / last stage",
+      "后台 · ": "Background · ",
+      "交互已结束": "Turn finished",
+      "记录未终结": "Record not finalized",
+      "任务模型调用": "Task model calls",
+      " 次": " calls",
+      "失败事件": "Failed events",
+      " 条": " events",
+      "结果与流程检查": "Result and process checks",
+      "业务成功标准尚未独立验收。模型给出的判断依据是待核对的证据，不能代替验收。": "Business success criteria have not been independently verified. Model reasoning is evidence to review, not an acceptance verdict.",
+      "：": ": ",
+      "通过": "Passed",
+      "不符合": "Failed",
+      "证据不足": "Insufficient evidence",
+      "不适用": "Not applicable",
+      "查看执行结果、完整性与诊断": "View execution result, completeness and diagnostics",
+      "查看记录覆盖范围": "View record coverage",
+      "查看模型用量（仅累计实际返回值）": "View model usage (reported values only)",
+      "执行图 · ": "Execution graph · ",
+      "引擎记录尚未终结，可能仍在执行或已中断。": "Engine record is not finalized; execution may be running or interrupted.",
+      "起点": "Start",
+      "展开 GoalSpec（含实际上下文）": "Expand GoalSpec (including actual context)",
+      "展开执行图与权限": "Expand execution graph and permissions",
+      "展开节点产物": "Expand node artifacts",
+      "执行记录扫描达到上限，显示内容可能不完整。": "Execution record scan limit reached; displayed content may be incomplete.",
+      "任务时间线": "Task timeline",
+      "关键决策与节点": "Key decisions and nodes",
+      "全部事件": "All events",
+      "失败与降级": "Failures and degradation",
+      "筛选阶段、事件、记忆 ID…": "Filter stages, events, memory IDs…",
+      "引擎": "Engine",
+      "没有匹配的记录": "No matching records",
+      "每 2 秒刷新 · 本地只读": "Refreshes every 2 seconds · Local, read-only",
+      "读取失败 · ": "Read failed · ",
+      "Karen · 运行观测": "Karen · Observability",
+      "/ 运行观测": "/ Observability",
+      "从输入、决策到执行与后台记忆的可核对记录": "Reviewable records of input, decisions, execution and background memory",
+      "最近交互": "Recent interactions",
+      "最近微信渠道事件": "Recent WeChat channel events",
+      "尚无运行记录。启动 Karen 并输入一个任务后，记录会出现在这里。": "No runtime records yet. Start Karen and enter a task to see records here.",
+      "澄清轮未启动执行": "Clarification turns did not start execution",
+      "历史仅在关联确认后注入": "History injected only after association was confirmed",
+      "精排失败未冒充精排成功": "Failed reranking was not reported as successful",
+      "直接回应与取消未启动执行": "Direct replies and cancellations did not start execution"
+    };
+    let language = navigator.language?.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
+    try {
+      const saved = localStorage.getItem("karen.observability.language");
+      if (["zh-CN", "en"].includes(saved)) language = saved;
+    } catch {}
+    function t(text) {
+      return language === "en" ? (english[text] ?? text) : text;
+    }
+    function statusLabel(status) {
+      const chinese = {"ok": "正常", "failed": "失败", "degraded": "降级", "cancelled": "已取消", "nonterminal": "未结束"};
+      return language === "zh-CN" ? (chinese[status] || status) : status;
+    }
     const labels = {
       "span.started": "开始",
       "span.finished": "结束",
@@ -410,6 +546,7 @@
       filter = "key",
       search = "",
       busy = false;
+    let lastList = null, lastDetail = null, connectionError = null;
     function el(tag, text, cls) {
       const n = document.createElement(tag);
       if (text !== undefined) n.textContent = text;
@@ -423,7 +560,7 @@
       return el("span", text, "pill " + status);
     }
     function stamp(v) {
-      return v ? new Date(v).toLocaleString() : "";
+      return v ? new Date(v).toLocaleString(language) : "";
     }
     function payload(parent, title, value, key) {
       const d = el("details", undefined, "record");
@@ -439,36 +576,36 @@
     function tasks(data) {
       const holder = document.querySelector("#tasks");
       holder.replaceChildren();
-      for (const t of data.tasks) {
+      for (const task of data.tasks) {
         const button = el(
           "button",
           undefined,
-          "task" + (t.trace_id === selected ? " selected" : ""),
+          "task" + (task.trace_id === selected ? " selected" : ""),
         );
-        button.append(el("strong", string(t.input) || "未捕获输入"));
+        button.append(el("strong", string(task.input) || t("未捕获输入")));
         const meta = el("div", undefined, "meta");
         meta.append(
           pill(
-            outcomes[t.outcome] ||
-              (t.status === "nonterminal" ? "未结束" : t.status),
-            t.outcome === "FAILED"
+            t(outcomes[task.outcome]) ||
+              (task.status === "nonterminal" ? t("未结束") : statusLabel(task.status)),
+            task.outcome === "FAILED"
               ? "failed"
-              : t.outcome === "INCOMPLETE"
+              : task.outcome === "INCOMPLETE"
                 ? "degraded"
-                : t.status,
+                : task.status,
           ),
-          el("span", stamp(t.timestamp_utc)),
+          el("span", stamp(task.timestamp_utc)),
         );
-        if (t.degraded) meta.append(pill("有降级", "degraded"));
+        if (task.degraded) meta.append(pill(t("有降级"), "degraded"));
         button.append(meta);
         button.onclick = () => {
-          selected = t.trace_id;
+          selected = task.trace_id;
           snapshot = null;
           refresh();
         };
         holder.append(button);
       }
-      if (!data.tasks.length) holder.append(el("p", "暂无记录", "empty"));
+      if (!data.tasks.length) holder.append(el("p", t("暂无记录"), "empty"));
       const channelHolder = document.querySelector("#channelEvents");
       channelHolder.replaceChildren();
       const channelEvents = data.channel_events || [];
@@ -476,7 +613,7 @@
       for (const event of channelEvents) {
         const button = el("button", undefined, "task");
         button.append(
-          el("strong", labels[event.event_type] || event.event_type),
+          el("strong", t(labels[event.event_type] || event.event_type)),
           el("span", stamp(event.timestamp_utc), "meta"),
         );
         if (event.data.error_code) button.append(pill(event.data.error_code, "failed"));
@@ -488,9 +625,9 @@
         channelHolder.append(button);
       }
       document.querySelector("#listCoverage").textContent =
-        (data.coverage.partial ? "列表扫描达到上限，仅展示部分记录。 " : "") +
+        (data.coverage.partial ? t("列表扫描达到上限，仅展示部分记录。 ") : "") +
         (data.coverage.gaps.length
-          ? "有观测记录丢失；任务执行可能仍已完成。"
+          ? t("有观测记录丢失；任务执行可能仍已完成。")
           : "");
     }
     function render(data) {
@@ -504,17 +641,17 @@
         data.events.some((e) => e.event_type.startsWith("weixin.")) &&
         !data.events.some((e) => ["input", "turn"].includes(e.stage));
       if (channelOnly) {
-        target.append(el("h2", "微信渠道轨迹"));
+        target.append(el("h2", t("微信渠道轨迹")));
         for (const event of data.events.filter((e) => e.event_type.startsWith("weixin."))) {
           payload(
             target,
-            stamp(event.timestamp_utc) + " · " + (labels[event.event_type] || event.event_type),
+            stamp(event.timestamp_utc) + " · " + t(labels[event.event_type] || event.event_type),
             event.data,
             event.event_id,
           );
           const taskId = event.data.trace_id;
           if (typeof taskId === "string" && /^[a-f0-9]{32}$/.test(taskId) && taskId !== selected) {
-            const button = el("button", "查看对应任务");
+            const button = el("button", t("查看对应任务"));
             button.onclick = () => {
               selected = taskId;
               snapshot = null;
@@ -531,10 +668,10 @@
         (e) => e.trace_id === selected && e.event_type === "turn.input",
       );
       target.append(
-        el("h2", input ? string(input.data.text) : "任务详情"),
+        el("h2", input ? string(input.data.text) : t("任务详情")),
         el(
           "div",
-          "任务 " + data.request_id + " · 多轮澄清与后台工作按同一任务关联",
+          t("任务 ") + data.request_id + t(" · 多轮澄清与后台工作按同一任务关联"),
           "meta",
         ),
       );
@@ -548,18 +685,18 @@
                 issue.reason ||
                 ((Array.isArray(issue.location)
                   ? issue.location.join(".")
-                  : "") || "响应") +
+                  : "") || t("响应")) +
                   ": " +
-                  (issue.type || "记录已裁剪"),
+                  (issue.type || t("记录已裁剪")),
             )
           : [];
         target.append(
           el(
             "div",
-            "召回降级（" +
+            t("召回降级（") +
               failure.code +
-              "）：" +
-              (issues.join("；") || failure.error_code),
+              t("）：") +
+              (issues.join(t("；")) || failure.error_code),
             "notice",
           ),
         );
@@ -576,7 +713,7 @@
         target.append(
           el(
             "div",
-            "引擎目录扫描达到上限，可能有更早的执行记录未显示。",
+            t("引擎目录扫描达到上限，可能有更早的执行记录未显示。"),
             "notice",
           ),
         );
@@ -587,7 +724,7 @@
         target.append(
           el(
             "div",
-            "已观察到执行启动，但同级 runs 目录没有匹配记录；可能尚未写入、目录不同或超出扫描范围。",
+            t("已观察到执行启动，但同级 runs 目录没有匹配记录；可能尚未写入、目录不同或超出扫描范围。"),
             "notice",
           ),
         );
@@ -595,7 +732,7 @@
         target.append(
           el(
             "div",
-            "记录存在裁剪、丢失或坏行，不能将缺少事件解释为步骤未发生。展开覆盖信息查看具体缺口。",
+            t("记录存在裁剪、丢失或坏行，不能将缺少事件解释为步骤未发生。展开覆盖信息查看具体缺口。"),
             "notice",
           ),
         );
@@ -633,29 +770,29 @@
       const cards = el("div", undefined, "cards");
       for (const [label, value] of [
         [
-          "本轮状态",
+          t("本轮状态"),
           rootFinish
-            ? outcomes[rootFinish.data.outcome] || rootFinish.status
-            : "未结束／可能中断",
+            ? t(outcomes[rootFinish.data.outcome]) || statusLabel(rootFinish.status)
+            : t("未结束／可能中断"),
         ],
         [
-          "本轮耗时",
+          t("本轮耗时"),
           rootFinish
-            ? ((rootFinish.duration_ms || 0) / 1000).toFixed(2) + " 秒"
-            : "尚未结束",
+            ? ((rootFinish.duration_ms || 0) / 1000).toFixed(2) + t(" 秒")
+            : t("尚未结束"),
         ],
         [
-          "当前／最后阶段",
+          t("当前／最后阶段"),
           phase
             ? phase.stage + (phase.model_role ? " · " + phase.model_role : "")
             : backgroundPhase
-              ? "后台 · " + backgroundPhase.stage
+              ? t("后台 · ") + backgroundPhase.stage
               : rootFinish
-                ? "交互已结束"
-                : "记录未终结",
+                ? t("交互已结束")
+                : t("记录未终结"),
         ],
-        ["任务模型调用", requests.length + " 次"],
-        ["失败事件", failures.length + " 条"],
+        [t("任务模型调用"), requests.length + t(" 次")],
+        [t("失败事件"), failures.length + t(" 条")],
       ]) {
         const c = el("div", undefined, "card");
         c.append(el("small", label), el("b", value));
@@ -663,11 +800,11 @@
       }
       target.append(cards);
       const acceptance = el("div", undefined, "section");
-      acceptance.append(el("h3", "结果与流程检查"));
+      acceptance.append(el("h3", t("结果与流程检查")));
       acceptance.append(
         el(
           "p",
-          "业务成功标准尚未独立验收。模型给出的判断依据是待核对的证据，不能代替验收。",
+          t("业务成功标准尚未独立验收。模型给出的判断依据是待核对的证据，不能代替验收。"),
           "meta",
         ),
       );
@@ -675,13 +812,13 @@
       for (const c of data.checks || [])
         checks.append(
           pill(
-            c.label +
-              "：" +
+            t(c.label) +
+              t("：") +
               ({
-                pass: "通过",
-                fail: "不符合",
-                unknown: "证据不足",
-                not_applicable: "不适用",
+                pass: t("通过"),
+                fail: t("不符合"),
+                unknown: t("证据不足"),
+                not_applicable: t("不适用"),
               }[c.status] || c.status),
             c.status === "fail"
               ? "failed"
@@ -694,11 +831,11 @@
       if (result)
         payload(
           acceptance,
-          "查看执行结果、完整性与诊断",
+          t("查看执行结果、完整性与诊断"),
           result.data,
           "result",
         );
-      payload(acceptance, "查看记录覆盖范围", data.coverage, "coverage");
+      payload(acceptance, t("查看记录覆盖范围"), data.coverage, "coverage");
       const usage = { input_tokens: 0, output_tokens: 0, unknown_calls: 0 };
       for (const e of modelEnd) {
         const u = e.data.usage || {};
@@ -707,14 +844,14 @@
         usage.input_tokens += u.input_tokens || 0;
         usage.output_tokens += u.output_tokens || 0;
       }
-      payload(acceptance, "查看模型用量（仅累计实际返回值）", usage, "usage");
+      payload(acceptance, t("查看模型用量（仅累计实际返回值）"), usage, "usage");
       target.append(acceptance);
       for (const run of data.runs) {
         const box = el("div", undefined, "section");
-        box.append(el("h3", "执行图 · " + run.run_id.slice(0, 12)));
+        box.append(el("h3", t("执行图 · ") + run.run_id.slice(0, 12)));
         if (!run.manifest.terminal)
           box.append(
-            el("p", "引擎记录尚未终结，可能仍在执行或已中断。", "meta"),
+            el("p", t("引擎记录尚未终结，可能仍在执行或已中断。"), "meta"),
           );
         const graph = el("div", undefined, "graph");
         for (const node of run.graph.nodes || []) {
@@ -730,7 +867,7 @@
           if (state)
             n.append(
               pill(
-                labels[state.event_type] || state.event_type,
+                t(labels[state.event_type] || state.event_type),
                 state.event_type === "node_failed" ? "failed" : "ok",
               ),
             );
@@ -742,7 +879,7 @@
                 ? node.capability.name + "@" + node.capability.version
                 : node.model_role || "") +
                 " ← " +
-                ((node.depends_on || []).join(", ") || "起点"),
+                ((node.depends_on || []).join(", ") || t("起点")),
             ),
           );
           graph.append(n);
@@ -750,43 +887,45 @@
         box.append(graph);
         payload(
           box,
-          "展开 GoalSpec（含实际上下文）",
+          t("展开 GoalSpec（含实际上下文）"),
           run.goal,
           "goal-" + run.run_id,
         );
         payload(
           box,
-          "展开执行图与权限",
+          t("展开执行图与权限"),
           { graph: run.graph, policy: run.policy },
           "graph-" + run.run_id,
         );
-        payload(box, "展开节点产物", run.artifacts, "artifacts-" + run.run_id);
+        payload(box, t("展开节点产物"), run.artifacts, "artifacts-" + run.run_id);
         if (run.coverage.partial)
           box.append(
-            el("p", "执行记录扫描达到上限，显示内容可能不完整。", "notice"),
+            el("p", t("执行记录扫描达到上限，显示内容可能不完整。"), "notice"),
           );
         target.append(box);
       }
       const timeline = el("div", undefined, "section");
-      timeline.append(el("h3", "任务时间线"));
+      timeline.append(el("h3", t("任务时间线")));
       const controls = el("div", undefined, "filters");
       const select = el("select");
       for (const [value, label] of [
-        ["key", "关键决策与节点"],
-        ["all", "全部事件"],
-        ["errors", "失败与降级"],
+        ["key", t("关键决策与节点")],
+        ["all", t("全部事件")],
+        ["errors", t("失败与降级")],
       ]) {
         const option = el("option", label);
         option.value = value;
         select.append(option);
       }
+      select.setAttribute("aria-label", t("任务时间线"));
       select.value = filter;
       select.onchange = () => {
         filter = select.value;
         render(data);
       };
       const field = el("input");
-      field.placeholder = "筛选阶段、事件、记忆 ID…";
+      field.placeholder = t("筛选阶段、事件、记忆 ID…");
+      field.setAttribute("aria-label", t("筛选阶段、事件、记忆 ID…"));
       field.value = search;
       field.oninput = () => {
         search = field.value;
@@ -833,12 +972,12 @@
         d.dataset.key = e.event_id || "engine-" + e.run_id + "-" + e.seq;
         const summary = el("summary");
         summary.append(
-          el("time", new Date(e.timestamp_utc).toLocaleTimeString()),
+          el("time", new Date(e.timestamp_utc).toLocaleTimeString(language)),
           el("strong", e.stage || e.phase || ""),
-          el("span", labels[e.event_type] || e.event_type),
+          el("span", t(labels[e.event_type] || e.event_type)),
         );
         const meta = el("span", undefined, "meta");
-        if (e.origin === "engine") meta.append(el("span", "引擎"));
+        if (e.origin === "engine") meta.append(el("span", t("引擎")));
         if (e.duration_ms != null)
           meta.append(el("span", e.duration_ms.toFixed(1) + " ms"));
         summary.append(meta);
@@ -846,7 +985,7 @@
         entries.append(d);
       }
       if (!entries.children.length)
-        entries.append(el("p", "没有匹配的记录", "meta"));
+        entries.append(el("p", t("没有匹配的记录"), "meta"));
     }
     async function refresh() {
       if (busy) return;
@@ -854,26 +993,50 @@
       try {
         const list = await get("/api/tasks");
         if (!selected && list.tasks.length) selected = list.tasks[0].trace_id;
+        lastList = list;
         tasks(list);
         if (selected) {
           const data = await get(
             "/api/trace?id=" + encodeURIComponent(selected),
           );
+          lastDetail = data;
           const serialized = JSON.stringify(data);
           if (serialized !== snapshot) {
             snapshot = serialized;
             render(data);
           }
         }
-        document.querySelector("#connection").textContent =
-          "每 2 秒刷新 · 本地只读";
+        connectionError = null;
+        renderConnection();
       } catch (error) {
-        document.querySelector("#connection").textContent =
-          "读取失败 · " + error.message;
+        connectionError = error.message;
+        renderConnection();
       } finally {
         busy = false;
       }
     }
+    function renderConnection() {
+      document.querySelector("#connection").textContent = connectionError
+        ? t("读取失败 · ") + connectionError
+        : t("每 2 秒刷新 · 本地只读");
+    }
+    function applyLanguage() {
+      document.documentElement.lang = language;
+      document.title = t("Karen · 运行观测");
+      document.querySelectorAll("[data-i18n]").forEach((node) => {
+        node.textContent = t(node.dataset.i18n);
+      });
+      document.querySelector("#language").value = language;
+      if (lastList) tasks(lastList);
+      if (lastDetail) render(lastDetail);
+      renderConnection();
+    }
+    document.querySelector("#language").onchange = (event) => {
+      language = event.target.value;
+      try { localStorage.setItem("karen.observability.language", language); } catch {}
+      applyLanguage();
+    };
+    applyLanguage();
     refresh();
     setInterval(refresh, 2000);
   </script>

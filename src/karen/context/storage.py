@@ -626,38 +626,86 @@ class Storage:
                     (memory.memory_id, memory.layer, " ".join(terms(memory.text))),
                 )
 
-    def collection(self, time_range: TimeRange | None, status: str | None):
+    def collection(
+        self, time_range: TimeRange | None, status: str | None, *,
+        target: str = "interactions", exclude_request_id: str | None = None,
+    ):
         if time_range is None:
             return {"complete": False, "reason": "needs_time_range", "items": []}
+        # Enumerate persisted raw events independently of semantic top-k retrieval.
+        # One request can include clarification turns, a task result and its reply.
         with self.connection() as conn:
             rows = conn.execute(
-                "SELECT e.* FROM events e JOIN (SELECT request_id,max(sequence) seq FROM events "
-                "WHERE event_type='task_result' AND occurred<? GROUP BY request_id) t ON e.sequence=t.seq "
-                "WHERE e.occurred>=? ORDER BY e.occurred,e.sequence",
-                (time_range.end.timestamp(), time_range.start.timestamp()),
+                "WITH bounded AS (SELECT * FROM events WHERE occurred>=? AND occurred<? "
+                "AND (? IS NULL OR request_id!=?) "
+                "AND event_type IN ('user_message','assistant_message','task_result')), "
+                "grouped AS (SELECT request_id,min(occurred) first_at,max(occurred) last_at, "
+                "max(sequence) anchor_seq, "
+                "min(CASE WHEN event_type='user_message' THEN sequence END) user_seq, "
+                "max(CASE WHEN event_type='assistant_message' THEN sequence END) reply_seq, "
+                "max(CASE WHEN event_type='task_result' THEN sequence END) result_seq, "
+                "sum(event_type='user_message') user_message_count "
+                "FROM bounded GROUP BY request_id) "
+                "SELECT g.*,e.event_id,e.event_type,u.event_id user_event_id, "
+                "a.event_id reply_event_id,t.event_id result_event_id,t.task_result "
+                "FROM grouped g JOIN events e ON e.sequence=g.anchor_seq "
+                "LEFT JOIN events u ON u.sequence=g.user_seq "
+                "LEFT JOIN events a ON a.sequence=g.reply_seq "
+                "LEFT JOIN events t ON t.sequence=g.result_seq "
+                "ORDER BY g.first_at,g.anchor_seq",
+                (time_range.start.timestamp(), time_range.end.timestamp(),
+                 exclude_request_id, exclude_request_id),
             ).fetchall()
-        items = []
+        items, total = [], 0
+        complete = True
         for row in rows:
-            result = json.loads(row["task_result"])
+            result = json.loads(row["task_result"]) if row["task_result"] else None
+            if (target == "tasks" or status is not None) and result is None:
+                continue
             if status is not None and result.get("execution_status") != status:
                 continue
-            items.append(
-                {
-                    "event_id": row["event_id"],
-                    "request_id": row["request_id"],
-                    "run_id": result.get("run_id"),
-                    "execution_status": result.get("execution_status"),
-                    "output_complete": result.get("output_complete"),
-                    "occurred_at": datetime.fromtimestamp(
-                        row["occurred"], utcnow().tzinfo
-                    ).isoformat(),
-                }
-            )
-        return {
-            "complete": True,
-            "total_matched": len(items),
-            "returned_count": min(len(items), 50),
-            "items": items[:50],
-            "display_complete": len(items) <= 50,
+            total += 1
+            if len(items) >= 50:
+                continue
+            item = {
+                "event_id": row["event_id"],
+                "event_type": row["event_type"],
+                "request_id": row["request_id"],
+                "kind": "task" if result is not None else "conversation",
+                "occurred_at": datetime.fromtimestamp(row["first_at"], utcnow().tzinfo).isoformat(),
+                "last_occurred_at": datetime.fromtimestamp(row["last_at"], utcnow().tzinfo).isoformat(),
+                "user_message_count": row["user_message_count"],
+            }
+            if result is not None:
+                item.update(
+                    result_event_id=row["result_event_id"], run_id=result.get("run_id"),
+                    execution_status=result.get("execution_status"),
+                    output_complete=result.get("output_complete"),
+                )
+            for column, field in (("user_event_id", "user_input"), ("reply_event_id", "assistant_reply")):
+                event_id = row[column]
+                if event_id is None:
+                    continue
+                item[field + "_event_id"] = event_id
+                try:
+                    event = self.load_event(event_id, max_bytes=64 * 1024)
+                    content = event.payload.get("content", "")
+                    if isinstance(content, str):
+                        item[field] = content[:160]
+                        item[field + "_truncated"] = len(content) > 160
+                except (OSError, ValueError, PersistenceError):
+                    complete = False
+                    item[field + "_unavailable"] = True
+            items.append(item)
+        collection = {
+            "target": target,
+            "complete": complete,
+            "total_matched": total,
+            "returned_count": len(items),
+            "items": items,
+            "display_complete": total == len(items),
             "time_range": time_range.model_dump(mode="json"),
         }
+        if not complete:
+            collection["reason"] = "source_preview_unavailable"
+        return collection

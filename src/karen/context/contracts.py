@@ -404,6 +404,13 @@ class QueryAnalysis(Contract):
     )
     entities: list[str] = Field(default_factory=list)
     needed_fact_keys: list[str] = Field(default_factory=list)
+    collection_target: Literal["tasks", "interactions"] = Field(
+        default="interactions",
+        description=(
+            "collection 的枚举对象：tasks=只统计有执行结果的任务；"
+            "interactions=用户与助手的交流，包含普通对话和任务，同一请求只计一次。"
+        ),
+    )
     task_status: Literal["COMPLETED", "FAILED", "CANCELLED"] | None = None
 
     @model_validator(mode="after")

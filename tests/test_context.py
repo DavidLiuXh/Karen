@@ -49,6 +49,8 @@ class MemoryModel:
         self.requires_task_selection = False
         self.history_status = "none"
         self.kind = "relevance"
+        self.collection_target = "interactions"
+        self.task_status = None
         self.time_mode = "current"
         self.at = None
         self.time_range = None
@@ -118,6 +120,8 @@ class MemoryModel:
                 "dialogue_dependency": self.dependency,
                 "requires_task_selection": self.requires_task_selection,
                 "kind": self.kind,
+                "collection_target": self.collection_target,
+                "task_status": self.task_status,
                 "time_mode": self.time_mode,
                 "needed_fact_keys": ["profile.residence.city"] if "住" in data["text"] else [],
             }
@@ -692,6 +696,7 @@ async def test_collection_counts_all_tasks_without_topk_and_deduplicates_results
                 )
         await service._queue.join()
         model.kind = "collection"
+        model.collection_target = "tasks"
         model.time_range = TimeRange(start=now - timedelta(days=1), end=now + timedelta(days=1))
         result = await service.recall(query("今天完成了多少任务"))
         assert result.collection["total_matched"] == 15
@@ -1760,7 +1765,7 @@ async def test_large_processing_payloads_do_not_remove_coarse_recall_candidates(
     await service.recall(query("远星和星海各持续多久"))
     ranking = [r for r in backend.requests if r.role == "memory_rerank"][-1]
     assert {m["request_id"] for m in ranking.input_data["memories"]} == {"远星", "星海"}
-    assert len(encode(ranking.input_data).encode()) <= 24 * 1024
+    assert len(encode(ranking.input_data).encode()) <= 48 * 1024
     assert all(m["sources"] and m["recorded_at"] for m in ranking.input_data["memories"])
 
 
@@ -2396,3 +2401,58 @@ async def test_failed_ranking_keeps_semantic_facts_and_version_boundaries(tmp_pa
         assert len(encode(result.context()).encode()) <= 12 * 1024
     finally:
         await service.close()
+
+
+async def test_time_collection_reaches_response_context_without_semantic_index(memory):
+    service, model = memory
+    now = datetime.now(UTC)
+    async with service.foreground():
+        service.submit(event("聊聊阅读", request="chat-a", occurred_at=now))
+        service.submit(event("阅读建议", request="chat-a", kind="assistant_message", occurred_at=now))
+        service.submit(event("我喜欢骑行", request="chat-b", occurred_at=now))
+        service.submit(event("今天交流过什么", request="new-task", occurred_at=now))
+        await service._queue.join()
+        model.kind = "collection"
+        model.time_range = TimeRange(start=now - timedelta(hours=1), end=now + timedelta(hours=1))
+        result = await service.recall(query("今天交流过什么"))
+        collection = result.context()["collection"]
+        assert collection["total_matched"] == 2
+        assert {item["user_input"] for item in collection["items"]} == {"聊聊阅读", "我喜欢骑行"}
+        assert collection["complete"]
+
+
+@pytest.mark.parametrize("text_length", [450, 1800])
+async def test_rerank_accepts_larger_inputs_but_still_enforces_capacity(memory, text_length):
+    service, backend = memory
+    for index in range(20):
+        await service.flush(service.submit(event(
+            f"Discussion {index}: " + "a" * text_length, request=f"discussion-{index}",
+        )))
+    result = await service.recall(query("Review our discussions"))
+    request = [r for r in backend.requests if r.role == "memory_rerank"][-1]
+    size = len(encode(request.input_data).encode())
+    assert 24 * 1024 < size <= 48 * 1024
+    if text_length == 450:
+        assert len(request.input_data["primary_ids"]) == 20
+        assert "RERANK_INPUT_BUDGET_LIMIT" not in result.degradations
+    else:
+        assert len(request.input_data["primary_ids"]) < 20
+        assert "RERANK_INPUT_BUDGET_LIMIT" in result.degradations
+
+
+async def test_time_collection_display_budget_does_not_reduce_total(memory):
+    service, model = memory
+    now = datetime.now(UTC)
+    async with service.foreground():
+        for index in range(24):
+            service.submit(event("交流内容" * 100, request=f"chat-{index}", occurred_at=now))
+        await service._queue.join()
+        model.kind = "collection"
+        model.time_range = TimeRange(start=now - timedelta(hours=1), end=now + timedelta(hours=1))
+        result = await service.recall(query("今天交流过什么"))
+        assert result.collection["total_matched"] == 24
+        assert 0 < result.collection["returned_count"] < 24
+        assert result.collection["complete"] and not result.collection["display_complete"]
+        assert result.status == "degraded" and not result.coverage["complete"]
+        assert "COLLECTION_DISPLAY_BUDGET_LIMIT" in result.degradations
+        assert len(encode(result.context()).encode()) <= 12 * 1024

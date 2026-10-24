@@ -77,6 +77,8 @@ Writing, extraction, verification, and embedding run asynchronously. Retrieval b
 
 If reranking fails, Karen retains the fused order and explicitly records degraded operation. History from other tasks is selected by relevance; the current session directly preserves its own clarification conversation. Model calls use a common interface with DeepSeek as the default backend. Local Ollama BGE-M3 generates embeddings, while SQLite and FTS5 store records and indexes.
 
+Time-range history queries enumerate persisted conversations and task results together, grouped by request to avoid duplicate counting. Explicit task counts still include only execution results. Short source previews support the answer independently of semantic top-k retrieval; partial displays and unavailable sources remain marked. Reranking accepts up to 48 KiB of input, within the existing 90-second stage and 180-second overall retrieval deadlines.
+
 ### Inspecting runtime behavior
 
 Start the local read-only dashboard alongside Karen with `--observe` to investigate questions such as “Why did it ask for clarification?”, “Why was this memory retrieved?”, and “Why did the tool fail?” Normal responses present the result the user needs; internal data such as memory IDs, full model requests, and diagnostics remain in the observation records. Routine internal execution hints are omitted from normal replies; errors for failed or incomplete results and notices requiring user action remain visible. `--json` retains the full diagnostic fields.

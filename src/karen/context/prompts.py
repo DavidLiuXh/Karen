@@ -128,6 +128,8 @@ needed_fact_keys 是语义定位线索，精排需匹配事实含义，不能因
 对象属性的推导不是枚举 Karen 任务，不能用 collection 或要求任务历史范围。
 collection 仅在明确枚举/统计 Karen 任务或对话时使用，
 给出明确 time_range，缺范围不得虚构。不要把用户事实列表识别为 collection。
+collection_target 按枚举对象选择：明确统计执行任务用 tasks；回顾交流、对话、问答用 interactions，
+包含普通对话与执行任务，同一请求只计一次。task_status 仅筛选执行任务状态，不用于普通对话。
 日期基于 current_time_utc/timezone；time_range 是有 offset 的左闭右开区间。
 time_mode 描述所需记忆的时间口径，字段约束以响应 schema 为准。
 effective_at/known_at 必须同时给出带时区的 at，不能只有 time_range，不能猜造精确时点。

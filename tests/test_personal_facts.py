@@ -10,10 +10,10 @@ from test_context import LocalEmbeddings, MemoryModel, event, query
 
 from karen import IntentRecognizer, IntentSession, Karen
 from karen.context import ContextMemory
+from karen.model.response import format_result
 from karen.observability import Observer
 from karen.observability.viewer import TraceStore
-from karen.prompts import RESPONSE_INSTRUCTION
-from karen.response import format_result
+from karen.prompt.prompts import RESPONSE_INSTRUCTION
 
 
 class HobbyModel(MemoryModel):

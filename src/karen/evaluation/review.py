@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from ..intent.policy import CLARIFICATION_POLICY_VERSION, TASK_GAP_INSTRUCTION
-from ..models import deepseek_client
+from ..model.models import deepseek_client
 from .clarification import (
     JUDGE_INSTRUCTION,
     QUALITY_SCHEMA,

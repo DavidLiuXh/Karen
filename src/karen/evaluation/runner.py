@@ -24,9 +24,9 @@ from langchain_deepseek import ChatDeepSeek
 from karen.agent import Karen
 from karen.context import ContextEvent, ContextMemory
 from karen.intent import IntentRecognizer, IntentSession
-from karen.models import deepseek_client, memory_embeddings
+from karen.model.models import deepseek_client, memory_embeddings
+from karen.model.response import format_result
 from karen.observability import ObservedModel, Observer
-from karen.response import format_result
 
 from .clarification import assess_steps, summarize_dimensions, trace_origins
 from .datasets import PROTOCOL_VERSION, parse_date

@@ -30,7 +30,7 @@ from pydantic import (
 from tzlocal import get_localzone_name
 
 from ..observability import Observer
-from ..prompts import RESPONSE_INSTRUCTION
+from ..prompt.prompts import RESPONSE_INSTRUCTION
 from .prompts import (
     CLARITY_INSTRUCTION,
     CLARITY_REVIEW_INSTRUCTION,

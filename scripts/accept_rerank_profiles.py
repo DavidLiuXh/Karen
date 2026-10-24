@@ -13,7 +13,7 @@ from karen.context.prompts import RERANK
 from karen.context.retrieval import Retriever
 from karen.evaluation.runner import MeteredModel, source_hash
 from karen.evaluation.stages import ranking_quality
-from karen.models import deepseek_client
+from karen.model.models import deepseek_client
 from karen.observability import Observer
 
 

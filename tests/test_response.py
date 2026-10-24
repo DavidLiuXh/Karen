@@ -3,7 +3,7 @@
 import pytest
 from dynamic_graph import RunResult
 
-from karen.response import format_result
+from karen.model.response import format_result
 
 
 @pytest.mark.parametrize("status,complete", [

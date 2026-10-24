@@ -266,7 +266,7 @@ uv run karen-observe --open
 | [模型配置与预算](docs/MODEL_BUDGET_VERIFICATION_20261007.md) | 思考强度、阶段时限及截断后的有界恢复 |
 | [评测协议](docs/EVALUATION.md) / [完整评测报告](docs/EVALUATION_FULL_ACCEPTANCE_20261007.md) | 固定输入、判定标准、复现与逐例结果 |
 
-当前默认模型为 `deepseek-flash`：输入理解、回应、执行节点和精排请求 low 思考，规划请求 medium；记忆提取、核验和查询理解使用非思考。具体客户端见 [模型装配](src/karen/models.py)，阶段组合见 [CLI 入口](src/karen/cli.py)；提示词集中在各模块的 `prompts.py`。
+当前默认模型为 `deepseek-flash`：输入理解、回应、执行节点和精排请求 low 思考，规划请求 medium；记忆提取、核验和查询理解使用非思考。具体客户端见 [模型装配](src/karen/model/models.py)，阶段组合见 [CLI 入口](src/karen/cli.py)；共享指令位于 [prompt/prompts.py](src/karen/prompt/prompts.py)，模块专属提示词仍位于各模块的 `prompts.py`。
 
 离线行为与边界检查：
 

@@ -119,7 +119,7 @@ class ModelClient(Protocol):
 超时、认证、配额和无效响应使用已有 ModelCallError；请求取消原样传播。
 
 记忆模块只调用此协议，不导入 ChatDeepSeek、不读取 DEEPSEEK_API_KEY、不根据模型名称分支。
-应用装配层使用现有 `karen.models.deepseek_client()` 创建默认实现并注入 ContextMemory。
+应用装配层使用现有 `karen.model.models.deepseek_client()` 创建默认实现并注入 ContextMemory。
 切换其他 backend 时，在装配层注入遵守此协议的客户端；LangChain 模型可复用已有 LangChainModelClient 适配器。
 提供商的结构化输出方式、凭据和模型参数由该适配器管理；不要求不同提供商支持完全相同的原生 API。
 第一版不提前实现未使用的提供商，也不引入注册中心或多层工厂。

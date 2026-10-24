@@ -8,7 +8,7 @@ from pathlib import Path
 from diagnose_pipeline import dump
 
 from karen.evaluation.clarification import grade_quality
-from karen.models import deepseek_client
+from karen.model.models import deepseek_client
 
 
 async def main():

@@ -29,10 +29,10 @@ from .agent import Karen
 from .context import ContextMemory
 from .context.contracts import PersistenceError
 from .intent import IntentRecognizer, IntentSession
-from .models import deepseek_client, memory_embeddings
+from .model.models import deepseek_client, memory_embeddings
+from .model.response import format_result
 from .observability import ObservedModel, Observer
 from .observability.viewer import DEFAULT_PORT, background_server
-from .response import format_result
 
 
 def display_response(text: str, *, json_output: bool = False) -> None:

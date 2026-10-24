@@ -268,7 +268,7 @@ The main entry point is `Karen.advance(session, text)`. Read `TaskTurn.response`
 | [Model settings and budgets](docs/MODEL_BUDGET_VERIFICATION_20261007.md) | Reasoning effort, stage deadlines, and bounded recovery after truncation |
 | [Evaluation protocol](docs/EVALUATION.md) / [full evaluation report](docs/EVALUATION_FULL_ACCEPTANCE_20261007.md) | Fixed inputs, grading criteria, reproduction, and case results |
 
-The default model is `deepseek-flash`. Input understanding, responses, execution nodes, and reranking request low reasoning effort; planning requests medium. Memory extraction, verification, and query understanding use non-thinking mode. See [model configuration](src/karen/models.py) for clients and the [CLI entry point](src/karen/cli.py) for stage composition. Prompts live in each module's `prompts.py`.
+The default model is `deepseek-flash`. Input understanding, responses, execution nodes, and reranking request low reasoning effort; planning requests medium. Memory extraction, verification, and query understanding use non-thinking mode. See [model configuration](src/karen/model/models.py) for clients and the [CLI entry point](src/karen/cli.py) for stage composition. Shared instructions live in [prompt/prompts.py](src/karen/prompt/prompts.py); module-specific prompts remain in each module's `prompts.py`.
 
 Run offline behavior and boundary checks with:
 

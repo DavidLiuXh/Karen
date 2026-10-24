@@ -7,7 +7,7 @@ from pathlib import Path
 from diagnose_pipeline import dump, events, invoke
 
 from karen.context.contracts import Ranking
-from karen.models import deepseek_client
+from karen.model.models import deepseek_client
 
 COMPACT_SCHEMA = {
     "type": "object",

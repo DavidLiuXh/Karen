@@ -12,7 +12,7 @@ from karen.context.contracts import QueryAnalysis, Ranking, RecallQuery, StoredM
 from karen.context.retrieval import Retriever
 from karen.evaluation.runner import MeteredModel
 from karen.intent import IntentRecognizer, IntentSession
-from karen.models import deepseek_client
+from karen.model.models import deepseek_client
 from karen.observability import Observer
 
 

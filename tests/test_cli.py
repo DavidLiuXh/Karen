@@ -333,6 +333,10 @@ async def test_conversation_displays_readable_answer_or_full_json(monkeypatch, c
         execution_status="COMPLETED",
         output_complete=True,
         outputs={"answer": "中文邮件草稿", "evidence": [], "limitations": []},
+        diagnostics=[{
+            "code": "NO_DATA_DEPENDENCY", "phase": "validation", "severity": "warning",
+            "message": "Control-only dependencies are preserved",
+        }],
     )
 
     class CompletedAgent(DisplayAgent):

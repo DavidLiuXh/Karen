@@ -79,7 +79,7 @@ If reranking fails, Karen retains the fused order and explicitly records degrade
 
 ### Inspecting runtime behavior
 
-Start the local read-only dashboard alongside Karen with `--observe` to investigate questions such as “Why did it ask for clarification?”, “Why was this memory retrieved?”, and “Why did the tool fail?” Normal responses present the result the user needs; internal data such as memory IDs, full model requests, and diagnostics remain in the observation records.
+Start the local read-only dashboard alongside Karen with `--observe` to investigate questions such as “Why did it ask for clarification?”, “Why was this memory retrieved?”, and “Why did the tool fail?” Normal responses present the result the user needs; internal data such as memory IDs, full model requests, and diagnostics remain in the observation records. Routine internal execution hints are omitted from normal replies; errors for failed or incomplete results and notices requiring user action remain visible. `--json` retains the full diagnostic fields.
 
 The dashboard supports Chinese and English. These screenshots show an actual weather-query run, cropped to the task details; user input and recorded evidence retain their original language.
 

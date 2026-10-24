@@ -1,4 +1,4 @@
-"""Terminal presentation of execution results."""
+"""User-facing execution results shared by terminal and messaging channels."""
 
 import json
 
@@ -68,7 +68,13 @@ def format_result(result: RunResult) -> str:
             lines.append(f"{name}：\n{text}")
     if not result.outputs and not lines:
         lines.append("执行已结束，没有返回内容。")
+    unsuccessful = result.execution_status != "COMPLETED" or not result.output_complete
     for diagnostic in result.diagnostics:
+        # Full diagnostics remain on RunResult and in observation records. Routine
+        # graph advice and recovered errors do not belong in the delivered answer.
+        actionable = diagnostic.action != "NONE"
+        if not actionable and not (unsuccessful and diagnostic.severity == "error"):
+            continue
         label = "提示" if diagnostic.severity == "warning" else "诊断"
         lines.append(f"{label}（{diagnostic.code}）：{_diagnostic_message(diagnostic)}")
     return "\n\n".join(lines)

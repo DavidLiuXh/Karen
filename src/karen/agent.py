@@ -12,6 +12,7 @@ from .context import ContextEvent, ContextMemory, RecallQuery, RecallResult
 from .context.contracts import MemoryError
 from .intent import IntentRecognizer, IntentSession
 from .observability import Observer
+from .workflow import CompletedWorkflowRun, ReusableWorkflows, WorkflowRequest
 
 
 @dataclass(frozen=True)
@@ -35,11 +36,13 @@ class Karen:
         engine: DynamicGraphEngine,
         memory: ContextMemory | None = None,
         observer: Observer | None = None,
+        workflows: ReusableWorkflows | None = None,
     ):
         self.intent = intent
         self.engine = engine
         self.memory = memory
         self.observer = observer or Observer()
+        self.workflows = workflows
 
     @asynccontextmanager
     async def _foreground(self):
@@ -92,6 +95,7 @@ class Karen:
         cancellation_token: CancellationToken | None = None,
         received_at: datetime | None = None,
     ) -> TaskTurn:
+        previous_goal = session.goal
         if session.completed:
             session = session.new_request()
         from .intent.recognizer import Message
@@ -140,6 +144,16 @@ class Karen:
                             ),
                         },
                     )
+                    if (
+                        self.workflows is not None
+                        and previous_goal is not None
+                        and previous_goal.context.get("workflow")
+                    ):
+                        self.workflows.review_feedback(
+                            workflow=previous_goal.context["workflow"],
+                            objective=previous_goal.objective,
+                            text=user_input,
+                        )
                     turn = await self._advance_turn(
                         session, user_input, policy, cancellation_token, trace_id, received_at
                     )
@@ -182,8 +196,81 @@ class Karen:
                 )
             )
         kwargs = {"memory_context": recalled.context()} if recalled else {}
+        workflow = None
+        if (
+            self.workflows is not None
+            and session.routing.handling == "assess"
+            and (
+                (
+                    session.routing.task_relation == "new"
+                    and set(session.routing.input_types) & {"task_request", "question"}
+                )
+                or session.workflow_pending is not None
+            )
+            and (not session.questions or session.workflow_pending is not None)
+        ):
+            from .intent.recognizer import ClarificationItem, Message
+
+            workflow = await self.workflows.resolve(
+                WorkflowRequest(
+                    text=user_input,
+                    request_id=session.request_id,
+                    conversation_id=session.conversation_id,
+                    received_at=session.reference_time_utc or received_at,
+                    timezone=session.timezone,
+                    policy=policy or all_capabilities_policy(self.engine),
+                    capabilities=[f"{c.name}@{c.version}" for c in self.engine.list_capabilities()],
+                    memory_context=recalled.context() if recalled else {},
+                    pending=session.workflow_pending,
+                )
+            )
+            if workflow.status == "needs_parameters":
+                session = session.model_copy(
+                    update={
+                        "messages": (*session.messages, Message(role="user", content=user_input)),
+                        "workflow_pending": {
+                            "workflow_id": workflow.workflow_id,
+                            "version": workflow.version,
+                            "parameters": workflow.parameters,
+                        },
+                        "clarification_items": tuple(
+                            ClarificationItem(
+                                question_id=f"workflow_{index}",
+                                text=text,
+                                status="pending",
+                                asked_after=len(session.messages),
+                            )
+                            for index, text in enumerate(workflow.questions)
+                        ),
+                        "displayed_question_ids": (),
+                    }
+                )
+                self._capture(
+                    session,
+                    "assistant_message",
+                    {"content": "\n".join(session.questions)},
+                    warnings,
+                )
+                return TaskTurn(
+                    session,
+                    memory_result=recalled,
+                    memory_warnings=tuple(warnings),
+                    trace_id=trace_id,
+                )
+            if workflow.status == "matched":
+                session = session.model_copy(
+                    update={
+                        "goal": workflow.goal,
+                        "workflow_pending": None,
+                        "clarification_items": (),
+                        "messages": (*session.messages, Message(role="user", content=user_input)),
+                    }
+                )
+            elif session.workflow_pending is not None:
+                session = session.model_copy(update={"workflow_pending": None})
         if (
             recalled is not None
+            and session.goal is None
             and session.routing.handling == "assess"
             and session.routing.task_relation == "new"
             and "question" in session.routing.input_types
@@ -203,7 +290,10 @@ class Karen:
                 }
             )
             self.observer.emit("intent.routing_refined", data={"routing": session.routing})
-        session = await self.intent.advance(session, user_input, routing=session.routing, **kwargs)
+        if workflow is None or workflow.status != "matched":
+            session = await self.intent.advance(
+                session, user_input, routing=session.routing, **kwargs
+            )
         if session.goal is None:
             if session.reply is not None:
                 if session.routing.handling == "cancel":
@@ -238,9 +328,24 @@ class Karen:
                     "runs_dir": str(self.engine.config.runs_dir),
                 },
             )
-            result = await self.engine.run(
-                goal=session.goal, policy=policy, cancellation_token=cancellation_token
-            )
+            if workflow is not None and workflow.status == "matched":
+                with self.observer.span("workflow.execution"):
+                    result = await self.engine.run_graph(
+                        goal=session.goal,
+                        graph_spec=workflow.graph_spec,
+                        policy=policy,
+                        cancellation_token=cancellation_token,
+                    )
+                self.workflows.record_outcome(
+                    workflow_id=workflow.workflow_id,
+                    version=workflow.version,
+                    result=result,
+                    request_id=session.request_id,
+                )
+            else:
+                result = await self.engine.run(
+                    goal=session.goal, policy=policy, cancellation_token=cancellation_token
+                )
             self.observer.emit(
                 "execution.result",
                 status="ok"
@@ -274,4 +379,16 @@ class Karen:
             },
         )
         self._capture(session, "task_result", public_result, warnings)
+        if self.workflows is not None and (workflow is None or workflow.status != "matched"):
+            self.workflows.submit(
+                CompletedWorkflowRun(
+                    text=next(
+                        (m.content for m in session.messages if m.role == "user"), user_input
+                    ),
+                    messages=[m.model_dump(mode="json") for m in session.messages],
+                    goal=session.goal,
+                    result=result,
+                    source_trace_id=trace_id,
+                )
+            )
         return TaskTurn(session, result, recalled, tuple(warnings), trace_id)

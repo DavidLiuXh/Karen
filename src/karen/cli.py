@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import sqlite3
 import sys
 import threading
 from contextlib import AsyncExitStack
@@ -33,6 +34,7 @@ from .model.models import deepseek_client, memory_embeddings
 from .model.response import format_result
 from .observability import ObservedModel, Observer
 from .observability.viewer import DEFAULT_PORT, background_server
+from .workflow import ReusableWorkflows
 
 
 def display_response(text: str, *, json_output: bool = False) -> None:
@@ -54,6 +56,13 @@ def create_memory(model, *, rerank_model=None, observer=None) -> ContextMemory:
         rerank_model=rerank_model,
         embeddings=memory_embeddings(),
         observer=observer,
+    )
+
+
+def create_workflows(model, engine, observer):
+    return ReusableWorkflows(
+        root_dir=Path.home() / ".Karne" / "workflows",
+        runs_dir=engine.config.runs_dir, model=model, observer=observer,
     )
 
 
@@ -161,12 +170,20 @@ async def converse(
         except (OSError, PersistenceError, RuntimeError):
             print("Karen：记忆目录无法安全打开，可能已有进程使用或文件损坏。本次未启动对话。")
             return 1
+        workflows = create_workflows(memory_model, engine, observer)
         try:
+            if workflows is not None:
+                try:
+                    await workflows.start()
+                except (OSError, ValueError, sqlite3.Error):
+                    observer.emit("workflow.unavailable", status="failed", data={"reason": "storage_unavailable"})
+                    workflows = None
             agent = Karen(
                 intent=IntentRecognizer(model, observer=observer),
                 engine=engine,
                 memory=memory,
                 observer=observer,
+                workflows=workflows,
             )
             if wechat:
                 import httpx
@@ -253,7 +270,11 @@ async def converse(
                 )
         finally:
             try:
-                await memory.close()
+                try:
+                    if workflows is not None:
+                        await workflows.close()
+                finally:
+                    await memory.close()
             except PersistenceError:
                 print("Karen：部分对话未能持久化，退出失败。")
                 raise

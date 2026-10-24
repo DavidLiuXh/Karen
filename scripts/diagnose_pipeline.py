@@ -15,7 +15,7 @@ from karen.evaluation.clarification import grade_quality
 from karen.evaluation.runner import MeteredModel, source_hash
 from karen.intent import IntentRecognizer, IntentSession
 from karen.intent.prompts import TASK_GAP_INSTRUCTION
-from karen.models import deepseek_client
+from karen.model.models import deepseek_client
 
 ACTION_SCHEMA = {
     "type": "object",

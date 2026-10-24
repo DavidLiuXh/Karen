@@ -7,9 +7,9 @@ from dynamic_graph import ModelRequest
 from dynamic_graph.models.client import ModelCallError
 from langchain_deepseek import ChatDeepSeek
 
-import karen.models
+import karen.model.models
 from karen.intent.recognizer import Assessment
-from karen.models import deepseek_client
+from karen.model.models import deepseek_client
 
 
 @pytest.mark.parametrize(
@@ -67,7 +67,7 @@ async def test_deepseek_backend_json_object_request_retains_strict_parsing(
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(send)) as http_client:
         monkeypatch.setattr(
-            karen.models, "ChatDeepSeek", partial(ChatDeepSeek, http_async_client=http_client)
+            karen.model.models, "ChatDeepSeek", partial(ChatDeepSeek, http_async_client=http_client)
         )
         client = deepseek_client(mode=mode, thinking=thinking)
         task = ModelRequest(
@@ -162,7 +162,7 @@ async def test_truncation_recovery_changes_actual_http_budget_once(monkeypatch, 
         })
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(send)) as http_client:
-        monkeypatch.setattr(karen.models, "ChatDeepSeek", partial(ChatDeepSeek, http_async_client=http_client))
+        monkeypatch.setattr(karen.model.models, "ChatDeepSeek", partial(ChatDeepSeek, http_async_client=http_client))
         client = deepseek_client(reasoning_effort=effort)
         task = ModelRequest(role="clarity", system_instruction="Assess clarity",
                             task_instruction="Return the required JSON", input_data={"text": "写邮件"},

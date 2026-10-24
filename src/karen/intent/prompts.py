@@ -1,6 +1,6 @@
 """Model instructions owned by the intent recognition module."""
 
-from ..prompts import RESPONSE_INSTRUCTION
+from ..prompt.prompts import RESPONSE_INSTRUCTION
 
 TASK_GAP_INSTRUCTION = """按以下顺序判断缺口，后面的便利性不能跳过前面的必要条件：
 1. 确定原始请求的交付物、明确约束和必要前提，结合完整澄清链，不自行增加要求。

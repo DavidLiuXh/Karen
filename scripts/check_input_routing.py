@@ -6,7 +6,7 @@ from pathlib import Path
 
 from karen.intent import IntentRecognizer, IntentSession
 from karen.intent.recognizer import Message
-from karen.models import deepseek_client
+from karen.model.models import deepseek_client
 
 
 async def main():

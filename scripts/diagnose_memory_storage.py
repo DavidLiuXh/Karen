@@ -10,7 +10,7 @@ from pathlib import Path
 from diagnose_pipeline import ANSWER_SCHEMA, READER_SYSTEM, dump, invoke
 
 from karen.evaluation.clarification import grade_quality
-from karen.models import deepseek_client
+from karen.model.models import deepseek_client
 
 
 async def main():

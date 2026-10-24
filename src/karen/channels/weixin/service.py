@@ -12,7 +12,7 @@ from dynamic_graph.models.client import ModelCallError
 from pydantic import ValidationError
 
 from ...intent import IntentSession
-from ...response import format_result
+from ...model.response import format_result
 from . import media
 from .api import WeixinError, retry_delay
 from .instructions import FILE_DELIVERY_INSTRUCTION

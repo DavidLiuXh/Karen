@@ -1,6 +1,6 @@
 """Memory instructions are editable independently of storage and graph control."""
 
-from ..prompts import PREFERENCE_DIRECTION_INSTRUCTION, RELEVANCE_INSTRUCTION
+from ..prompt.prompts import PREFERENCE_DIRECTION_INSTRUCTION, RELEVANCE_INSTRUCTION
 
 PROMPT_VERSION = "21"
 

@@ -1,5 +1,6 @@
 import asyncio
 import errno
+import io
 import json
 import os
 import pty
@@ -39,6 +40,40 @@ def local_memory_only(monkeypatch):
 class DisplayAgent:
     def record_response(self, session, text, **kwargs):
         return ()
+
+
+@pytest.mark.parametrize("tty,term,json_output", [
+    (False, "xterm", False),
+    (True, "dumb", False),
+    (True, "xterm", True),
+])
+def test_display_response_preserves_raw_output(monkeypatch, tty, term, json_output):
+    output = io.StringIO()
+    monkeypatch.setattr(output, "isatty", lambda: tty)
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setenv("TERM", term)
+    text = '{"answer": "**原始回答**"}' if json_output else "# 标题\n\n**回答**"
+
+    cli.display_response(text, json_output=json_output)
+
+    assert output.getvalue() == ("" if json_output else "Karen：") + text + "\n"
+
+
+def test_display_response_renders_markdown_in_terminal(monkeypatch):
+    output = io.StringIO()
+    monkeypatch.setattr(output, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("COLUMNS", "60")
+    text = "**北京天气**\n\n- 明天有风\n\n```python\nprint('hello')\n```"
+
+    cli.display_response(text)
+
+    rendered = output.getvalue()
+    assert "Karen：" in rendered
+    assert "北京天气" in rendered and "明天有风" in rendered and "hello" in rendered
+    assert "**" not in rendered and "```" not in rendered
 
 
 @pytest.mark.parametrize("arguments,port", [([], None), (["--observe"], 8765),

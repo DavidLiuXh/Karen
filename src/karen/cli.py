@@ -22,6 +22,8 @@ from dynamic_graph.tools import (
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import DummyHistory
 from pydantic import ValidationError
+from rich.console import Console
+from rich.markdown import Markdown
 
 from .agent import Karen
 from .context import ContextMemory
@@ -31,6 +33,18 @@ from .models import deepseek_client, memory_embeddings
 from .observability import ObservedModel, Observer
 from .observability.viewer import DEFAULT_PORT, background_server
 from .response import format_result
+
+
+def display_response(text: str, *, json_output: bool = False) -> None:
+    """Render terminal replies while keeping redirected and JSON output unchanged."""
+    if json_output:
+        print(text)
+    elif sys.stdout.isatty() and os.environ.get("TERM") != "dumb":
+        console = Console(file=sys.stdout)
+        console.print("Karen：", markup=False)
+        console.print(Markdown(text))
+    else:
+        print("Karen：" + text)
 
 
 def create_memory(model, *, rerank_model=None, observer=None) -> ContextMemory:
@@ -195,7 +209,10 @@ async def converse(
                 if turn.result is None and turn.response is None:
                     for warning in turn.memory_warnings:
                         print(f"Karen：记忆写入未完成（{warning}）。")
-                    print("Karen：" + "\n".join(session.questions))
+                    if json_output:
+                        print("Karen：" + "\n".join(session.questions))
+                    else:
+                        display_response("\n".join(session.questions))
                     continue
                 if turn.response is not None:
                     response_text = (
@@ -219,7 +236,7 @@ async def converse(
                         if json_output
                         else format_result(turn.result)
                     )
-                print(response_text if json_output else "Karen：" + response_text)
+                display_response(response_text, json_output=json_output)
                 warnings = (
                     *turn.memory_warnings,
                     *agent.record_response(session, response_text, trace_id=turn.trace_id),

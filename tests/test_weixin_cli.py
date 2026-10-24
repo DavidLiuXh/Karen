@@ -57,6 +57,7 @@ def test_login_command_does_not_initialize_llm(monkeypatch):
 
 
 async def test_wechat_runtime_uses_existing_agent_memory_and_observer(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "create_workflows", lambda *args: None)
     closed, channels = [], []
     credentials = Credentials("secret", "bot", "owner", API_URL)
     observer = cli.Observer(tmp_path / "observability")

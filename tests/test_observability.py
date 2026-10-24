@@ -438,3 +438,29 @@ def test_http_disconnects_do_not_interrupt_service(
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+async def test_workflow_jobs_are_independent_linked_and_interrupted_if_process_closed(tmp_path):
+    observer = Observer(tmp_path/'observability')
+    await observer.start()
+    task_id, job_id = uuid4().hex, uuid4().hex
+    with observer.span('turn', trace_id=task_id, request_id='workflow-source'):
+        observer.emit('turn.input', data={'text': 'Prepare report'})
+        observer.emit('workflow.submission', data={'job_id': job_id, 'state': 'queued', 'pid': 999999999})
+    with observer.span('workflow.job', trace_id=uuid4().hex, request_id='workflow-source', source_trace_id=task_id, job_id=job_id):
+        observer.emit('workflow.job', data={'state': 'running', 'pid': 999999999})
+        observer.emit('workflow.validation', data={'status': 'candidate', 'reason': 'acceptance_unknown'})
+        # Simulate a missing terminal job state (e.g. an interrupted writer).
+    await observer.close()
+    listing = TraceStore(observer.root_dir).tasks()
+    assert len(listing['tasks']) == 1 and listing['tasks'][0]['status'] == 'ok'
+    # The finished span without a success state cannot imply a successful save.
+    assert listing['workflows']['jobs'][0]['state'] == 'failed'
+    detail = TraceStore(observer.root_dir).trace(task_id)
+    assert any(e['event_type'] == 'workflow.validation' for e in detail['events'])
+    assert 'workflow.saved' not in {e['event_type'] for e in detail['events']}
+    view = TraceStore(observer.root_dir).workflows([{
+        'timestamp_utc': '2026-10-24T00:00:00Z', 'event_type': 'workflow.submission',
+        'data': {'job_id': uuid4().hex, 'state': 'queued', 'pid': 999999999}, 'trace_id': task_id,
+    }])
+    assert view['jobs'][0]['state'] == 'interrupted_unknown'

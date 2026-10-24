@@ -4,7 +4,7 @@ English | [简体中文](README_cn.md)
 
 Karen is a personal agent that understands what you want to do, retrieves relevant memories, turns requests into goals with success criteria, and uses tools to carry them out.
 
-Our aim is to build a Personal Agent that understands its user, proactively identifies problems, and moves work forward. **The current version supports user-initiated conversations, contextual memory, task execution, and observability. Proactive task discovery and pausing execution for user confirmation are not yet implemented.**
+Our aim is to build a Personal Agent that understands its user, proactively identifies problems, and moves work forward. **The current version supports user-initiated conversations, contextual memory, task execution, reusable workflows, and observability. Proactive task discovery and pausing execution for user confirmation are not yet implemented.**
 
 ## Why build Karen?
 
@@ -25,6 +25,7 @@ Karen aims to reduce that work and make the path from a request to a result more
 | Necessary clarification | Asks specific questions when required information is missing, merges the answers, and reassesses until the goal is clear |
 | Personal contextual memory | Automatically extracts and verifies long-term facts, preferences, and event summaries; supports retrieval across restarts and changes to facts |
 | Research and deliverables | Searches public sources, reads web pages, organizes text, writes text or HTML files under `/tmp`, and requests that the local browser open HTML files |
+| Reusable workflows | Discovers parameterized workflows from newly completed tasks in the background; compatible requests reuse a validated graph without full intent extraction or planning |
 | Observability | Shows decisions, retrieval candidates, model calls, execution graphs, artifacts, and the causes of failures or degraded operation |
 
 For example, you can tell Karen “I like history and archaeology” and “I enjoy sports, such as cycling,” then later ask “What are my hobbies?” You can also ask it to research a topic, organize the findings, and save them as HTML. Memory writes run in the background, so new information may take time to become retrievable.
@@ -33,7 +34,7 @@ The current interaction interface is a CLI. Task completion depends on registere
 
 ## How Karen works
 
-Karen uses modules with high cohesion and low coupling. Input understanding, contextual memory, and observability are separate modules within Karen; [DynamicAgentGraph](https://github.com/DavidLiuXh/DynamicAgentGraph) handles task planning and execution.
+Karen uses modules with high cohesion and low coupling. Input understanding, contextual memory, reusable workflows, and observability are separate modules within Karen; [DynamicAgentGraph](https://github.com/DavidLiuXh/DynamicAgentGraph) handles task planning and execution.
 
 ```mermaid
 flowchart TD
@@ -42,7 +43,10 @@ flowchart TD
     R -->|Question or task| M[Retrieve relevant memories as needed]
     M --> D{Can it be answered directly?}
     D -->|Yes| A
-    D -->|Requires task execution| C[Assess clarity]
+    D -->|Requires task execution| W{Compatible enabled workflow?}
+    W -->|No| C[Assess clarity]
+    W -->|Yes; bind current parameters| X[DynamicAgentGraph validates and executes supplied graph]
+    X --> O
     C -->|Necessary information is missing| Q[Ask clarification questions]
     Q -->|User answers; preserve the original request| U
     C -->|Clear| G[Build GoalSpec]
@@ -50,6 +54,8 @@ flowchart TD
     E --> O[Show the result or failure reason]
     U -. Save and extract asynchronously .-> K[Contextual memory]
     O -. Record task results asynchronously .-> K
+    O -. Discover, verify and save asynchronously .-> F[Reusable workflows]
+    F --> W
     K --> M
 ```
 
@@ -60,6 +66,18 @@ The input module uses LangGraph to express response, clarification, and goal-bui
 Clarification preserves the original request, pending questions, and their associated answers. A partial answer does not discard other pending questions. Each turn reassesses clarity and asks only for information necessary to determine the goal, scope, deliverable, or acceptance criteria. The user's timezone and the initial input time provide the reference for relative dates such as “today” and “tomorrow.”
 
 Once the goal is clear, Karen creates a DynamicAgentGraph `GoalSpec` containing the objective, success criteria, constraints, inputs, and context. The engine plans an execution graph, invokes authorized capabilities, and returns a result. Valid execution status and output structure do not mean that every business success criterion has been independently verified.
+
+### Reusable workflows
+
+Workflow discovery and reuse are enabled automatically in both the CLI and Weixin channel; no extra flag is required. For example, ask Karen to fetch today's GitHub Trending entries, generate an HTML page at `/tmp/github.html`, and open it locally. Once a compatible workflow has been verified and enabled, a later request for the same deliverable can reuse its steps with the current date and a new output path. Check its status in the observation panel: a completed source task does not guarantee that its template is enabled.
+
+After a newly completed task, Karen asynchronously evaluates whether its recorded graph can be reused, extracts parameters, checks structural boundaries and verifies success criteria against recorded evidence. Templates with sufficient evidence become enabled; incomplete proof or unsafe parameterization leaves a candidate that cannot execute automatically. Existing run history is not scanned on startup.
+
+For matching task requests, Karen keeps input routing and relevant-memory retrieval, then binds current parameters to the enabled template. Missing parameters use a dedicated clarification loop; incompatible requests follow normal intent recognition and planning. A matched request builds a fresh `GoalSpec` and uses DynamicAgentGraph's `run_graph` entry point, skipping planner calls while retaining authorization, graph validation, budgets and cancellation. Worker model calls still run. Old dates, memory and authorization are not inherited. Variable values embedded in node instructions prevent automatic activation in this first version.
+
+Definitions and their SQLite/FTS5 index live in `~/.Karne/workflows/`. Normal shutdown waits for background persistence; forced termination can lose queued work. Reused results are checked asynchronously; evidence of failure or explicit feedback about the preceding workflow result can pause the template. Unknown acceptance remains unknown. A failed or partially executed workflow is not automatically replayed from the beginning.
+
+With `--observe`, the **Reusable workflows** panel lists templates and background jobs, with links to discovery, extraction, verification, persistence and source-task records. It supports English and Chinese. Matching is bounded to 15 seconds; unavailable matching falls back to normal understanding. Background discovery, verification and feedback checks make additional model calls. This requires the companion DynamicAgentGraph checkout containing `run_graph` and the public `GraphSpec` export; run `uv sync` after updating both repositories.
 
 ### Three memory layers and selective retrieval
 
@@ -263,6 +281,7 @@ The main entry point is `Karen.advance(session, text)`. Read `TaskTurn.response`
 | [Input routing](docs/INPUT_ROUTING.md) | Input classification, direct responses, session relationships, and cancellation boundaries |
 | [Multi-turn clarification](docs/CLARIFICATION_STATE.md) | Pending-question ledger, state transitions, and goal construction |
 | [Contextual memory design](docs/CONTEXT_MEMORY_DESIGN.md) / [interfaces and operation](docs/CONTEXT_MEMORY_IMPLEMENTATION.md) | m1/m2/m3, version timelines, asynchronous writes, and synchronous retrieval |
+| [Reusable workflows](docs/REUSABLE_WORKFLOWS.md) / [design](docs/REUSABLE_WORKFLOWS_DESIGN.md) | Background discovery, parameter binding, prepared execution and observation |
 | [Observability](docs/OBSERVABILITY.md) | Tracing, diagnostics, read boundaries, and server lifecycle |
 | [Prompt maintenance](docs/PROMPT_POLICY.md) | Organizing general rules and few-shot examples |
 | [Model settings and budgets](docs/MODEL_BUDGET_VERIFICATION_20261007.md) | Reasoning effort, stage deadlines, and bounded recovery after truncation |

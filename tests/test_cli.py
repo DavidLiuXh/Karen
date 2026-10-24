@@ -33,6 +33,7 @@ class MemoryStub:
 
 @pytest.fixture(autouse=True)
 def local_memory_only(monkeypatch):
+    monkeypatch.setattr(cli, "create_workflows", lambda *args: None)
     monkeypatch.setattr(cli, "create_memory", lambda model, **kwargs: MemoryStub())
     monkeypatch.setattr(cli, "create_observer", lambda: cli.Observer())
 
@@ -810,3 +811,25 @@ def test_tool_failure_presentation_explains_safe_cause_without_dumping_details(d
     assert expected in text and "任务执行失败" in text
     assert "private-diagnostic-value" not in text and "private-provider-value" not in text
     assert "ConnectError" not in text
+
+
+async def test_unavailable_workflow_index_preserves_normal_conversation(monkeypatch, capsys):
+    import sqlite3
+
+    monkeypatch.setenv('TAVILY_API_KEY', 'test-key')
+    monkeypatch.setattr(cli, 'deepseek_client', lambda **kwargs: FakeModelClient())
+    inputs = iter(['Hello', '/exit'])
+    monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
+
+    class BrokenWorkflows:
+        async def start(self):
+            raise sqlite3.DatabaseError('unreadable index')
+
+    class ReplyAgent(DisplayAgent):
+        async def advance(self, session, text):
+            return TaskTurn(session.model_copy(update={'reply': 'Hello'}))
+
+    monkeypatch.setattr(cli, 'create_workflows', lambda *args: BrokenWorkflows())
+    monkeypatch.setattr(cli, 'Karen', lambda **kwargs: ReplyAgent())
+    assert await cli.converse(timezone='UTC') == 0
+    assert 'Karen：Hello' in capsys.readouterr().out

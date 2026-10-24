@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import threading
 import webbrowser
 from contextlib import contextmanager
@@ -107,7 +108,7 @@ class TraceStore:
 
     def tasks(self):
         paths, limited = self._files()
-        tasks, gaps, channel_events, total_bytes = [], [], [], 0
+        tasks, gaps, channel_events, workflow_events, total_bytes = [], [], [], [], 0
         for path in paths:
             if total_bytes >= 8 * 1024 * 1024:
                 limited = True
@@ -118,6 +119,12 @@ class TraceStore:
                 events.extend(tail)
             total_bytes += min(path.stat().st_size, 128 * 1024)
             channel_events.extend(e for e in events if e["event_type"].startswith("weixin."))
+            workflow_events.extend(
+                e
+                for e in events
+                if e.get("stage", "").startswith("workflow.")
+                or e["event_type"].startswith("workflow.")
+            )
             roots = [e for e in events if e.get("stage") in {"input", "turn"}]
             started = next(
                 (
@@ -138,8 +145,13 @@ class TraceStore:
             request = next(
                 (e for e in events if e.get("event_type") in {"turn.input", "input.received"}), {}
             )
-            if (not request and not finished and started["stage"] == "input"
-                    and not coverage["invalid_lines"] and not coverage["unfinished_tail"]):
+            if (
+                not request
+                and not finished
+                and started["stage"] == "input"
+                and not coverage["invalid_lines"]
+                and not coverage["unfinished_tail"]
+            ):
                 # The asynchronous writer can expose span.started before input.received.
                 # Wait for the input record instead of publishing a transient blank task.
                 continue
@@ -166,8 +178,79 @@ class TraceStore:
                 gaps.append(health)
         tasks.sort(key=lambda t: t["timestamp_utc"], reverse=True)
         channel_events.sort(key=lambda e: e["timestamp_utc"], reverse=True)
-        return {"tasks": tasks, "channel_events": channel_events[:20],
-                "coverage": {"partial": limited, "gaps": gaps}}
+        return {
+            "tasks": tasks,
+            "channel_events": channel_events[:20],
+            "workflows": self.workflows(workflow_events),
+            "coverage": {"partial": limited, "gaps": gaps},
+        }
+
+    def workflows(self, events):
+        jobs = {}
+        for event in sorted(events, key=lambda e: (e["timestamp_utc"], e.get("seq", 0))):
+            data = event.get("data", {})
+            job_id = event.get("job_id") or data.get("job_id")
+            if not job_id:
+                continue
+            job = jobs.setdefault(
+                job_id,
+                {
+                    "job_id": job_id,
+                    "source_trace_id": event.get("source_trace_id") or event.get("trace_id"),
+                },
+            )
+            job["timestamp_utc"] = event["timestamp_utc"]
+            job["process_session_id"] = event.get("process_session_id")
+            if event.get("stage") == "workflow.job":
+                job["trace_id"] = event.get("trace_id")
+                if event["event_type"] == "span.finished":
+                    job["state"] = data.get(
+                        "state", "cancelled" if event.get("status") == "cancelled" else "failed"
+                    )
+                    job["duration_ms"] = event.get("duration_ms")
+            for field in ("state", "pid", "queue_ms", "reason"):
+                if field in data:
+                    job[field] = data[field]
+        for job in jobs.values():
+            if job.get("state") in {"queued", "running"}:
+                try:
+                    pid = int(job.get("pid", 0))
+                    if pid <= 0:
+                        raise ValueError("unknown_process")
+                    session = job.get("process_session_id", "")
+                    if (
+                        IDENTIFIER.fullmatch(session or "")
+                        and (self.root_dir / "traces" / f"{session}.health.json").exists()
+                    ):
+                        raise ValueError("closed_process")
+                    os.kill(pid, 0)
+                except (OSError, ValueError):
+                    job["state"] = "interrupted_unknown"
+        root = self.root_dir.parent / "workflows"
+        index = root / "index.sqlite"
+        definitions, coverage = [], {}
+        if index.exists():
+            try:
+                if root.is_symlink() or index.is_symlink():
+                    raise ValueError("SYMLINK_WORKFLOW_INDEX")
+                with sqlite3.connect(index.as_uri() + "?mode=ro", uri=True, timeout=0.1) as db:
+                    db.row_factory = sqlite3.Row
+                    definitions = [
+                        dict(row)
+                        for row in db.execute(
+                            "SELECT workflow_id,version,status,name,created_at,uses,last_used,source_run_id "
+                            "FROM workflows ORDER BY created_at DESC LIMIT 101"
+                        )
+                    ]
+                coverage["partial"] = len(definitions) > 100
+                definitions = sanitize(definitions[:100])
+            except (OSError, ValueError, sqlite3.Error):
+                coverage["unavailable"] = True
+        return {
+            "jobs": list(reversed(list(jobs.values())))[:100],
+            "definitions": definitions,
+            "coverage": coverage,
+        }
 
     def trace(self, trace_id):
         if not IDENTIFIER.fullmatch(trace_id):
@@ -197,7 +280,10 @@ class TraceStore:
             other_root = next((e for e in initial if e.get("stage") == "turn"), None)
             if other_root is None and initial and initial[0].get("stage") != "input":
                 other_root = initial[0]
-            if other_root and other_root.get("request_id") == request_id:
+            if other_root and (
+                other_root.get("request_id") == request_id
+                or other_root.get("source_trace_id") == trace_id
+            ):
                 extra, state = self._events(other, 512 * 1024)
                 scanned += min(other.stat().st_size, 512 * 1024)
                 # Include all clarification turns and their independently timed background work.
@@ -370,8 +456,10 @@ def background_server(root_dir, *, port=DEFAULT_PORT):
     """Serve alongside the conversation and release the listener on every exit path."""
     with create_server(root_dir, port=port) as server:
         thread = threading.Thread(
-            target=server.serve_forever, kwargs={"poll_interval": 0.1},
-            name="karen-observation-server", daemon=True,
+            target=server.serve_forever,
+            kwargs={"poll_interval": 0.1},
+            name="karen-observation-server",
+            daemon=True,
         )
         thread.start()
         try:

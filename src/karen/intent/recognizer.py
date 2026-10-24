@@ -302,6 +302,7 @@ class IntentSession(IntentContract):
     reference_time_utc: datetime | None = None
     clarification_items: tuple[ClarificationItem, ...] = ()
     displayed_question_ids: tuple[str, ...] = ()
+    workflow_pending: dict[str, JsonValue] | None = None
     goal: GoalSpec | None = None
     reply: Text | None = None
     routing: InputRouting | None = None

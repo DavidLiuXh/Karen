@@ -348,6 +348,11 @@
       <h2 data-i18n="最近交互">最近交互</h2>
       <div id="tasks"></div>
       <footer id="listCoverage"></footer>
+      <details id="workflowLog">
+        <summary data-i18n="可复用流程">可复用流程</summary>
+        <input id="workflowFilter" placeholder="筛选流程、作业或状态" aria-label="Filter workflows" />
+        <div id="workflowEvents"></div>
+      </details>
       <details id="channelLog" hidden>
         <summary data-i18n="最近微信渠道事件">最近微信渠道事件</summary>
         <div id="channelEvents"></div>
@@ -418,6 +423,29 @@
       "微信渠道轨迹": "WeChat channel trace",
       "查看对应任务": "View related task",
       "任务详情": "Task details",
+      "可复用流程": "Reusable workflows",
+      "筛选流程、作业或状态": "Filter workflows, jobs or status",
+      "后台流程": "Background workflow",
+      "流程记录覆盖不足": "Workflow records are incomplete",
+      "流程发现": "Workflow discovery",
+      "流程提取入队": "Workflow queued",
+      "后台流程作业": "Background workflow job",
+      "流程提取": "Workflow extraction",
+      "流程核验": "Workflow validation",
+      "流程保存": "Workflow persistence",
+      "流程已保存": "Workflow saved",
+      "流程匹配": "Workflow matching",
+      "流程参数绑定": "Workflow parameter binding",
+      "流程执行": "Workflow execution",
+      "流程已暂停": "Workflow paused",
+      "candidate": "Candidate",
+      "enabled": "Enabled",
+      "paused": "Paused",
+      "queued": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "interrupted_unknown": "Interrupted / unknown",
       "任务 ": "Task ",
       " · 多轮澄清与后台工作按同一任务关联": " · Clarification rounds and background work are grouped by task",
       "响应": "Response",
@@ -483,8 +511,9 @@
       const saved = localStorage.getItem("karen.observability.language");
       if (["zh-CN", "en"].includes(saved)) language = saved;
     } catch {}
+    const workflowStates = {candidate: "候选", enabled: "已启用", paused: "已暂停", queued: "排队中", running: "运行中", completed: "已完成", failed: "失败", interrupted_unknown: "已中断／状态未知"};
     function t(text) {
-      return language === "en" ? (english[text] ?? text) : text;
+      return language === "en" ? (english[text] ?? text) : (workflowStates[text] ?? text);
     }
     function statusLabel(status) {
       const chinese = {"ok": "正常", "failed": "失败", "degraded": "降级", "cancelled": "已取消", "nonterminal": "未结束"};
@@ -509,6 +538,17 @@
       "model.response": "模型返回",
       "model.error": "模型错误",
       "model.retry": "模型自动重试",
+      "workflow.discovery": "流程发现",
+      "workflow.submission": "流程提取入队",
+      "workflow.job": "后台流程作业",
+      "workflow.extraction": "流程提取",
+      "workflow.validation": "流程核验",
+      "workflow.persistence": "流程保存",
+      "workflow.saved": "流程已保存",
+      "workflow.resolve": "流程匹配",
+      "workflow.parameter_binding": "流程参数绑定",
+      "workflow.execution": "流程执行",
+      "workflow.paused": "流程已暂停",
       "memory.submitted": "记忆入队",
       "memory.persisted": "原文已持久化",
       "memory.persistence_failed": "原文持久化失败",
@@ -630,6 +670,32 @@
           ? t("有观测记录丢失；任务执行可能仍已完成。")
           : "");
     }
+    function workflows(data) {
+      const holder = document.querySelector("#workflowEvents");
+      const open = new Set([...holder.querySelectorAll("details[open]")].map(n => n.dataset.key));
+      holder.replaceChildren();
+      const query = document.querySelector("#workflowFilter").value.toLowerCase();
+      for (const definition of data.definitions || []) {
+        if (query && !JSON.stringify(definition).toLowerCase().includes(query)) continue;
+        payload(holder, definition.name + " · " + t(definition.status), definition, "workflow-" + definition.workflow_id);
+      }
+      for (const job of data.jobs || []) {
+        if (query && !JSON.stringify(job).toLowerCase().includes(query)) continue;
+        const row = el("div", undefined, "record");
+        row.append(el("div", t(job.state || "unknown") + " · " + stamp(job.timestamp_utc), "meta"));
+        for (const [id, label] of [[job.trace_id, "后台流程"], [job.source_trace_id, "查看对应任务"]]) {
+          if (typeof id !== "string" || !/^[a-f0-9]{32}$/.test(id)) continue;
+          const button = el("button", t(label));
+          button.onclick = () => { selected = id; snapshot = null; refresh(); };
+          row.append(button);
+        }
+        holder.append(row);
+      }
+      if (data.coverage?.unavailable || data.coverage?.partial) holder.append(el("p", t("流程记录覆盖不足"), "warning"));
+      for (const detail of holder.querySelectorAll("details")) detail.open = open.has(detail.dataset.key);
+    }
+    document.querySelector("#workflowFilter").oninput = () => workflows(lastList?.workflows || {});
+
     function render(data) {
       const target = document.querySelector("#detail");
       const open = new Set(
@@ -637,6 +703,22 @@
       );
       target.className = "";
       target.replaceChildren();
+      const workflowOnly = data.events.some((e) => e.stage === "workflow.job") && !data.events.some((e) => e.stage === "turn");
+      if (workflowOnly) {
+        target.append(el("h2", t("后台流程")));
+        const sourceId = data.events.find((e) => e.source_trace_id)?.source_trace_id;
+        if (typeof sourceId === "string" && /^[a-f0-9]{32}$/.test(sourceId)) {
+          const button = el("button", t("查看对应任务"));
+          button.onclick = () => { selected = sourceId; snapshot = null; refresh(); };
+          target.append(button);
+        }
+        for (const event of data.events) {
+          payload(target, stamp(event.timestamp_utc) + " · " + t(labels[event.event_type] || event.event_type),
+                  {stage: event.stage, status: event.status, duration_ms: event.duration_ms, ...event.data}, event.event_id);
+        }
+        for (const detail of target.querySelectorAll("details")) detail.open = open.has(detail.dataset.key);
+        return;
+      }
       const channelOnly =
         data.events.some((e) => e.event_type.startsWith("weixin.")) &&
         !data.events.some((e) => ["input", "turn"].includes(e.stage));
@@ -995,6 +1077,7 @@
         if (!selected && list.tasks.length) selected = list.tasks[0].trace_id;
         lastList = list;
         tasks(list);
+        workflows(list.workflows || {});
         if (selected) {
           const data = await get(
             "/api/trace?id=" + encodeURIComponent(selected),
@@ -1027,7 +1110,8 @@
         node.textContent = t(node.dataset.i18n);
       });
       document.querySelector("#language").value = language;
-      if (lastList) tasks(lastList);
+      document.querySelector("#workflowFilter").placeholder = t("筛选流程、作业或状态");
+      if (lastList) { tasks(lastList); workflows(lastList.workflows || {}); }
       if (lastDetail) render(lastDetail);
       renderConnection();
     }

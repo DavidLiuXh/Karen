@@ -197,6 +197,8 @@ async def test_default_policy_authorizes_registered_tools_evaluators_and_reducer
     assert turn.result.outputs == {"draft": "中文邮件草稿"}
     assert calls == ["write"]
     policy = json.loads(next(tmp_path.glob("*/policy.json")).read_text())
+    assert policy["node_timeout_seconds"] == 180
+    assert policy["run_timeout_seconds"] == 600
     assert policy["allowed_tools"] == ["demo.write@1.0.0"]
     assert policy["allowed_side_effect_tools"] == ["demo.write@1.0.0"]
     assert policy["allowed_evaluators"] == ["demo.evaluate@1.0.0"]
@@ -428,3 +430,39 @@ async def test_failed_observation_does_not_fail_real_engine_task(tmp_path, monke
     finally:
         await observer.close()
     assert observer.write_failures > 0
+
+
+async def test_larger_node_budget_cannot_outlive_execution_deadline(tmp_path):
+    import asyncio
+
+    from dynamic_graph import GoalSpec, GraphSpec
+
+    from karen.capabilities import all_capabilities_policy
+
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    class WaitingWorker:
+        async def generate(self, request):
+            entered.set()
+            try:
+                await asyncio.sleep(2)
+            finally:
+                cancelled.set()
+
+    engine = DynamicGraphEngine(
+        config=EngineConfig(runs_dir=tmp_path),
+        models=ModelBindings(FakeModelClient(), WaitingWorker()),
+    )
+    policy = all_capabilities_policy(engine)
+    policy.run_timeout_seconds = 0.1
+    result = await engine.run_graph(
+        goal=GoalSpec(
+            objective="Draft", output_schema=ready()["decision"]["goal"]["output_schema"]
+        ),
+        graph_spec=GraphSpec.model_validate(graph_response()["graph"]),
+        policy=policy,
+    )
+    assert entered.is_set() and cancelled.is_set()
+    assert result.execution_status == "FAILED"
+    assert any(d.code == "DEADLINE_EXCEEDED" for d in result.diagnostics)
+    assert result.usage["duration_seconds"] < 1

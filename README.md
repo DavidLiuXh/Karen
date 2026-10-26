@@ -79,6 +79,8 @@ Definitions and their SQLite/FTS5 index live in `~/.Karne/workflows/`. Normal sh
 
 With `--observe`, the **Reusable workflows** panel lists templates and background jobs, with links to discovery, extraction, verification, persistence and source-task records. It supports English and Chinese. Matching is bounded to 15 seconds; unavailable matching falls back to normal understanding. Background discovery, verification and feedback checks make additional model calls. This requires the companion DynamicAgentGraph checkout containing `run_graph` and the public `GraphSpec` export; run `uv sync` after updating both repositories.
 
+Karen's default execution policy allows up to 180 seconds per node and 600 seconds for the entire engine run, shared by planning, tools, workers and retries. The engine always caps a node by the remaining run budget; registered tools may have shorter limits. Caller-supplied policies remain unchanged. Input understanding and memory recall have separate stage budgets, so 600 seconds is an execution limit rather than an end-to-end conversation deadline.
+
 ### Three memory layers and selective retrieval
 
 | Layer | Contents | Purpose |

@@ -789,3 +789,31 @@ async def test_no_lexical_overlap_still_has_bounded_semantic_candidates(tmp_path
         assert resolution.status == "matched"
     finally:
         await workflows.close()
+
+
+async def test_verification_receives_the_prepared_graph_and_matching_input_schema(tmp_path):
+    model = WorkflowModel()
+    # Source has a literal; prepared graph must expose its promoted reference.
+    model.proposal["parameters"][0]["sites"] = []
+    workflows, engine, model, _, _ = await discover(tmp_path, model=model)
+    try:
+        verification = next(r for r in model.requests if r.role == "workflow_verify")
+        prepared = verification.input_data["prepared_graph"]
+        inputs = verification.input_data["prepared_goal"]["inputs"]
+        assert (
+            verification.input_data["graph"]["nodes"][0]["input_bindings"]["value"]["pointer"]
+            == "/date"
+        )
+        assert (
+            prepared["nodes"][0]["input_bindings"]["value"]["pointer"]
+            == "/workflow_parameters/date"
+        )
+        assert inputs == {"workflow_parameters": {"date": DAY}}
+        assert verification.input_data["structural_error"] == ""
+        resolution = await workflows.resolve(request(engine))
+        assert (
+            resolution.goal.input_schema.document()
+            == verification.input_data["prepared_goal"]["input_schema"]
+        )
+    finally:
+        await workflows.close()

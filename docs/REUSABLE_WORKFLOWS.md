@@ -25,7 +25,7 @@ uv run --env-file .env karen --timezone Asia/Shanghai --observe
 - `record_outcome(...)`：异步核验复用结果，统计每次运行；明确业务失败或图失效暂停模板，不自动重放。
 - `review_feedback(...)`：仅关联刚才使用的流程，后台判断明确否定结果的反馈；必须引用当前用户输入中的原话，独立新话题不应暂停流程。
 
-CLI 装配默认 DeepSeek 非思考模型用于发现、核验、匹配与反馈，传输由现有客户端管理。worker 模型继续由执行库装配。每次模型调用有 60 秒时限，结构错误或截断最多恢复一次，截断按通用规则增大输出预算；后台每作业总时限 120 秒，因此不会无限重试。输入载荷上限 256 KiB。单队列最多 32 个作业，队列满拒绝额外工作，不阻塞交互。模板候选检索使用 SQLite FTS5，最多 5 个候选进入匹配。
+CLI 装配默认 DeepSeek 非思考模型用于发现、核验、匹配与反馈，传输由现有客户端管理。worker 模型继续由执行库装配。流程模块自身的每次模型调用有 60 秒时限，结构错误或截断最多恢复一次，截断按通用规则增大输出预算；后台每作业总时限 120 秒，因此不会无限重试。输入载荷上限 256 KiB。单队列最多 32 个作业，队列满拒绝额外工作，不阻塞交互。模板候选检索使用 SQLite FTS5，最多 5 个候选进入匹配。Karen 的执行节点上限为 180 秒、整次引擎运行仍为 600 秒；流程模块的匹配与后台调用时限不随之增加。
 
 `WorkflowResolution.status` 为 matched / needs_parameters / no_match。matched 包含本轮独立的 goal、graph_spec、模板 ID/版本及已绑定参数；needs_parameters 包含问题与已解析参数。内部原因不自动附加到用户回答中。
 
@@ -45,6 +45,8 @@ result = await engine.run_graph(
 该入口不调用 planner，沿用现有校验、编译、预算、取消、输出和运行记录。每次运行拥有新 run_id 和新状态。模型生成内容的节点仍调用 worker。当前实现不在指定图失败后自动另起规划运行，以免重置预算或重复副作用；无效模板记录失败并在后台暂停，后续请求可走正常路径。
 
 模板只保存原生 GraphSpec。参数变化通过 input_field 映射和精确 binding site 将 literal 提升为 input 引用，不能任意修改图、拓扑、schema 或 instruction。参数 schema 直接使用执行库 SchemaSpec，并检查与来源输入/绑定目标的兼容性。新 GoalSpec 不复制旧 context、conversation、memory 或授权。
+
+参数化核验会同时获得来源图及实际参数化后的 prepared_graph/prepared_goal，依据后者核对引用和输入 schema；不能因来源图中仍有已提升的 literal 而误判绑定失败。没有可用的已启用模板时，workflow.resolve 会记录拒绝原因与各状态模板数量。
 
 启用依据不是模型一句“成功”：核验须覆盖原 GoalSpec 的全部成功标准，并提供以 `/evidence/` 开头、实际存在的执行证据指针。主观质量、外部浏览器渲染等没有独立证据时仍为 unknown。业务判断依然包含模型评估，不能保证所有语义错误都被发现。
 

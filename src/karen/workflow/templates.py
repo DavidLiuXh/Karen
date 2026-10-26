@@ -119,6 +119,23 @@ def parameterized_graph(goal, graph, proposal):
     return GraphSpec.model_validate(document)
 
 
+def parameter_input_schema(proposal):
+    """The same input contract is used in verification and actual instantiation."""
+    return {
+        "type": "object",
+        "properties": {
+            "workflow_parameters": {
+                "type": "object",
+                "properties": {p.name: p.schema_.document() for p in proposal.parameters},
+                "required": [p.name for p in proposal.parameters],
+                "additionalProperties": False,
+            }
+        },
+        "required": ["workflow_parameters"],
+        "additionalProperties": False,
+    }
+
+
 def instantiate(definition, request, parameters):
     parameters = copy.deepcopy(parameters)
     allowed = {p.name for p in definition.proposal.parameters}
@@ -161,21 +178,7 @@ def instantiate(definition, request, parameters):
             for c in definition.goal_template.success_criteria
         ],
         inputs={"workflow_parameters": parameters},
-        input_schema={
-            "type": "object",
-            "properties": {
-                "workflow_parameters": {
-                    "type": "object",
-                    "properties": {
-                        p.name: p.schema_.document() for p in definition.proposal.parameters
-                    },
-                    "required": list(allowed),
-                    "additionalProperties": False,
-                }
-            },
-            "required": ["workflow_parameters"],
-            "additionalProperties": False,
-        },
+        input_schema=parameter_input_schema(definition.proposal),
         output_schema=definition.goal_template.output_schema,
         context={
             "timezone": request.timezone,

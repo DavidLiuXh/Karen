@@ -198,3 +198,10 @@ class Storage:
                 'UPDATE workflows SET status="paused" WHERE workflow_id=? AND version=?',
                 (workflow_id, version),
             )
+
+    def status_counts(self):
+        with self.connection() as db:
+            return {
+                row[0]: row[1]
+                for row in db.execute("SELECT status,count(*) FROM workflows GROUP BY status")
+            }

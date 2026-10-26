@@ -27,7 +27,12 @@ from .contracts import (
     WorkflowResolution,
 )
 from .storage import Storage, encode
-from .templates import acceptance_supported, instantiate, parameterized_graph
+from .templates import (
+    acceptance_supported,
+    instantiate,
+    parameter_input_schema,
+    parameterized_graph,
+)
 
 
 class ReusableWorkflows:
@@ -376,8 +381,21 @@ class ReusableWorkflows:
             )
             return
         with self.observer.span("workflow.validation"):
+            prepared_graph = None
+            prepared_goal = None
             try:
-                parameterized_graph(run.goal, graph, proposal)
+                prepared_graph = parameterized_graph(run.goal, graph, proposal)
+                prepared_goal = GoalSpec.model_validate(
+                    {
+                        **run.goal.model_dump(mode="json"),
+                        "inputs": {
+                            "workflow_parameters": {
+                                p.name: p.source_value for p in proposal.parameters
+                            }
+                        },
+                        "input_schema": parameter_input_schema(proposal),
+                    }
+                )
                 structural = True
                 reason = ""
             except (ValueError, KeyError, TypeError) as exc:
@@ -385,7 +403,19 @@ class ReusableWorkflows:
             verification = await self._ask(
                 "workflow_verify",
                 prompts.VERIFY,
-                {**data, "proposal": proposal.model_dump(mode="json", by_alias=True)},
+                {
+                    **data,
+                    "proposal": proposal.model_dump(mode="json", by_alias=True),
+                    "prepared_graph": prepared_graph.document()
+                    if prepared_graph is not None
+                    else None,
+                    "prepared_goal": prepared_goal.model_dump(
+                        mode="json", by_alias=True, exclude_none=True
+                    )
+                    if prepared_goal is not None
+                    else None,
+                    "structural_error": reason,
+                },
                 Verification,
             )
             supported = acceptance_supported(run.goal, verification, evidence)
@@ -481,6 +511,14 @@ class ReusableWorkflows:
             and set(d.required_side_effect_tools) <= set(request.policy.allowed_side_effect_tools)
         ]
         if not candidates:
+            self.observer.emit(
+                "workflow.resolve",
+                data={
+                    "status": "no_match",
+                    "reason": "no_enabled_compatible_candidate",
+                    "template_status_counts": await self._io(self.storage.status_counts),
+                },
+            )
             return WorkflowResolution(status="no_match", reason="not_found")
         match = await self._ask(
             "workflow_match",

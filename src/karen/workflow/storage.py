@@ -34,7 +34,7 @@ class Storage:
         finally:
             connection.close()
 
-    def start(self):
+    def prepare(self):
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self.root.is_symlink():
             raise ValueError("symlink_workflow_root")
@@ -44,29 +44,106 @@ class Storage:
             raise ValueError("symlink_workflow_index")
         fd = os.open(index, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
         os.close(fd)
+
+    def start(self):
+        self.prepare()
         with self.connection() as db:
             db.execute("PRAGMA journal_mode=WAL")
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS workflows (
-                    workflow_id TEXT, version INTEGER, status TEXT, path TEXT, digest TEXT,
-                    source_run_id TEXT, source_graph_hash TEXT, name TEXT,
-                    created_at TEXT, uses INTEGER DEFAULT 0, last_used TEXT,
-                    PRIMARY KEY(workflow_id,version), UNIQUE(source_run_id,source_graph_hash));
-                CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(workflow_id UNINDEXED, text);
-                CREATE TABLE IF NOT EXISTS outcomes (
-                    request_id TEXT, run_id TEXT, workflow_id TEXT, version INTEGER,
-                    result TEXT, PRIMARY KEY(request_id,run_id));
-            """)
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            if version > 3:
+                raise ValueError("unsupported_workflow_storage_version")
+            exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='workflows'").fetchone()
+            if exists and version < 3:
+                old_search = (
+                    {row[0]: row[1] for row in db.execute("SELECT workflow_id,text FROM search")}
+                    if db.execute("SELECT 1 FROM sqlite_master WHERE name='search'").fetchone()
+                    else {}
+                )
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("ALTER TABLE workflows RENAME TO workflows_legacy")
+                db.execute("DROP TABLE IF EXISTS search")
+            db.execute("""CREATE TABLE IF NOT EXISTS workflows (
+                workflow_id TEXT, version INTEGER, status TEXT, path TEXT, digest TEXT,
+                source_run_id TEXT, source_graph_hash TEXT, name TEXT,
+                created_at TEXT, uses INTEGER DEFAULT 0, last_used TEXT, review_key TEXT NOT NULL,
+                source_request_id TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(workflow_id,version), UNIQUE(source_run_id,source_graph_hash,review_key))""")
+            db.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(workflow_id UNINDEXED, version UNINDEXED, text)"
+            )
+            if exists and version < 3:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(workflows_legacy)")}
+                review = "review_key" if "review_key" in columns else "'legacy'"
+                request = "source_request_id" if "source_request_id" in columns else "''"
+                db.execute(
+                    "INSERT INTO workflows SELECT workflow_id,version,status,path,digest,source_run_id,source_graph_hash,name,created_at,uses,last_used,"
+                    + review
+                    + ","
+                    + request
+                    + " FROM workflows_legacy"
+                )
+                for row in db.execute("SELECT workflow_id,version,name FROM workflows"):
+                    db.execute(
+                        "INSERT INTO search VALUES(?,?,?)",
+                        (row[0], row[1], old_search.get(row[0], terms(row[2]))),
+                    )
+                db.execute("DROP TABLE workflows_legacy")
+                for row in db.execute(
+                    "SELECT * FROM workflows WHERE source_request_id=''"
+                ).fetchall():
+                    try:
+                        definition = self._read_definition(row)
+                    except (OSError, ValueError):
+                        continue
+                    db.execute(
+                        "UPDATE workflows SET source_request_id=? WHERE workflow_id=? AND version=?",
+                        (
+                            definition.source.get("request_id", ""),
+                            row["workflow_id"],
+                            row["version"],
+                        ),
+                    )
+            db.execute("""CREATE TABLE IF NOT EXISTS outcomes (
+                request_id TEXT, run_id TEXT, workflow_id TEXT, version INTEGER,
+                result TEXT, PRIMARY KEY(request_id,run_id))""")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS reviews (workflow_id TEXT,version INTEGER,algorithm TEXT,reason TEXT, PRIMARY KEY(workflow_id,version,algorithm))"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS workflow_request ON workflows(source_request_id)"
+            )
+            db.execute("PRAGMA user_version=3")
 
-    def known_source(self, run_id, graph_hash):
+    def known_source(self, run_id, graph_hash, review_key=None):
         with self.connection() as db:
             return (
                 db.execute(
-                    "SELECT 1 FROM workflows WHERE source_run_id=? AND source_graph_hash=?",
-                    (run_id, graph_hash),
+                    "SELECT 1 FROM workflows WHERE source_run_id=? AND source_graph_hash=? "
+                    "AND (? IS NULL OR review_key=? OR substr(review_key,1,length(?)+1)=?||':')",
+                    (run_id, graph_hash, review_key, review_key, review_key, review_key),
                 ).fetchone()
                 is not None
             )
+
+    def latest_source(self, run_id, graph_hash=None):
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT workflow_id,version,status FROM workflows WHERE source_run_id=? AND (? IS NULL OR source_graph_hash=?) ORDER BY version DESC LIMIT 1",
+                (run_id, graph_hash, graph_hash),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def reviewable(self, algorithm, limit=32):
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT workflow_id,version FROM workflows w WHERE status='candidate' "
+                "AND review_key<>? AND substr(review_key,1,?)<>? "
+                "AND version=(SELECT max(version) FROM workflows WHERE workflow_id=w.workflow_id) "
+                "AND NOT EXISTS(SELECT 1 FROM reviews r WHERE r.workflow_id=w.workflow_id AND r.version=w.version AND r.algorithm=?) "
+                "ORDER BY created_at LIMIT ?",
+                (algorithm, len(algorithm) + 1, algorithm + ":", algorithm, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def save(self, definition, status):
         directory = self.root / "definitions" / definition.workflow_id
@@ -97,7 +174,7 @@ class Storage:
             relative = str(path.relative_to(self.root))
             with self.connection() as db:
                 db.execute(
-                    "INSERT INTO workflows(workflow_id,version,status,path,digest,source_run_id,source_graph_hash,name,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO workflows(workflow_id,version,status,path,digest,source_run_id,source_graph_hash,name,created_at,review_key,source_request_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         definition.workflow_id,
                         definition.version,
@@ -108,14 +185,23 @@ class Storage:
                         definition.source["graph_hash"],
                         definition.proposal.name,
                         definition.created_at.isoformat(),
+                        definition.source.get(
+                            "review_key", definition.source.get("prompt_version", "legacy")
+                        ),
+                        definition.source.get("request_id", ""),
                     ),
                 )
                 description = " ".join(
                     [definition.proposal.purpose, *definition.proposal.applicability]
                 )
                 db.execute(
-                    "INSERT INTO search(workflow_id,text) VALUES(?,?)",
-                    (definition.workflow_id, terms(description)),
+                    "INSERT INTO search VALUES(?,?,?)",
+                    (definition.workflow_id, definition.version, terms(description)),
+                )
+                db.execute(
+                    "UPDATE workflows SET status='superseded' WHERE workflow_id=? AND version<>? "
+                    "AND (status='candidate' OR (?='enabled' AND status='enabled'))",
+                    (definition.workflow_id, definition.version, status),
                 )
             return {"path": relative, "digest": digest, "status": status}
         finally:
@@ -123,14 +209,17 @@ class Storage:
             # On an index failure the complete file is an unpublished orphan.
             # Loading only through the index prevents its accidental activation.
 
-    def load(self, workflow_id, version=None):
+    def load(self, workflow_id, version=None, enabled_only=True):
         with self.connection() as db:
             row = db.execute(
-                'SELECT * FROM workflows WHERE workflow_id=? AND status="enabled" AND (? IS NULL OR version=?) ORDER BY version DESC LIMIT 1',
-                (workflow_id, version, version),
+                'SELECT * FROM workflows WHERE workflow_id=? AND (?=0 OR status="enabled") AND (? IS NULL OR version=?) ORDER BY version DESC LIMIT 1',
+                (workflow_id, int(enabled_only), version, version),
             ).fetchone()
         if row is None:
             raise ValueError("workflow_unavailable")
+        return self._read_definition(row)
+
+    def _read_definition(self, row):
         path = self.root / row["path"]
         if not path.resolve().is_relative_to(self.root.resolve()) or any(
             p.is_symlink() for p in (path, path.parent, path.parent.parent)
@@ -141,7 +230,7 @@ class Storage:
         if len(data) > 512 * 1024 or hashlib.sha256(data).hexdigest() != row["digest"]:
             raise ValueError("definition_hash_mismatch")
         definition = Definition.model_validate_json(data)
-        if definition.workflow_id != workflow_id or definition.version != row["version"]:
+        if definition.workflow_id != row["workflow_id"] or definition.version != row["version"]:
             raise ValueError("definition_identity_mismatch")
         return definition
 
@@ -152,7 +241,7 @@ class Storage:
         query = " OR ".join('"' + token + '"' for token in tokens)
         with self.connection() as db:
             rows = db.execute(
-                "SELECT search.workflow_id FROM search JOIN workflows w ON w.workflow_id=search.workflow_id "
+                "SELECT search.workflow_id FROM search JOIN workflows w ON w.workflow_id=search.workflow_id AND w.version=search.version "
                 "WHERE search MATCH ? AND w.status='enabled' ORDER BY search.rank LIMIT 5",
                 (query,),
             ).fetchall()
@@ -205,3 +294,30 @@ class Storage:
                 row[0]: row[1]
                 for row in db.execute("SELECT status,count(*) FROM workflows GROUP BY status")
             }
+
+    def review_rejected(self, workflow_id, version, algorithm, reason):
+        with self.connection() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO reviews VALUES(?,?,?,?)",
+                (workflow_id, version, algorithm, reason),
+            )
+
+    def next_version(self, workflow_id):
+        directory = self.root / "definitions" / workflow_id
+        if directory.is_symlink() or directory.parent.is_symlink():
+            raise ValueError("symlink_definition")
+        # Skip complete but unpublished orphan versions left by failed transactions.
+        versions = [int(p.stem) for p in directory.glob("*.json") if p.stem.isdecimal()]
+        with self.connection() as db:
+            latest = db.execute(
+                "SELECT max(version) FROM workflows WHERE workflow_id=?", (workflow_id,)
+            ).fetchone()[0]
+        return max([latest or 0, *versions]) + 1
+
+    def latest_request(self, request_id):
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT workflow_id,version FROM workflows WHERE source_request_id=? ORDER BY created_at DESC,version DESC LIMIT 1",
+                (request_id,),
+            ).fetchone()
+        return dict(row) if row else None

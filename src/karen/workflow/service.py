@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo
 
 from dynamic_graph import GoalSpec, GraphSpec, ModelRequest
 from dynamic_graph.models.client import ModelCallError, expanded_output_budget
+from jsonschema import Draft202012Validator
+from jsonschema import ValidationError as JSONSchemaValidationError
 from pydantic import ValidationError
 
 from ..observability import Observer
@@ -26,6 +28,7 @@ from .contracts import (
     Verification,
     WorkflowResolution,
 )
+from .evidence import project_artifacts
 from .storage import Storage, encode
 from .templates import (
     acceptance_supported,
@@ -47,17 +50,47 @@ class ReusableWorkflows:
         self._accepting = False
 
     async def start(self):
-        await self._io(self.storage.start)
+        await self._io(self.storage.prepare)
         lock = self.storage.root / ".lock"
         self._lock_fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:
             fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            await self._io(self.storage.start)
         except BaseException:
             os.close(self._lock_fd)
             self._lock_fd = None
             raise
         self._accepting = True
         self._worker = asyncio.create_task(self._work())
+        try:
+            candidates = await self._io(self.storage.reviewable, prompts.PROMPT_VERSION)
+        except BaseException:
+            await self.close()
+            raise
+        for candidate in candidates:
+            try:
+                definition = await self._io(
+                    self.storage.load, candidate["workflow_id"], candidate["version"], False
+                )
+            except (ValueError, OSError) as exc:
+                self.observer.emit(
+                    "workflow.review",
+                    status="failed",
+                    data={**candidate, "reason": type(exc).__name__},
+                )
+                continue
+            self._submit(
+                "review",
+                {
+                    "workflow_id": definition.workflow_id,
+                    "version": definition.version,
+                    "run_id": definition.source["run_id"],
+                },
+                source={
+                    "trace_id": definition.source.get("trace_id"),
+                    "request_id": definition.source.get("request_id"),
+                },
+            )
 
     def submit(self, run: CompletedWorkflowRun):
         eligible = run.result.execution_status == "COMPLETED" and run.result.output_complete
@@ -71,14 +104,21 @@ class ReusableWorkflows:
             return {"accepted": False, "reason": "not_completed"}
         return self._submit("extract", run.model_copy(deep=True))
 
-    def _submit(self, kind, payload):
+    def _submit(self, kind, payload, *, source=None):
         job_id = uuid4().hex
         if not self._accepting or self._queue.full():
             reason = "queue_full" if self._accepting else "closed"
             self.observer.emit("workflow.submission", data={"accepted": False, "reason": reason})
             return {"accepted": False, "reason": reason}
         self._queue.put_nowait(
-            (kind, payload, job_id, uuid4().hex, self.observer.context(), time.monotonic())
+            (
+                kind,
+                payload,
+                job_id,
+                uuid4().hex,
+                source or self.observer.context(),
+                time.monotonic(),
+            )
         )
         self.observer.emit(
             "workflow.submission",
@@ -111,7 +151,7 @@ class ReusableWorkflows:
         try:
             if result.execution_status == "COMPLETED" and result.output_complete:
                 definition = await self._io(
-                    self.storage.load, payload["workflow_id"], payload["version"]
+                    self.storage.load, payload["workflow_id"], payload["version"], False
                 )
 
                 def load_goal():
@@ -164,29 +204,178 @@ class ReusableWorkflows:
             if payload["pause"]:
                 self.observer.emit("workflow.paused", data=payload)
 
-    def review_feedback(self, *, workflow, objective, text):
+    def review_feedback(
+        self,
+        *,
+        objective,
+        text,
+        workflow=None,
+        source_run_id=None,
+        source_event_id=None,
+        request_id=None,
+        source_request_id=None,
+    ):
         return self._submit(
-            "feedback", {"workflow": workflow, "previous_objective": objective, "text": text}
+            "feedback",
+            {
+                "workflow": workflow,
+                "previous_objective": objective,
+                "text": text,
+                "run_id": source_run_id,
+                "source_event_id": source_event_id,
+                "feedback_request_id": request_id,
+                "source_request_id": source_request_id,
+            },
         )
 
-    async def _feedback(self, data):
-        feedback = await self._ask("workflow_feedback", prompts.FEEDBACK, data, Feedback)
-        if (
-            feedback.rejects_previous_result
-            and feedback.evidence_quote.strip()
-            and feedback.evidence_quote in data["text"]
+    def _source_run(self, definition):
+        run_id = definition.source["run_id"]
+        if len(run_id) != 32 or any(c not in "0123456789abcdef" for c in run_id):
+            raise ValueError("invalid_source_run")
+        directory = self.runs_dir / run_id
+        if directory.is_symlink() or not directory.resolve().is_relative_to(
+            self.runs_dir.resolve()
         ):
-            workflow = data["workflow"]
-            await self._io(self.storage.pause, workflow["id"], workflow["version"])
+            raise ValueError("source_path_invalid")
+
+        def read(name, limit):
+            path = directory / name
+            if path.is_symlink():
+                raise ValueError("source_symlink")
+            with path.open("rb") as handle:
+                data = handle.read(limit + 1)
+            if len(data) > limit:
+                raise ValueError("source_budget_limit")
+            return data
+
+        from dynamic_graph import RunResult
+
+        goal = GoalSpec.model_validate_json(read("goal.json", 262144))
+        result = RunResult.model_validate_json(read("result.json", 4 * 1024 * 1024))
+        if (
+            result.graph_hash != definition.source["graph_hash"]
+            or result.execution_status != "COMPLETED"
+            or not result.output_complete
+        ):
+            raise ValueError("source_no_longer_valid")
+        messages = [
+            message
+            for message in goal.context.get("conversation", [])
+            if isinstance(message, dict)
+            and message.get("role") in {"user", "assistant"}
+            and isinstance(message.get("content"), str)
+        ]
+        return CompletedWorkflowRun(
+            text=next((m["content"] for m in messages if m["role"] == "user"), goal.objective),
+            messages=messages,
+            goal=goal,
+            result=result,
+            source_trace_id=definition.source.get("trace_id", ""),
+        )
+
+    async def _review(self, payload):
+        definition = await self._io(
+            self.storage.load, payload["workflow_id"], payload["version"], False
+        )
+        self.observer.emit(
+            "workflow.review",
+            data={
+                "workflow_id": definition.workflow_id,
+                "previous_version": definition.version,
+                "reason": "algorithm_changed",
+            },
+        )
+        run = await self._io(self._source_run, definition)
+        await self._extract(run)
+
+    async def _feedback(self, data):
+        workflow = data.get("workflow")
+        if workflow is None and data.get("run_id"):
+            row = await self._io(self.storage.latest_source, data["run_id"])
+            workflow = {"id": row["workflow_id"], "version": row["version"]} if row else None
+        if workflow is None and data.get("source_request_id"):
+            row = await self._io(self.storage.latest_request, data["source_request_id"])
+            workflow = {"id": row["workflow_id"], "version": row["version"]} if row else None
+        if workflow is None:
+            self.observer.emit("workflow.feedback", data={"reason": "no_linked_definition"})
+            return
+        definition = await self._io(self.storage.load, workflow["id"], workflow["version"], False)
+        feedback = await self._ask(
+            "workflow_feedback",
+            prompts.FEEDBACK,
+            {
+                **data,
+                "criteria": [c.model_dump() for c in definition.goal_template.success_criteria],
+                "acceptance": definition.acceptance.model_dump(),
+            },
+            Feedback,
+        )
+        valid_quote = (
+            bool(feedback.evidence_quote.strip()) and feedback.evidence_quote in data["text"]
+        )
+        self.observer.emit(
+            "workflow.feedback",
+            data={
+                "workflow_id": definition.workflow_id,
+                "version": definition.version,
+                "valid_quote": valid_quote,
+                "feedback": feedback,
+            },
+        )
+        if not valid_quote:
+            return
+        if feedback.rejects_previous_result:
+            await self._io(self.storage.pause, definition.workflow_id, definition.version)
             self.observer.emit(
                 "workflow.paused",
                 data={
-                    "workflow_id": workflow["id"],
-                    "version": workflow["version"],
+                    "workflow_id": definition.workflow_id,
+                    "version": definition.version,
                     "reason": "user_rejected_result",
                     "feedback": feedback,
                 },
             )
+            return
+        unknown = {c.criterion_id for c in definition.acceptance.criteria if c.verdict == "unknown"}
+        accepted = set(feedback.accepted_criteria)
+        if not accepted or not accepted <= unknown:
+            return
+        evidence = {
+            "quote": feedback.evidence_quote,
+            "criterion_ids": sorted(accepted),
+            "source_role": "user",
+            "source_run_id": definition.source["run_id"],
+            "feedback_run_id": data.get("run_id"),
+            "source_event_id": data.get("source_event_id"),
+            "request_id": data.get("feedback_request_id"),
+            "trace_id": self.observer.context().get("source_trace_id"),
+            "recorded_at": datetime.now(UTC).isoformat(),
+        }
+        review_key = (
+            prompts.PROMPT_VERSION
+            + ":"
+            + hashlib.sha256(
+                encode(
+                    {
+                        "quote": evidence["quote"],
+                        "criteria": evidence["criterion_ids"],
+                        "event": evidence["source_event_id"],
+                        "request": evidence["request_id"],
+                    }
+                )
+            ).hexdigest()
+        )
+        self.observer.emit(
+            "workflow.review",
+            data={
+                "workflow_id": definition.workflow_id,
+                "previous_version": definition.version,
+                "reason": "user_acceptance",
+                "criterion_ids": sorted(accepted),
+            },
+        )
+        run = await self._io(self._source_run, definition)
+        await self._extract(run, review_key=review_key, extra_evidence=evidence)
 
     async def _io(self, operation, *args):
         task = asyncio.create_task(asyncio.to_thread(operation, *args))
@@ -240,6 +429,8 @@ class ReusableWorkflows:
                         async with asyncio.timeout(120):
                             if kind == "extract":
                                 await self._extract(payload)
+                            elif kind == "review":
+                                await self._review(payload)
                             elif kind == "feedback":
                                 await self._feedback(payload)
                             else:
@@ -258,22 +449,37 @@ class ReusableWorkflows:
     async def _ask(self, role, instruction, data, contract):
         if len(encode(data)) > 256 * 1024:
             raise ValueError("model_input_budget")
+        schema = contract.model_json_schema(by_alias=True)
+        if contract is Proposal:
+            data, schema = Proposal.extraction_request(data)
         budget = 8192
         for attempt in range(2):
             try:
+                if len(encode(data)) > 256 * 1024:
+                    raise ValueError("model_input_budget")
                 response = await self.model.generate(
                     ModelRequest(
                         role=role,
                         system_instruction=prompts.SYSTEM,
                         task_instruction=instruction,
                         input_data=data,
-                        output_schema=contract.model_json_schema(by_alias=True),
+                        output_schema=schema,
                         timeout_seconds=60,
                         max_output_tokens=budget,
                     )
                 )
-                return contract.model_validate(response.payload)
-            except (ValidationError, ModelCallError) as exc:
+                Draft202012Validator(schema).validate(response.payload)
+                try:
+                    return (
+                        Proposal.from_extraction_payload(response.payload)
+                        if contract is Proposal
+                        else contract.model_validate(response.payload)
+                    )
+                except ValueError as exc:
+                    if isinstance(exc, ValidationError):
+                        raise
+                    raise JSONSchemaValidationError(str(exc)) from exc
+            except (ValidationError, JSONSchemaValidationError, ModelCallError) as exc:
                 code = exc.code if isinstance(exc, ModelCallError) else "INVALID_CONTRACT"
                 if attempt or code not in {
                     "INVALID_CONTRACT",
@@ -283,9 +489,25 @@ class ReusableWorkflows:
                     raise
                 if code == "MODEL_RESPONSE_TRUNCATED":
                     budget = expanded_output_budget(budget, self.model)
+                if isinstance(exc, JSONSchemaValidationError):
+                    data = {
+                        **data,
+                        "contract_feedback": {
+                            "path": list(exc.absolute_path),
+                            "validator": str(exc.validator),
+                            "message": exc.message[:1200],
+                        },
+                    }
+                elif isinstance(exc, ValidationError):
+                    data = {
+                        **data,
+                        "contract_feedback": {
+                            "errors": exc.errors(include_input=False, include_url=False)[:5]
+                        },
+                    }
                 instruction = (
                     instruction
-                    + "\nRepair the response to conform exactly to the supplied output schema."
+                    + "\nRepair the response to conform exactly to the supplied output schema and contract_feedback."
                 )
                 self.observer.emit(
                     "workflow.model_retry", data={"reason": code, "max_output_tokens": budget}
@@ -324,6 +546,8 @@ class ReusableWorkflows:
         graph = GraphSpec.model_validate_json(data)
         snapshot = json.loads(read("capability_snapshot.json", 262144))
         artifacts = []
+        read_bytes = 0
+        skipped = 0
         for artifact in result.artifacts[:32]:
             if artifact.get("commit_state") != "committed":
                 continue
@@ -340,31 +564,68 @@ class ReusableWorkflows:
                 and not path.is_symlink()
             ):
                 try:
+                    limit = min(4 * 1024 * 1024, 8 * 1024 * 1024 - read_bytes)
+                    if limit <= 0:
+                        skipped += 1
+                        continue
                     with path.open("rb") as handle:
-                        raw = handle.read(32769)
-                    if len(raw) <= 32768:
-                        artifacts.append(json.loads(raw))
+                        raw = handle.read(limit + 1)
+                    read_bytes += len(raw)
+                    if len(raw) <= limit:
+                        document = json.loads(raw)
+                        if isinstance(document, dict):
+                            artifacts.append(document)
+                    else:
+                        skipped += 1
                 except (OSError, ValueError):
-                    pass
+                    skipped += 1
+        artifacts, coverage = project_artifacts(artifacts, result.outputs)
+        coverage["unread"] = skipped
         return (
             graph,
             {
                 "outputs": result.outputs,
                 "node_records": result.node_records,
                 "artifacts": artifacts,
+                "artifact_coverage": coverage,
             },
             snapshot,
         )
 
-    async def _extract(self, run):
-        if await self._io(self.storage.known_source, run.result.run_id, run.result.graph_hash):
+    async def _extract(self, run, *, review_key=None, extra_evidence=None):
+        review_key = review_key or prompts.PROMPT_VERSION
+        if await self._io(
+            self.storage.known_source, run.result.run_id, run.result.graph_hash, review_key
+        ):
             self.observer.emit("workflow.persistence", data={"reason": "duplicate_source"})
             return
+        previous = await self._io(
+            self.storage.latest_source, run.result.run_id, run.result.graph_hash
+        )
+        prior = (
+            await self._io(self.storage.load, previous["workflow_id"], previous["version"], False)
+            if previous
+            else None
+        )
+        if previous and previous["status"] == "paused":
+            self.observer.emit("workflow.review", data={"reason": "paused_requires_new_source"})
+            return
         graph, evidence, snapshot = await self._io(self._load_run, run)
+        user_evidence = list(prior.acceptance_evidence) if prior else []
+        if extra_evidence and extra_evidence not in user_evidence:
+            user_evidence.append(extra_evidence)
+        evidence["user_feedback"] = user_evidence
+        # Keep task constraints, not unrelated memory or full old conversations.
+        goal_data = run.goal.model_dump(mode="json")
+        goal_data["context"] = {
+            key: value
+            for key, value in run.goal.context.items()
+            if key in {"constraints", "timezone", "time_context", "reference_time_utc"}
+        }
         data = {
             "request": run.text,
             "messages": run.messages,
-            "goal": run.goal.model_dump(mode="json"),
+            "goal": goal_data,
             "graph": graph.document(),
             "evidence": evidence,
         }
@@ -379,49 +640,99 @@ class ReusableWorkflows:
                 "workflow.discovery",
                 data={"reason": "not_reusable", "explanation": proposal.reason},
             )
+            if prior:
+                await self._io(
+                    self.storage.review_rejected,
+                    prior.workflow_id,
+                    prior.version,
+                    prompts.PROMPT_VERSION,
+                    proposal.reason,
+                )
             return
         with self.observer.span("workflow.validation"):
             prepared_graph = None
             prepared_goal = None
-            try:
-                prepared_graph = parameterized_graph(run.goal, graph, proposal)
-                prepared_goal = GoalSpec.model_validate(
+            verification = Verification(
+                generalizable=False,
+                reason="No reusable proposal verified",
+                criteria=[
                     {
-                        **run.goal.model_dump(mode="json"),
-                        "inputs": {
-                            "workflow_parameters": {
-                                p.name: p.source_value for p in proposal.parameters
-                            }
-                        },
-                        "input_schema": parameter_input_schema(proposal),
+                        "criterion_id": c.id,
+                        "verdict": "unknown",
+                        "evidence": [],
+                        "reason": "No reusable proposal verified",
                     }
-                )
-                structural = True
-                reason = ""
-            except (ValueError, KeyError, TypeError) as exc:
-                structural, reason = False, str(exc)
-            verification = await self._ask(
-                "workflow_verify",
-                prompts.VERIFY,
-                {
-                    **data,
-                    "proposal": proposal.model_dump(mode="json", by_alias=True),
-                    "prepared_graph": prepared_graph.document()
-                    if prepared_graph is not None
-                    else None,
-                    "prepared_goal": prepared_goal.model_dump(
-                        mode="json", by_alias=True, exclude_none=True
-                    )
-                    if prepared_goal is not None
-                    else None,
-                    "structural_error": reason,
-                },
-                Verification,
+                    for c in run.goal.success_criteria
+                ],
             )
+            for repair in range(3):
+                try:
+                    prepared_graph = parameterized_graph(run.goal, graph, proposal)
+                    prepared_goal = GoalSpec.model_validate(
+                        {
+                            **run.goal.model_dump(mode="json"),
+                            "context": goal_data["context"],
+                            "inputs": {
+                                **proposal.fixed_inputs,
+                                "workflow_parameters": {
+                                    p.name: p.source_value for p in proposal.parameters
+                                },
+                            },
+                            "input_schema": parameter_input_schema(proposal),
+                        }
+                    )
+                    structural, reason = True, ""
+                except (ValueError, KeyError, TypeError) as exc:
+                    structural, reason = False, str(exc)
+                    prepared_graph, prepared_goal = None, None
+                if structural or repair == 2:
+                    verification = await self._ask(
+                        "workflow_verify",
+                        prompts.VERIFY,
+                        {
+                            # Structural compilation already checks every source location.
+                            # Supplying both full graphs makes the semantic reviewer mistake
+                            # removed source literals for retained runtime instructions.
+                            **{key: value for key, value in data.items() if key != "graph"},
+                            "proposal": proposal.model_dump(mode="json", by_alias=True),
+                            "prepared_graph": prepared_graph.document()
+                            if prepared_graph is not None
+                            else None,
+                            "prepared_goal": prepared_goal.model_dump(
+                                mode="json", by_alias=True, exclude_none=True
+                            )
+                            if prepared_goal is not None
+                            else None,
+                            "structural_error": reason,
+                        },
+                        Verification,
+                    )
+                    if structural and verification.generalizable:
+                        break
+                if repair == 2 or not proposal.reusable:
+                    break
+                feedback = (
+                    reason
+                    if not structural
+                    else "generalization_rejected: " + verification.reason[:2000]
+                )
+                self.observer.emit(
+                    "workflow.extraction_repair", data={"reason": feedback, "attempt": repair + 1}
+                )
+                proposal = await self._ask(
+                    "workflow_extract",
+                    prompts.REPAIR,
+                    {
+                        **data,
+                        "previous_proposal": proposal.model_dump(mode="json", by_alias=True),
+                        "validation_error": feedback,
+                    },
+                    Proposal,
+                )
             supported = acceptance_supported(run.goal, verification, evidence)
             status = (
                 "enabled"
-                if structural and verification.generalizable and supported
+                if proposal.reusable and structural and verification.generalizable and supported
                 else "candidate"
             )
             self.observer.emit(
@@ -437,9 +748,10 @@ class ReusableWorkflows:
         clean_goal = run.goal.model_copy(
             update={"context": {}, "request_id": None, "parent_run_id": None}
         )
+        workflow_id = prior.workflow_id if prior else uuid4().hex
         definition = Definition(
-            workflow_id=uuid4().hex,
-            version=1,
+            workflow_id=workflow_id,
+            version=await self._io(self.storage.next_version, workflow_id),
             created_at=datetime.now(UTC),
             proposal=proposal,
             goal_template=clean_goal,
@@ -459,6 +771,7 @@ class ReusableWorkflows:
                 }
             ),
             acceptance=verification,
+            acceptance_evidence=user_evidence,
             validation_errors=[] if structural else [reason],
             source={
                 "run_id": run.result.run_id,
@@ -466,6 +779,7 @@ class ReusableWorkflows:
                 "request_id": run.goal.request_id or "",
                 "trace_id": run.source_trace_id,
                 "prompt_version": prompts.PROMPT_VERSION,
+                "review_key": review_key,
                 "extractor_model": str(getattr(self.model, "metadata", {}).get("model", "unknown")),
             },
         )
@@ -476,7 +790,8 @@ class ReusableWorkflows:
                 data={
                     **published,
                     "workflow_id": definition.workflow_id,
-                    "version": 1,
+                    "version": definition.version,
+                    "previous_version": prior.version if prior else None,
                     "name": proposal.name,
                 },
             )
@@ -538,11 +853,12 @@ class ReusableWorkflows:
                         "purpose": d.proposal.purpose,
                         "applicability": d.proposal.applicability,
                         "exclusions": d.proposal.exclusions,
+                        "fixed_inputs": d.proposal.fixed_inputs,
                         "parameters": [
                             {
                                 k: v
                                 for k, v in p.model_dump(by_alias=True).items()
-                                if k not in {"source_value", "sites", "input_field"}
+                                if k not in {"source_value", "sites", "input_field", "text_slots"}
                             }
                             for p in d.proposal.parameters
                         ],

@@ -16,6 +16,7 @@ dependencies = [
   "numpy>=2,<3",
   "jieba>=0.42,<1",
   "pydantic>=2.11,<3",
+  "jsonschema>=4.23,<5",
   "prompt-toolkit>=3.0,<4",
   "rich>=14,<15",
   "tzlocal>=5.3,<6",

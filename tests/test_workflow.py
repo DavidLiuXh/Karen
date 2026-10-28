@@ -300,7 +300,13 @@ async def test_insufficient_proof_remains_candidate(tmp_path, case):
     workflows, engine, _, _, _ = await discover(tmp_path, model=model)
     try:
         with workflows.storage.connection() as db:
-            assert db.execute("SELECT status FROM workflows").fetchone()[0] == "candidate"
+            row = db.execute("SELECT status FROM workflows").fetchone()
+            if case == "stale_instruction":
+                # Invalid source values now fail the source-bound output schema
+                # before a definition can be published.
+                assert row is None
+            else:
+                assert row[0] == "candidate"
         assert (await workflows.resolve(request(engine))).status == "no_match"
     finally:
         await workflows.close()
@@ -787,5 +793,30 @@ async def test_no_lexical_overlap_still_has_bounded_semantic_candidates(tmp_path
             request(engine, text="按上次的办法处理一下这一天的数据")
         )
         assert resolution.status == "matched"
+    finally:
+        await workflows.close()
+
+
+async def test_verification_receives_the_prepared_graph_and_matching_input_schema(tmp_path):
+    model = WorkflowModel()
+    # Source has a literal; prepared graph must expose its promoted reference.
+    model.proposal["parameters"][0]["sites"] = []
+    workflows, engine, model, _, _ = await discover(tmp_path, model=model)
+    try:
+        verification = next(r for r in model.requests if r.role == "workflow_verify")
+        prepared = verification.input_data["prepared_graph"]
+        inputs = verification.input_data["prepared_goal"]["inputs"]
+        assert "graph" not in verification.input_data
+        assert (
+            prepared["nodes"][0]["input_bindings"]["value"]["pointer"]
+            == "/workflow_parameters/date"
+        )
+        assert inputs == {"workflow_parameters": {"date": DAY}}
+        assert verification.input_data["structural_error"] == ""
+        resolution = await workflows.resolve(request(engine))
+        assert (
+            resolution.goal.input_schema.document()
+            == verification.input_data["prepared_goal"]["input_schema"]
+        )
     finally:
         await workflows.close()

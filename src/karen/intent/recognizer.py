@@ -303,6 +303,7 @@ class IntentSession(IntentContract):
     clarification_items: tuple[ClarificationItem, ...] = ()
     displayed_question_ids: tuple[str, ...] = ()
     workflow_pending: dict[str, JsonValue] | None = None
+    completed_run_id: str | None = None
     goal: GoalSpec | None = None
     reply: Text | None = None
     routing: InputRouting | None = None

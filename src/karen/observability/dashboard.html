@@ -438,6 +438,10 @@
       "流程参数绑定": "Workflow parameter binding",
       "流程执行": "Workflow execution",
       "流程已暂停": "Workflow paused",
+      "流程重审": "Workflow review",
+      "流程反馈证据": "Workflow feedback evidence",
+      "流程提取修正": "Workflow extraction repair",
+      "superseded": "Superseded",
       "candidate": "Candidate",
       "enabled": "Enabled",
       "paused": "Paused",
@@ -511,7 +515,7 @@
       const saved = localStorage.getItem("karen.observability.language");
       if (["zh-CN", "en"].includes(saved)) language = saved;
     } catch {}
-    const workflowStates = {candidate: "候选", enabled: "已启用", paused: "已暂停", queued: "排队中", running: "运行中", completed: "已完成", failed: "失败", interrupted_unknown: "已中断／状态未知"};
+    const workflowStates = {superseded: "已替代", candidate: "候选", enabled: "已启用", paused: "已暂停", queued: "排队中", running: "运行中", completed: "已完成", failed: "失败", interrupted_unknown: "已中断／状态未知"};
     function t(text) {
       return language === "en" ? (english[text] ?? text) : (workflowStates[text] ?? text);
     }
@@ -549,6 +553,9 @@
       "workflow.parameter_binding": "流程参数绑定",
       "workflow.execution": "流程执行",
       "workflow.paused": "流程已暂停",
+      "workflow.review": "流程重审",
+      "workflow.feedback": "流程反馈证据",
+      "workflow.extraction_repair": "流程提取修正",
       "memory.submitted": "记忆入队",
       "memory.persisted": "原文已持久化",
       "memory.persistence_failed": "原文持久化失败",
@@ -677,7 +684,7 @@
       const query = document.querySelector("#workflowFilter").value.toLowerCase();
       for (const definition of data.definitions || []) {
         if (query && !JSON.stringify(definition).toLowerCase().includes(query)) continue;
-        payload(holder, definition.name + " · " + t(definition.status), definition, "workflow-" + definition.workflow_id);
+        payload(holder, definition.name + " · v" + definition.version + " · " + t(definition.status), definition, "workflow-" + definition.workflow_id + "-" + definition.version);
       }
       for (const job of data.jobs || []) {
         if (query && !JSON.stringify(job).toLowerCase().includes(query)) continue;

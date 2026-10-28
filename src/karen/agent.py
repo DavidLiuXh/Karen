@@ -96,6 +96,7 @@ class Karen:
         received_at: datetime | None = None,
     ) -> TaskTurn:
         previous_goal = session.goal
+        previous_run_id = session.completed_run_id
         if session.completed:
             session = session.new_request()
         from .intent.recognizer import Message
@@ -144,18 +145,15 @@ class Karen:
                             ),
                         },
                     )
-                    if (
-                        self.workflows is not None
-                        and previous_goal is not None
-                        and previous_goal.context.get("workflow")
-                    ):
-                        self.workflows.review_feedback(
-                            workflow=previous_goal.context["workflow"],
-                            objective=previous_goal.objective,
-                            text=user_input,
-                        )
                     turn = await self._advance_turn(
-                        session, user_input, policy, cancellation_token, trace_id, received_at
+                        session,
+                        user_input,
+                        policy,
+                        cancellation_token,
+                        trace_id,
+                        received_at,
+                        previous_goal=previous_goal,
+                        previous_run_id=previous_run_id,
                     )
                     if turn.result is not None:
                         outcome["outcome"] = turn.result.execution_status
@@ -174,12 +172,35 @@ class Karen:
                     return turn
 
     async def _advance_turn(
-        self, session, user_input, policy, cancellation_token, trace_id, received_at
+        self,
+        session,
+        user_input,
+        policy,
+        cancellation_token,
+        trace_id,
+        received_at,
+        *,
+        previous_goal=None,
+        previous_run_id=None,
     ):
         warnings, recalled = [], None
         receipt = self._capture(
             session, "user_message", {"content": user_input}, warnings, occurred_at=received_at
         )
+        if (
+            self.workflows is not None
+            and previous_goal is not None
+            and (previous_run_id or previous_goal.context.get("workflow") or previous_goal.request_id)
+        ):
+            self.workflows.review_feedback(
+                workflow=previous_goal.context.get("workflow"),
+                objective=previous_goal.objective,
+                text=user_input,
+                source_run_id=previous_run_id,
+                source_event_id=receipt.event_id if receipt else None,
+                request_id=session.request_id,
+                source_request_id=previous_goal.request_id,
+            )
         if self.memory is not None and (
             session.routing.handling == "assess" or "question" in session.routing.input_types
         ):
@@ -391,4 +412,11 @@ class Karen:
                     source_trace_id=trace_id,
                 )
             )
+        session = session.model_copy(
+            update={
+                "completed_run_id": result.run_id
+                if result.execution_status == "COMPLETED" and result.output_complete
+                else None
+            }
+        )
         return TaskTurn(session, result, recalled, tuple(warnings), trace_id)

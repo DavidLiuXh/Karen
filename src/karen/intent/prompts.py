@@ -327,3 +327,63 @@ references 中恰好返回每个待核查 expression 一次，不添加其他指
 不重新输出 known_referents、questions 或筛选标准；程序保留未涉及疑点的初评信息。
 按 ClarityReview schema 返回 references、requirement_conflicts、resolved_conflicts 和简短 reason。
 """
+
+
+# Model-facing schema field descriptions.
+
+GOAL_DRAFT_SUPPORTING_FACTS_DESCRIPTION = '先列出与本轮目标相关、由当前输入或记忆原文支持的具体事实，再形成目标和验收条件；无相关事实时为空。'
+
+GOAL_DRAFT_OUTPUT_SCHEMA_DESCRIPTION = '未指定或 null 时使用引擎默认 answer/evidence/limitations 格式；自定义 schema 的根为 object。'
+
+DIRECT_ASSESSMENT_SUPPORTING_FACTS_DESCRIPTION = '先列出当前输入或记忆原文支持且与问题相关的事实，再形成 decision；无相关事实时为空。'
+
+REFERENCE_ASSESSMENT_REQUIRES_UNIQUE_RESOLUTION_DESCRIPTION = '只有交付必须先选定唯一对象才为 true；文本解释可给出有依据的推断或歧义结论时为 false，不把分析对象的歧义当成用户缺少信息。'
+
+CLARITY_QUESTION_QUESTION_ID_DESCRIPTION = '已有待决问题的稳定标识；新的缺口留空。'
+
+CLARITY_QUESTION_BLOCKING_REASON_DESCRIPTION = '具体说明缺口会改变哪个答案、操作对象或交付要求，以及为何不能从已有证据解决。'
+
+CLARITY_QUESTION_SUBJECT_DESCRIPTION = '该问题涉及的实体原名；unknown_identity 时必填。'
+
+CLARITY_QUESTION_LOOKUP_SCOPE_DESCRIPTION = '用户已明确给出的所属作品/项目名称，照抄原词；没有则为空。'
+
+CLARITY_QUESTION_SCOPE_EVIDENCE_DESCRIPTION = '同时包含 subject、lookup_scope 及所属关系的连续原话；没有定位范围时为空。'
+
+REQUIREMENT_CONFLICT_FIRST_REQUIREMENT_DESCRIPTION = '互不兼容的第一项当前要求，连续引用用户原话。'
+
+REQUIREMENT_CONFLICT_SECOND_REQUIREMENT_DESCRIPTION = '互不兼容的第二项当前要求，连续引用用户原话。'
+
+REQUIREMENT_CONFLICT_QUESTION_DESCRIPTION = '只用一个简短问题询问应修正或采用哪项要求，不展开题目解析。'
+
+RESOLVED_CONFLICT_EVIDENCE_QUOTE_DESCRIPTION = '支持撤销阻断的连续用户原文。'
+
+RESOLVED_CONFLICT_RESOLUTION_BASIS_DESCRIPTION = '指出满足全部约束的具体兼容解释，或说明请求本身只要求分析矛盾；不能只声称没有冲突。'
+
+QUESTION_UPDATE_EVIDENCE_QUOTE_DESCRIPTION = '已回答/撤销引用提问后的用户原话；不再必要引用支持可行交付的本任务用户原话；待回答时为空。'
+
+CLARITY_ASSESSMENT_QUESTION_UPDATES_DESCRIPTION = '每个 pending 问题恰好更新一次；已解决问题可重复确认完全相同的状态与引文，不能改写。未回答仍 pending，不能因只回答其他问题就删除。'
+
+CLARITY_ASSESSMENT_REQUIREMENT_CONFLICTS_DESCRIPTION = '只列出阻碍用户实际要求的交付的未解决冲突；仅分析矛盾时材料的冲突不是交付阻碍。'
+
+CLARITY_ASSESSMENT_EXTERNAL_INFORMATION_NEEDED_DESCRIPTION = '对象与查证问题明确，但尚需外部检索的身份/属性/资料；不是用户必须补充的信息。'
+
+CLARITY_ASSESSMENT_SELECTION_CRITERIA_REQUIRED_DESCRIPTION = '主观选择需要用户实质筛选标准为 true；不能因产物是文字建议而当成普通草稿。'
+
+CLARITY_ASSESSMENT_QUESTIONS_DESCRIPTION = '仅填写缺失后无法给出任何符合已知要求的有效回应/方案的必要问题。开放式推荐已有相关偏好且至少一种方案可行时为空；不能要求用户先决定是否需要其他类别，或补某个未选备选方案的条件。'
+
+
+PENDING_QUESTION_REASON = '此前的必要问题尚未得到回答或撤销。'
+
+ROUTING_TASK_INSTRUCTION = '确定输入类型、与待澄清任务的关系及处理方式；不要生成回复、目标或执行计划。'
+
+DIRECT_RESPONSE_TASK_INSTRUCTION = '直接回应本轮输入；必要信息缺失时提出简短澄清。'
+
+EXTERNAL_INFORMATION_REQUIRED_REASON = '清晰度检查发现需要核查外部资料。'
+
+REQUIREMENTS_CONFLICT_REASON = '原始要求不能同时满足，需要用户修正。'
+
+UNIQUE_REFERENCE_REQUIRED_REASON = '必须选择唯一指代才能确定本次答案或操作对象。'
+
+SELECTION_CRITERIA_REQUIRED_REASON = '缺少实质筛选标准。'
+
+SCOPED_SUBJECT = "{scope}中的{subject}"

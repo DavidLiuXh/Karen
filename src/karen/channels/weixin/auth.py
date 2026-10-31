@@ -11,6 +11,7 @@ from pathlib import Path
 
 import qrcode
 
+from ...message import messages
 from .api import API_URL, ILinkClient, WeixinError, trusted_url
 
 
@@ -94,7 +95,7 @@ def display_qr(content):
     qr = qrcode.QRCode(border=2)
     qr.add_data(content)
     qr.make(fit=True)
-    print("请使用本人微信扫描二维码，并在手机上确认绑定 Karen：", file=sys.stderr)
+    print(messages.WEIXIN_QR_LOGIN, file=sys.stderr)
     qr.print_ascii(out=sys.stderr, invert=True)
 
 

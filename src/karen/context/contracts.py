@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from pydantic_core import PydanticCustomError
 
+from . import prompts as prompt_text
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -360,46 +362,35 @@ class QueryAnalysis(Contract):
     kind: Literal["relevance", "facts", "detail", "collection"] = Field(
         default="relevance",
         description=(
-            "facts=用户持续个人属性/偏好查询，包含属性列表；detail=具体经历、对象参数/进度、"
-            "所需历史数字及其计算；"
-            "collection=仅枚举/统计 Karen 任务或对话；relevance=其他任务的相关上下文。"
-            "个人事件的数量、持续时间、旅行天数、剩余数量都不是 Karen 任务统计，使用 detail；"
-            "个人爱好列表用 facts，无需历史时间范围。"
+            prompt_text.QUERY_ANALYSIS_KIND_DESCRIPTION
         ),
     )
     dialogue_dependency: Literal["none", "current_task", "needed", "uncertain"] = Field(
         default="none",
         description=(
-            "none=独立输入；current_task=指代可由提供的 current_task_messages 解析，"
-            "如回答当前任务的澄清问题；needed=必须从当前任务之外的历史补查；"
-            "uncertain=无法确定是否需要当前任务之外的历史。已有澄清链不需要再次从记忆确认。"
+            prompt_text.QUERY_ANALYSIS_DIALOGUE_DEPENDENCY_DESCRIPTION
         ),
     )
     requires_task_selection: bool = Field(
         default=False,
         description=(
-            "是否必须唯一选定当前任务之外的旧任务/操作对象，才能继承其约定或继续操作。"
-            "仅从历史读取事实、偏好或经历为 false，即使 dialogue_dependency=needed；"
-            "需要执行旧任务或继承旧约定且当前上下文无法定位时为 true。"
+            prompt_text.QUERY_ANALYSIS_REQUIRES_TASK_SELECTION_DESCRIPTION
         ),
     )
     time_mode: Literal["current", "effective_at", "known_at", "timeline", "unspecified"] = Field(
         default="current",
         description=(
-            "记忆的时间口径。current=当前事实；effective_at=事实在指定时点的有效状态；"
-            "known_at=截至指定时点已知的记忆；timeline=变化过程；unspecified=无法确定。"
-            "effective_at/known_at 必须提供带时区的 at。新任务的目标日期不等于记忆时间口径。"
+            prompt_text.QUERY_ANALYSIS_TIME_MODE_DESCRIPTION
         ),
     )
     at: datetime | None = Field(
         default=None,
-        description="effective_at/known_at 所指的显式、带时区时点；不能用 time_range 的起点擅自填充。",
+        description=prompt_text.QUERY_ANALYSIS_AT_DESCRIPTION,
     )
     time_range: TimeRange | None = Field(
         default=None,
         description=(
-            "按原始事件发生时间筛选历史记录的左闭右开区间，起止必须带时区。"
-            "例如‘昨天问过哪些问题’；不是新任务的执行或目标日期。没有历史时间筛选要求时为 null。"
+            prompt_text.QUERY_ANALYSIS_TIME_RANGE_DESCRIPTION
         ),
     )
     entities: list[str] = Field(default_factory=list)
@@ -407,8 +398,7 @@ class QueryAnalysis(Contract):
     collection_target: Literal["tasks", "interactions"] = Field(
         default="interactions",
         description=(
-            "collection 的枚举对象：tasks=只统计有执行结果的任务；"
-            "interactions=用户与助手的交流，包含普通对话和任务，同一请求只计一次。"
+            prompt_text.QUERY_ANALYSIS_COLLECTION_TARGET_DESCRIPTION
         ),
     )
     task_status: Literal["COMPLETED", "FAILED", "CANCELLED"] | None = None
@@ -437,7 +427,7 @@ class QueryAnalysis(Contract):
 class RankedCandidate(Contract):
     memory_id: str
     relevance: Literal["relevant", "uncertain", "irrelevant"]
-    reason: str = Field(description="说明该记忆为当前请求补充了什么必要信息，或为何没有增量价值。")
+    reason: str = Field(description=prompt_text.RANKED_CANDIDATE_REASON_DESCRIPTION)
 
 
 class Ranking(Contract):

@@ -29,8 +29,10 @@ from pydantic import (
 )
 from tzlocal import get_localzone_name
 
+from ..message import messages
 from ..observability import Observer
 from ..prompt.prompts import RESPONSE_INSTRUCTION
+from . import prompts as prompt_text
 from .prompts import (
     CLARITY_INSTRUCTION,
     CLARITY_REVIEW_INSTRUCTION,
@@ -74,7 +76,7 @@ class GoalDraft(IntentContract):
     evidence_coverage: list[EvidenceUse] = Field(default_factory=list)
     supporting_facts: list[Text] = Field(
         default_factory=list,
-        description="先列出与本轮目标相关、由当前输入或记忆原文支持的具体事实，再形成目标和验收条件；无相关事实时为空。",
+        description=prompt_text.GOAL_DRAFT_SUPPORTING_FACTS_DESCRIPTION,
     )
     objective: Text
     success_criteria: list[Text] = Field(min_length=1)
@@ -83,7 +85,7 @@ class GoalDraft(IntentContract):
     input_schema: SchemaSpec | None = None
     output_schema: SchemaSpec = Field(
         default_factory=lambda: SchemaSpec.model_validate(default_output_schema()),
-        description="未指定或 null 时使用引擎默认 answer/evidence/limitations 格式；自定义 schema 的根为 object。",
+        description=prompt_text.GOAL_DRAFT_OUTPUT_SCHEMA_DESCRIPTION,
     )
 
     @field_validator("output_schema", mode="before", json_schema_input_type=SchemaSpec | None)
@@ -157,7 +159,7 @@ class DirectAssessment(IntentContract):
     evidence_coverage: list[EvidenceUse] = Field(default_factory=list)
     supporting_facts: list[Text] = Field(
         default_factory=list,
-        description="先列出当前输入或记忆原文支持且与问题相关的事实，再形成 decision；无相关事实时为空。",
+        description=prompt_text.DIRECT_ASSESSMENT_SUPPORTING_FACTS_DESCRIPTION,
     )
     decision: Annotated[Reply | Clarification, Field(discriminator="outcome")]
 
@@ -182,7 +184,7 @@ class ReferenceAssessment(IntentContract):
     evidence: str
     requires_unique_resolution: bool = Field(
         default=True,
-        description="只有交付必须先选定唯一对象才为 true；文本解释可给出有依据的推断或歧义结论时为 false，不把分析对象的歧义当成用户缺少信息。",
+        description=prompt_text.REFERENCE_ASSESSMENT_REQUIRES_UNIQUE_RESOLUTION_DESCRIPTION,
     )
 
     @model_validator(mode="after")
@@ -195,21 +197,21 @@ class ReferenceAssessment(IntentContract):
 
 
 class ClarityQuestion(IntentContract):
-    question_id: str = Field(default="", description="已有待决问题的稳定标识；新的缺口留空。")
+    question_id: str = Field(default="", description=prompt_text.CLARITY_QUESTION_QUESTION_ID_DESCRIPTION)
     resolution_source: Literal["user", "external_lookup", "default_or_omit"]
     blocking_reason: Text = Field(
-        description="具体说明缺口会改变哪个答案、操作对象或交付要求，以及为何不能从已有证据解决。")
+        description=prompt_text.CLARITY_QUESTION_BLOCKING_REASON_DESCRIPTION)
     text: Text
     kind: Literal[
         "unknown_identity", "ambiguous_reference", "selection_criteria", "missing_requirement"
     ]
-    subject: str = Field(default="", description="该问题涉及的实体原名；unknown_identity 时必填。")
+    subject: str = Field(default="", description=prompt_text.CLARITY_QUESTION_SUBJECT_DESCRIPTION)
     lookup_scope: str = Field(
-        default="", description="用户已明确给出的所属作品/项目名称，照抄原词；没有则为空。"
+        default="", description=prompt_text.CLARITY_QUESTION_LOOKUP_SCOPE_DESCRIPTION
     )
     scope_evidence: str = Field(
         default="",
-        description="同时包含 subject、lookup_scope 及所属关系的连续原话；没有定位范围时为空。",
+        description=prompt_text.CLARITY_QUESTION_SCOPE_EVIDENCE_DESCRIPTION,
     )
 
     @model_validator(mode="after")
@@ -222,20 +224,20 @@ class ClarityQuestion(IntentContract):
 
 
 class RequirementConflict(IntentContract):
-    first_requirement: Text = Field(description="互不兼容的第一项当前要求，连续引用用户原话。")
-    second_requirement: Text = Field(description="互不兼容的第二项当前要求，连续引用用户原话。")
+    first_requirement: Text = Field(description=prompt_text.REQUIREMENT_CONFLICT_FIRST_REQUIREMENT_DESCRIPTION)
+    second_requirement: Text = Field(description=prompt_text.REQUIREMENT_CONFLICT_SECOND_REQUIREMENT_DESCRIPTION)
     question: Text = Field(
-        max_length=200, description="只用一个简短问题询问应修正或采用哪项要求，不展开题目解析。"
+        max_length=200, description=prompt_text.REQUIREMENT_CONFLICT_QUESTION_DESCRIPTION
     )
 
 
 class ResolvedConflict(IntentContract):
     first_requirement: Text
     second_requirement: Text
-    evidence_quote: Text = Field(description="支持撤销阻断的连续用户原文。")
+    evidence_quote: Text = Field(description=prompt_text.RESOLVED_CONFLICT_EVIDENCE_QUOTE_DESCRIPTION)
     resolution_basis: Text = Field(
         max_length=1000,
-        description="指出满足全部约束的具体兼容解释，或说明请求本身只要求分析矛盾；不能只声称没有冲突。",
+        description=prompt_text.RESOLVED_CONFLICT_RESOLUTION_BASIS_DESCRIPTION,
     )
 
 
@@ -249,7 +251,7 @@ class ClarityReview(IntentContract):
 class QuestionUpdate(IntentContract):
     question_id: Text
     status: QuestionStatus
-    evidence_quote: str = Field(default="", description="已回答/撤销引用提问后的用户原话；不再必要引用支持可行交付的本任务用户原话；待回答时为空。")
+    evidence_quote: str = Field(default="", description=prompt_text.QUESTION_UPDATE_EVIDENCE_QUOTE_DESCRIPTION)
     reason: Text = Field(max_length=500)
 
 
@@ -264,28 +266,26 @@ class ClarificationItem(IntentContract):
 
 class ClarityAssessment(IntentContract):
     question_updates: list[QuestionUpdate] = Field(
-        default_factory=list, description="每个 pending 问题恰好更新一次；已解决问题可重复确认完全相同的状态与引文，不能改写。未回答仍 pending，不能因只回答其他问题就删除。",
+        default_factory=list, description=prompt_text.CLARITY_ASSESSMENT_QUESTION_UPDATES_DESCRIPTION,
     )
     requirement_conflicts: list[RequirementConflict] = Field(
         default_factory=list,
-        description="只列出阻碍用户实际要求的交付的未解决冲突；仅分析矛盾时材料的冲突不是交付阻碍。",
+        description=prompt_text.CLARITY_ASSESSMENT_REQUIREMENT_CONFLICTS_DESCRIPTION,
     )
     external_information_needed: list[Text] = Field(
         default_factory=list,
-        description="对象与查证问题明确，但尚需外部检索的身份/属性/资料；不是用户必须补充的信息。",
+        description=prompt_text.CLARITY_ASSESSMENT_EXTERNAL_INFORMATION_NEEDED_DESCRIPTION,
     )
     references: list[ReferenceAssessment]
     known_referents: dict[str, Text]
     selection_criteria: list[Text]
     selection_criteria_required: bool = Field(
         default=False,
-        description="主观选择需要用户实质筛选标准为 true；不能因产物是文字建议而当成普通草稿。",
+        description=prompt_text.CLARITY_ASSESSMENT_SELECTION_CRITERIA_REQUIRED_DESCRIPTION,
     )
     questions: list[ClarityQuestion] = Field(
         description=(
-            "仅填写缺失后无法给出任何符合已知要求的有效回应/方案的必要问题。"
-            "开放式推荐已有相关偏好且至少一种方案可行时为空；"
-            "不能要求用户先决定是否需要其他类别，或补某个未选备选方案的条件。"
+            prompt_text.CLARITY_ASSESSMENT_QUESTIONS_DESCRIPTION
         )
     )
     reason: Text = Field(max_length=1500)
@@ -621,7 +621,7 @@ class IntentRecognizer:
             if location:
                 ref = ref.model_copy(
                     update={
-                        "candidates": [f"{location.lookup_scope}中的{location.subject}"],
+                        "candidates": [prompt_text.SCOPED_SUBJECT.format(scope=location.lookup_scope, subject=location.subject)],
                         "resolution": "explicit_identification",
                         "evidence": location.scope_evidence,
                     }
@@ -654,11 +654,11 @@ class IntentRecognizer:
                 update={
                     "questions": [
                         ClarityQuestion(
-                            text=f"‘{ref.expression}’指的是哪一个：{'、'.join(ref.candidates)}？",
+                            text=messages.AMBIGUOUS_REFERENCE.format(expression=ref.expression, candidates='、'.join(ref.candidates)),
                             kind="ambiguous_reference",
                             subject=ref.expression,
                             resolution_source="user",
-                            blocking_reason="必须选择唯一指代才能确定本次答案或操作对象。",
+                            blocking_reason=prompt_text.UNIQUE_REFERENCE_REQUIRED_REASON,
                         )
                         for ref in unresolved
                     ]
@@ -672,7 +672,7 @@ class IntentRecognizer:
                     questions.append(
                         ClarityQuestion(text=conflict.question, kind="missing_requirement",
                                         resolution_source="user",
-                                        blocking_reason="原始要求不能同时满足，需要用户修正。")
+                                        blocking_reason=prompt_text.REQUIREMENTS_CONFLICT_REASON)
                     )
             clarity = clarity.model_copy(update={"questions": questions})
         if (
@@ -684,8 +684,8 @@ class IntentRecognizer:
                 update={
                     "questions": [
                         ClarityQuestion(
-                            text="请说明选择时最看重的因素或相关偏好。", kind="selection_criteria",
-                            resolution_source="user", blocking_reason="缺少实质筛选标准。"
+                            text=messages.SELECTION_CRITERIA_QUESTION, kind="selection_criteria",
+                            resolution_source="user", blocking_reason=prompt_text.SELECTION_CRITERIA_REQUIRED_REASON
                         )
                     ]
                 }
@@ -698,7 +698,7 @@ class IntentRecognizer:
         texts = {q.text for q in clarity.questions}
         retained = [ClarityQuestion(
             question_id=item.question_id, text=item.text, kind="missing_requirement",
-            resolution_source="user", blocking_reason="此前的必要问题尚未得到回答或撤销。",
+            resolution_source="user", blocking_reason=prompt_text.PENDING_QUESTION_REASON,
         ) for item in pending.values() if item.question_id not in existing and item.text not in texts]
         clarity = clarity.model_copy(update={"questions": [*retained, *clarity.questions]})
         result = {"clarity": clarity, "session": session}
@@ -716,7 +716,7 @@ class IntentRecognizer:
             )
         elif clarity.external_information_needed and state["session"].routing.handling == "respond":
             routing = session.routing.model_copy(
-                update={"handling": "assess", "reason": "清晰度检查发现需要核查外部资料。"}
+                update={"handling": "assess", "reason": prompt_text.EXTERNAL_INFORMATION_REQUIRED_REASON}
             )
             result["session"] = session.model_copy(update={"routing": routing})
             self.observer.emit(
@@ -733,7 +733,7 @@ class IntentRecognizer:
             request = ModelRequest(
                 role="intent_router",
                 system_instruction=ROUTING_INSTRUCTION,
-                task_instruction="确定输入类型、与待澄清任务的关系及处理方式；不要生成回复、目标或执行计划。",
+                task_instruction=prompt_text.ROUTING_TASK_INSTRUCTION,
                 input_data={
                     "text": message.content,
                     "pending_task": {
@@ -989,7 +989,7 @@ class IntentRecognizer:
         request = ModelRequest(
             role="intent_response",
             system_instruction=DIRECT_RESPONSE_INSTRUCTION,
-            task_instruction="直接回应本轮输入；必要信息缺失时提出简短澄清。" + CLARITY_INSTRUCTION,
+            task_instruction=prompt_text.DIRECT_RESPONSE_TASK_INSTRUCTION + CLARITY_INSTRUCTION,
             input_data=inputs,
             output_schema=DirectAssessment.model_json_schema(),
             timeout_seconds=INTENT_STAGE_TIMEOUT_SECONDS,
@@ -1034,7 +1034,7 @@ class IntentRecognizer:
     @staticmethod
     def _cancel(state: IntentState) -> dict:
         session = state["session"]
-        answer = "好的，已取消当前待澄清的任务。"
+        answer = messages.CANCELLED_PENDING_TASK
         return {
             "session": session.model_copy(
                 update={

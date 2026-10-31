@@ -507,7 +507,7 @@ class ReusableWorkflows:
                     }
                 instruction = (
                     instruction
-                    + "\nRepair the response to conform exactly to the supplied output schema and contract_feedback."
+                    + prompts.CONTRACT_REPAIR_INSTRUCTION
                 )
                 self.observer.emit(
                     "workflow.model_retry", data={"reason": code, "max_output_tokens": budget}

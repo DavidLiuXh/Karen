@@ -8,6 +8,8 @@ from dynamic_graph import ExecutionPolicy, GoalSpec, GraphSpec, RunResult
 from dynamic_graph.graph.schemas import SchemaSpec, infer_schema
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from . import prompts as prompt_text
+
 
 class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -239,18 +241,18 @@ class CriterionEvidence(Contract):
     criterion_id: str
     verdict: Literal["supported", "failed", "unknown"]
     evidence: list[str] = Field(
-        description="Exact JSON pointers into the verifier request, starting with /evidence/; cite recorded artifacts or outputs, never invented paths."
+        description=prompt_text.CRITERION_EVIDENCE_EVIDENCE_DESCRIPTION
     )
     reason: str
 
 
 class Verification(Contract):
     generalizable: bool = Field(
-        description="Whether the prepared template safely represents its parameters and fixed behavior; not a verdict about the past source result."
+        description=prompt_text.VERIFICATION_GENERALIZABLE_DESCRIPTION
     )
     reason: str
     criteria: list[CriterionEvidence] = Field(
-        description="Acceptance of the already completed recorded SOURCE result. Do not mark it unknown merely because the prospective template needs repair."
+        description=prompt_text.VERIFICATION_CRITERIA_DESCRIPTION
     )
 
 

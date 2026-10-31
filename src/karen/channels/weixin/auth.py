@@ -11,7 +11,7 @@ from pathlib import Path
 
 import qrcode
 
-from ... import messages
+from ...message import messages
 from .api import API_URL, ILinkClient, WeixinError, trusted_url
 
 

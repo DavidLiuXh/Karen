@@ -289,7 +289,7 @@ uv run karen-observe --open
 
 当前默认模型为 `deepseek-flash`：输入理解、回应、执行节点和精排请求 low 思考，规划请求 medium；记忆提取、核验和查询理解使用非思考。具体客户端见 [模型装配](src/karen/model/models.py)，阶段组合见 [CLI 入口](src/karen/cli.py)；共享指令位于 [prompt/prompts.py](src/karen/prompt/prompts.py)，模块专属提示词仍位于各模块的 `prompts.py`。
 
-终端、微信、执行结果及观测入口的用户文案统一放在 [messages.py](src/karen/messages.py)。模型指令、schema 字段说明及修复引导归入所属模块的 `prompts.py`；微信交付指令位于 [instructions.py](src/karen/channels/weixin/instructions.py)。调整对应的命名模板，通过具名占位符传入数据。协议字段、状态/错误码、SQL 和测试数据仍由相应逻辑维护；观测页面现有的中英文字典保留在 `dashboard.html`。
+终端、微信、执行结果及观测入口的用户文案统一放在 [messages.py](src/karen/message/messages.py)。模型指令、schema 字段说明及修复引导归入所属模块的 `prompts.py`；微信交付指令位于 [instructions.py](src/karen/channels/weixin/instructions.py)。调整对应的命名模板，通过具名占位符传入数据。协议字段、状态/错误码、SQL 和测试数据仍由相应逻辑维护；观测页面现有的中英文字典保留在 `dashboard.html`。
 
 离线行为与边界检查：
 

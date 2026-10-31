@@ -29,7 +29,7 @@ from pydantic import (
 )
 from tzlocal import get_localzone_name
 
-from .. import messages
+from ..message import messages
 from ..observability import Observer
 from ..prompt.prompts import RESPONSE_INSTRUCTION
 from . import prompts as prompt_text

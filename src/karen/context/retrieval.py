@@ -14,7 +14,7 @@ from dynamic_graph.models.client import ModelCallError, ModelRequest, expanded_o
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
-from .. import messages
+from ..message import messages
 from . import prompts as prompt_text
 from .contracts import (
     DetailQuery,

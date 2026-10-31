@@ -1,5 +1,5 @@
 """Deterministic checks of recorded behavior, separate from business acceptance."""
-from .. import messages
+from ..message import messages
 
 
 def has_truncation(value):

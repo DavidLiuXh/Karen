@@ -4,7 +4,7 @@ import json
 
 from dynamic_graph import RunResult
 
-from .. import messages
+from ..message import messages
 
 
 def _diagnostic_message(diagnostic) -> str:

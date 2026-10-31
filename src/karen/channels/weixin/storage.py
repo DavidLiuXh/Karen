@@ -8,8 +8,8 @@ import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from ... import messages
 from ...intent import IntentSession
+from ...message import messages
 from .api import WeixinError
 from .auth import acquire_lock, private_root
 

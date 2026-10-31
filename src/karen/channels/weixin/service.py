@@ -11,8 +11,8 @@ from uuid import uuid4
 from dynamic_graph.models.client import ModelCallError
 from pydantic import ValidationError
 
-from ... import messages
 from ...intent import IntentSession
+from ...message import messages
 from ...model.response import format_result
 from . import instructions as prompt_text
 from . import media

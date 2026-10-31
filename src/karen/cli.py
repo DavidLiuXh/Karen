@@ -26,11 +26,11 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.markdown import Markdown
 
-from . import messages
 from .agent import Karen
 from .context import ContextMemory
 from .context.contracts import PersistenceError
 from .intent import IntentRecognizer, IntentSession
+from .message import messages
 from .model.models import deepseek_client, memory_embeddings
 from .model.response import format_result
 from .observability import ObservedModel, Observer

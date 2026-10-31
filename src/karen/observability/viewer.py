@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .. import messages
+from ..message import messages
 from .checks import check_trace
 from .recorder import sanitize
 

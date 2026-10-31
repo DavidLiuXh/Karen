@@ -26,6 +26,7 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.markdown import Markdown
 
+from . import messages
 from .agent import Karen
 from .context import ContextMemory
 from .context.contracts import PersistenceError
@@ -43,10 +44,10 @@ def display_response(text: str, *, json_output: bool = False) -> None:
         print(text)
     elif sys.stdout.isatty() and os.environ.get("TERM") != "dumb":
         console = Console(file=sys.stdout)
-        console.print("Karen：", markup=False)
+        console.print(messages.KAREN_PREFIX, markup=False)
         console.print(Markdown(text))
     else:
-        print("Karen：" + text)
+        print(messages.KAREN_PREFIX + text)
 
 
 def create_memory(model, *, rerank_model=None, observer=None) -> ContextMemory:
@@ -78,7 +79,7 @@ async def read_input() -> str:
     if sys.stdin.isatty():
         # Async editing restores terminal modes before cancellation or Ctrl+C propagates.
         # Do not retain user requests in the line editor's history.
-        return await PromptSession(history=DummyHistory()).prompt_async("你：")
+        return await PromptSession(history=DummyHistory()).prompt_async(messages.INPUT_PROMPT)
 
     # A cancelled pipe read must not hold asyncio's executor shutdown open.
     loop = asyncio.get_running_loop()
@@ -95,7 +96,7 @@ async def read_input() -> str:
     def read():
         value, error = None, None
         try:
-            value = input("你：")
+            value = input(messages.INPUT_PROMPT)
         except BaseException as exc:
             error = exc
         try:
@@ -114,7 +115,7 @@ async def converse(
     try:
         session = IntentSession(timezone=timezone) if timezone is not None else IntentSession()
     except (ValueError, ZoneInfoNotFoundError, OSError):
-        print("Karen：无法确定有效的用户时区，请使用 --timezone 指定 IANA 时区，如 Asia/Shanghai。")
+        print(messages.INVALID_TIMEZONE)
         return 1
     credentials = await bind_weixin() if wechat else None
     backend = deepseek_client()
@@ -124,7 +125,7 @@ async def converse(
         resources.push_async_callback(observer.close)
         if observe_port is not None:
             if observer.root_dir is None:
-                print("Karen：观测记录目录无法打开，本次未启动对话。", file=sys.stderr)
+                print(messages.OBSERVATION_STORAGE_UNAVAILABLE, file=sys.stderr)
                 return 1
             try:
                 server = resources.enter_context(
@@ -132,13 +133,12 @@ async def converse(
                 )
             except OSError:
                 print(
-                    f"Karen：无法启动观测页面，端口 {observe_port} 可能已被占用；"
-                    "请使用 --observe 指定其他端口。",
+                    messages.OBSERVATION_PORT_UNAVAILABLE.format(port=observe_port),
                     file=sys.stderr,
                 )
                 return 1
             print(
-                f"Karen 观测页面：http://127.0.0.1:{server.server_port}/",
+                messages.OBSERVATION_STARTED.format(port=server.server_port),
                 file=sys.stderr, flush=True,
             )
         model = ObservedModel(backend, observer)
@@ -162,13 +162,13 @@ async def converse(
         if os.environ.get("TAVILY_API_KEY", "").strip():
             engine.register_tool(tavily_search_tool())
         else:
-            print("Karen：未配置 TAVILY_API_KEY，Tavily 网络搜索暂不可用。")
+            print(messages.TAVILY_UNAVAILABLE)
         memory_model = ObservedModel(deepseek_client(thinking=False), observer)
         memory = create_memory(memory_model, rerank_model=model, observer=observer)
         try:
             await memory.start()
         except (OSError, PersistenceError, RuntimeError):
-            print("Karen：记忆目录无法安全打开，可能已有进程使用或文件损坏。本次未启动对话。")
+            print(messages.MEMORY_STORAGE_UNAVAILABLE)
             return 1
         workflows = create_workflows(memory_model, engine, observer)
         try:
@@ -204,7 +204,7 @@ async def converse(
                                                   base_url=credentials.base_url),
                     store=store, credentials=credentials, initial_session=session, observer=observer,
                 )
-                print("Karen：个人微信渠道已启动，仅处理扫码绑定者的私聊。Ctrl+C 退出。", file=sys.stderr)
+                print(messages.WEIXIN_STARTED, file=sys.stderr)
                 await channel.run()
                 return 0
             exit_code = 0
@@ -220,14 +220,14 @@ async def converse(
                 except (ModelCallError, ValidationError, ValueError, TimeoutError) as exc:
                     # Leave the conversation unchanged on a failed assessment.
                     code = exc.code if isinstance(exc, ModelCallError) else type(exc).__name__
-                    print(f"Karen：本轮未完成（{code}），请重新输入。")
+                    print(messages.CLI_TURN_FAILED.format(code=code))
                     continue
                 session = turn.session
                 if turn.result is None and turn.response is None:
                     for warning in turn.memory_warnings:
-                        print(f"Karen：记忆写入未完成（{warning}）。")
+                        print(messages.MEMORY_WRITE_FAILED.format(warning=warning))
                     if json_output:
-                        print("Karen：" + "\n".join(session.questions))
+                        print(messages.KAREN_PREFIX + "\n".join(session.questions))
                     else:
                         display_response("\n".join(session.questions))
                     continue
@@ -259,7 +259,7 @@ async def converse(
                     *agent.record_response(session, response_text, trace_id=turn.trace_id),
                 )
                 for warning in dict.fromkeys(warnings):
-                    print(f"Karen：记忆写入未完成（{warning}）。")
+                    print(messages.MEMORY_WRITE_FAILED.format(warning=warning))
                 exit_code = (
                     0
                     if (
@@ -276,7 +276,7 @@ async def converse(
                 finally:
                     await memory.close()
             except PersistenceError:
-                print("Karen：部分对话未能持久化，退出失败。")
+                print(messages.EXIT_PERSISTENCE_FAILED)
                 raise
 
 
@@ -290,7 +290,7 @@ async def bind_weixin(*, force=False):
     root = Path.home() / ".Karne" / "weixin"
 
     async def read_code():
-        print("请在下面输入微信要求的验证码：", file=sys.stderr)
+        print(messages.WEIXIN_VERIFICATION_PROMPT, file=sys.stderr)
         return await read_input()
 
     with acquire_lock(root):
@@ -300,27 +300,27 @@ async def bind_weixin(*, force=False):
         async with httpx.AsyncClient(trust_env=False) as http:
             credentials = await login(http, previous=previous, read_code=read_code)
         save_credentials(root, credentials)
-    print("Karen：微信绑定成功。凭据已保存在 ~/.Karne/weixin（仅当前用户可读）。", file=sys.stderr)
+    print(messages.WEIXIN_LOGIN_SUCCESS, file=sys.stderr)
     return credentials
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Karen 任务与意图澄清")
-    parser.add_argument("--json", action="store_true", help="展示完整执行结果 JSON")
-    parser.add_argument("--timezone", help="用户的 IANA 时区，默认读取本机时区")
-    parser.add_argument("--wechat", action="store_true", help="通过个人微信对话，首次启动扫码绑定")
-    parser.add_argument("--wechat-login", action="store_true", help="仅扫码绑定或刷新微信凭据，不启动模型")
+    parser = argparse.ArgumentParser(description=messages.CLI_DESCRIPTION)
+    parser.add_argument("--json", action="store_true", help=messages.CLI_JSON_HELP)
+    parser.add_argument("--timezone", help=messages.CLI_TIMEZONE_HELP)
+    parser.add_argument("--wechat", action="store_true", help=messages.CLI_WECHAT_HELP)
+    parser.add_argument("--wechat-login", action="store_true", help=messages.CLI_WECHAT_LOGIN_HELP)
     parser.add_argument(
         "--observe", nargs="?", const=DEFAULT_PORT, type=int, metavar="PORT",
-        help=f"同时启动本地观测页面，默认端口 {DEFAULT_PORT}，可指定其他端口",
+        help=messages.CLI_OBSERVE_HELP.format(port=DEFAULT_PORT),
     )
     args = parser.parse_args()
     if args.observe is not None and not 1 <= args.observe <= 65535:
-        parser.error("--observe 端口必须在 1–65535 之间")
+        parser.error(messages.CLI_INVALID_OBSERVE_PORT)
     if args.wechat_login and (args.wechat or args.json or args.observe is not None):
-        parser.error("--wechat-login 单独使用；绑定后用 --wechat 启动")
+        parser.error(messages.CLI_INVALID_LOGIN_FLAGS)
     if args.wechat and args.json:
-        parser.error("--json 仅适用于命令行对话")
+        parser.error(messages.CLI_INVALID_JSON_CHANNEL)
     try:
         if args.wechat_login:
             asyncio.run(bind_weixin(force=True))
@@ -342,9 +342,9 @@ def main() -> None:
             raise
         code = (exc.code if isinstance(exc, WeixinError) else
                 "WEIXIN_STORAGE_FAILED" if isinstance(exc, sqlite3.Error) else type(exc).__name__)
-        print(f"Karen：微信渠道未能继续运行（{code}）。", file=sys.stderr)
+        print(messages.WEIXIN_CHANNEL_FAILED.format(code=code), file=sys.stderr)
         if code in {"WEIXIN_SESSION_EXPIRED", "WEIXIN_LOGIN_REQUIRED"}:
-            print("请执行 karen --wechat-login 重新扫码，再启动 --wechat。", file=sys.stderr)
+            print(messages.WEIXIN_LOGIN_REQUIRED, file=sys.stderr)
         raise SystemExit(1) from None
 
 

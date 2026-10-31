@@ -14,6 +14,8 @@ from dynamic_graph.models.client import ModelCallError, ModelRequest, expanded_o
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
+from .. import messages
+from . import prompts as prompt_text
 from .contracts import (
     DetailQuery,
     History,
@@ -240,10 +242,10 @@ class Retriever:
                     issue.update(
                         field="at",
                         time_mode=mode,
-                        reason=f"{mode} 需要显式、带时区的 at；time_range 不能替代 at。",
+                        reason=prompt_text.TIME_REFERENCE_REQUIRED.format(mode=mode),
                     )
                 elif item["type"] == "at_timezone_required":
-                    issue.update(field="at", reason="at 缺少时区偏移。")
+                    issue.update(field="at", reason=prompt_text.TIMEZONE_OFFSET_REQUIRED)
                 details["validation_errors"].append(issue)
         elif isinstance(error, TimeoutError):
             details["error_code"] = "RECALL_TIMEOUT"
@@ -284,7 +286,7 @@ class Retriever:
                 status="unavailable",
                 history=History(
                     status="unavailable" if analysis and analysis.uses_external_history else "none",
-                    reason="本轮记忆读取未能完成。",
+                    reason=messages.MEMORY_READ_INCOMPLETE,
                 ),
                 degradations=["MEMORY_RECALL_UNAVAILABLE"],
                 coverage={
@@ -535,7 +537,7 @@ class Retriever:
                 history_status=(
                     "unavailable" if analysis.dialogue_dependency == "needed" else "none"
                 ),
-                history_reason="关联核验未完成，不能确定所指任务。",
+                history_reason=messages.HISTORY_LINK_UNVERIFIED,
             )
             degraded.append("RERANK_FAILED_FUSION_ORDER")
         return {"ranking": ranking, "degraded": degraded, "primary": primary}

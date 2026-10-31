@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from dynamic_graph.capabilities.registry import ToolDefinition
 from dynamic_graph.execution.errors import ToolCallError
 
+from . import instructions as prompt_text
 from .api import CDN_URL, MAX_FILE_BYTES, WeixinError
 
 
@@ -153,10 +154,7 @@ def prepare_file_tool(store):
 
     return ToolDefinition(
         "weixin.prepare_file", "1.0.0",
-        "Prepare a local file under /tmp (up to 10 MiB) for delivery to the authenticated "
-        "Weixin owner AFTER this task completes. Call for files the user requests to receive "
-        "in Weixin, after their producer. Success means queued preparation, not delivery. "
-        "Do not use for CLI requests or files unrelated to the user's request.",
+        prompt_text.PREPARE_FILE_DESCRIPTION,
         {"type": "object", "properties": {"path": {"type": "string"}},
          "required": ["path"], "additionalProperties": False},
         {"type": "object", "properties": {"attachment_id": {"type": "string"},

@@ -1,4 +1,5 @@
 """Deterministic checks of recorded behavior, separate from business acceptance."""
+from .. import messages
 
 
 def has_truncation(value):
@@ -75,10 +76,10 @@ def check_trace(events, coverage):
                 )
     results = []
     for label, values in [
-        ("澄清轮未启动执行", clarification),
-        ("历史仅在关联确认后注入", history),
-        ("精排失败未冒充精排成功", fallback),
-        ("直接回应与取消未启动执行", direct),
+        (messages.CHECK_CLARIFICATION_EXECUTION, clarification),
+        (messages.CHECK_HISTORY_SELECTION, history),
+        (messages.CHECK_RERANK_FALLBACK, fallback),
+        (messages.CHECK_DIRECT_EXECUTION, direct),
     ]:
         status = (
             "fail"

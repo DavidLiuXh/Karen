@@ -8,12 +8,12 @@ import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from ... import messages
 from ...intent import IntentSession
 from .api import WeixinError
 from .auth import acquire_lock, private_root
 
-PROGRESS_TEXT = "已收到，任务仍在处理中，完成后我会回复。"
-PROGRESS_ITEM = json.dumps({"type": 1, "text_item": {"text": PROGRESS_TEXT}}, ensure_ascii=False)
+PROGRESS_ITEM = json.dumps({"type": 1, "text_item": {"text": messages.WEIXIN_PROGRESS}}, ensure_ascii=False)
 
 
 def text_items(text):
@@ -166,8 +166,7 @@ class WeixinStore:
         rows = self.db.execute("SELECT * FROM inbox WHERE status='running' ORDER BY id").fetchall()
         for row in rows:
             self.finish(row, self.session(initial),
-                        "上次处理因进程中断而停止，无法确认任务是否完成。为避免重复操作，"
-                        "我没有自动重做；请先核对结果，再决定是否重新发起任务。", record=False)
+                        messages.WEIXIN_INTERRUPTED, record=False)
         return len(rows)
 
     def prepare_file(self, run_id, artifact_id, path, name):

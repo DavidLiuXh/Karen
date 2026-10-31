@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from .. import messages
 from .checks import check_trace
 from .recorder import sanitize
 
@@ -470,14 +471,14 @@ def background_server(root_dir, *, port=DEFAULT_PORT):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Karen 本地运行观测页面（只读）")
+    parser = argparse.ArgumentParser(description=messages.OBSERVATION_CLI_DESCRIPTION)
     parser.add_argument("--root", type=Path, default=Path.home() / ".Karne" / "observability")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--open", action="store_true", help="用本机浏览器打开页面")
+    parser.add_argument("--open", action="store_true", help=messages.OBSERVATION_OPEN_HELP)
     args = parser.parse_args()
     with create_server(args.root, port=args.port) as server:
         url = f"http://127.0.0.1:{server.server_port}/"
-        print(f"Karen 观测页面：{url}", flush=True)
+        print(messages.OBSERVATION_URL.format(url=url), flush=True)
         if args.open:
             webbrowser.open(url)
         try:

@@ -15,6 +15,7 @@ from dynamic_graph.models.client import (
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
+from . import prompts as prompt_text
 from .contracts import Extraction, FactCandidate, Scope, StoredMemory, Verification, utcnow
 from .prompts import EXTRACT, MEMORY_SYSTEM, PROMPT_VERSION, REPAIR, VERIFY
 from .storage import Storage, digest, encode, stable_id
@@ -552,7 +553,7 @@ class Extractor:
             changes[mid] = StoredMemory(
                 memory_id=mid,
                 layer="m2",
-                text="尚未核验的候选陈述：" + candidate.text,
+                text=prompt_text.UNVERIFIED_CANDIDATE_PREFIX + candidate.text,
                 sources=sources,
                 verification_state="uncertain",
                 verification_reason=decision.reason,

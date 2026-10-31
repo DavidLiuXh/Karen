@@ -291,6 +291,8 @@ The main entry point is `Karen.advance(session, text)`. Read `TaskTurn.response`
 
 The default model is `deepseek-flash`. Input understanding, responses, execution nodes, and reranking request low reasoning effort; planning requests medium. Memory extraction, verification, and query understanding use non-thinking mode. See [model configuration](src/karen/model/models.py) for clients and the [CLI entry point](src/karen/cli.py) for stage composition. Shared instructions live in [prompt/prompts.py](src/karen/prompt/prompts.py); module-specific prompts remain in each module's `prompts.py`.
 
+User-facing terminal, Weixin, result and observation-entry messages are centralized in [messages.py](src/karen/messages.py). Model instructions, schema field descriptions and repair guidance live in the owning module's `prompts.py`; Weixin delivery guidance lives in [instructions.py](src/karen/channels/weixin/instructions.py). Change named templates there and supply data through their named fields. Protocol keys, status/error codes, SQL and test data remain with their owning logic. The dashboard's existing Chinese/English dictionaries remain in `dashboard.html`.
+
 Run offline behavior and boundary checks with:
 
 ```bash

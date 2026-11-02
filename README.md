@@ -67,6 +67,12 @@ Clarification preserves the original request, pending questions, and their assoc
 
 Once the goal is clear, Karen creates a DynamicAgentGraph `GoalSpec` containing the objective, success criteria, constraints, inputs, and context. The engine plans an execution graph, invokes authorized capabilities, and returns a result. Valid execution status and output structure do not mean that every business success criterion has been independently verified.
 
+### Concurrent tasks
+
+CLI and personal Weixin now accept tasks while earlier tasks are still running. The default is two concurrent task advances; configure it with `--max-concurrent-tasks N` (also works with `--wechat`). Each task has an independent conversation and task ID. Use `/new request`, `/tasks`, `/use ID`, `/reply ID answer`, and `/cancel ID`. Unassigned answers are retained until you select a task; the first version does not guess their owner. Background responses carry task IDs.
+
+Task understanding and clarification may overlap; engine runs are conservatively serialized within one Karen instance to protect shared resources. Waiting for a user releases a task slot. Task scheduling is in memory, without general restart recovery or automatic replay. Existing Weixin delivery retries and its last single-session clarification checkpoint remain. `--json` now emits JSON Lines with `notice` and `task` events. See [task management](docs/TASK_MANAGER.md) for commands, shutdown and recovery boundaries.
+
 ### Reusable workflows
 
 Workflow discovery and reuse are enabled automatically in both the CLI and Weixin channel; no extra flag is required. For example, ask Karen to fetch today's GitHub Trending entries, generate an HTML page at `/tmp/github.html`, and open it locally. Once a compatible workflow has been verified and enabled, a later request for the same deliverable can reuse its steps with the current date and a new output path. Check its status in the observation panel: a completed source task does not guarantee that its template is enabled.
@@ -237,9 +243,9 @@ Summarize information from the past month about lure-fishing waters in Beijing. 
 Save the summary you just prepared as /tmp/beijing-lure.html and open it in my local browser.
 ```
 
-Answer clarification questions directly. Karen merges the current task's requirements and reassesses them; unrelated new requests are handled separately. It waits for another input after each task finishes.
+Answer clarification with `/reply ID answer`, or select its task with `/use ID` first. Karen merges only that task's requirements and reassesses them. Use `/new request` for unrelated work while questions remain pending; other tasks can keep progressing.
 
-Exit with `/exit`, EOF, or Ctrl+C. Normal shutdown waits for original records and recovery state to be persisted; unfinished background model jobs can resume on the next startup. Forced termination may lose information that has not reached disk. After restarting, Karen can retrieve saved memories, but it does not restore an unfinished clarification or execution session.
+Exit with `/exit`, EOF, or Ctrl+C. EOF waits for accepted advances to finish; `/exit` and Ctrl+C cancel unfinished tasks. Normal shutdown drains memory persistence; durable memory jobs keep their existing recovery behavior. Task scheduling itself is in memory and does not resume after restart. Weixin retains only its existing last single-session clarification checkpoint. Forced termination can lose information not yet on disk.
 
 ### Available tools
 

@@ -2,17 +2,15 @@
 
 import argparse
 import asyncio
-import json
 import os
 import sqlite3
 import sys
 import threading
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, nullcontext
 from pathlib import Path
 from zoneinfo import ZoneInfoNotFoundError
 
 from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings
-from dynamic_graph.models.client import ModelCallError
 from dynamic_graph.tools import (
     browser_open_local_page_tool,
     file_read_text_tool,
@@ -22,7 +20,6 @@ from dynamic_graph.tools import (
 )
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import DummyHistory
-from pydantic import ValidationError
 from rich.console import Console
 from rich.markdown import Markdown
 
@@ -32,9 +29,10 @@ from .context.contracts import PersistenceError
 from .intent import IntentRecognizer, IntentSession
 from .message import messages
 from .model.models import deepseek_client, memory_embeddings
-from .model.response import format_result
 from .observability import ObservedModel, Observer
 from .observability.viewer import DEFAULT_PORT, background_server
+from .task import DEFAULT_MAX_CONCURRENT_TASKS, TaskManager
+from .task.console import run_console
 from .workflow import ReusableWorkflows
 
 
@@ -110,7 +108,7 @@ async def read_input() -> str:
 
 async def converse(
     *, json_output: bool = False, timezone: str | None = None, observe_port: int | None = None,
-    wechat: bool = False,
+    wechat: bool = False, max_concurrent_tasks: int = DEFAULT_MAX_CONCURRENT_TASKS,
 ) -> int:
     try:
         session = IntentSession(timezone=timezone) if timezone is not None else IntentSession()
@@ -203,71 +201,17 @@ async def converse(
                     agent=agent, client=ILinkClient(http, token=credentials.token,
                                                   base_url=credentials.base_url),
                     store=store, credentials=credentials, initial_session=session, observer=observer,
+                    max_concurrent_tasks=max_concurrent_tasks,
                 )
                 print(messages.WEIXIN_STARTED, file=sys.stderr)
                 await channel.run()
                 return 0
-            exit_code = 0
-            while True:
-                try:
-                    user_input = await read_input()
-                except EOFError:
-                    return exit_code
-                if user_input.strip() == "/exit":
-                    return exit_code
-                try:
-                    turn = await agent.advance(session, user_input)
-                except (ModelCallError, ValidationError, ValueError, TimeoutError) as exc:
-                    # Leave the conversation unchanged on a failed assessment.
-                    code = exc.code if isinstance(exc, ModelCallError) else type(exc).__name__
-                    print(messages.CLI_TURN_FAILED.format(code=code))
-                    continue
-                session = turn.session
-                if turn.result is None and turn.response is None:
-                    for warning in turn.memory_warnings:
-                        print(messages.MEMORY_WRITE_FAILED.format(warning=warning))
-                    if json_output:
-                        print(messages.KAREN_PREFIX + "\n".join(session.questions))
-                    else:
-                        display_response("\n".join(session.questions))
-                    continue
-                if turn.response is not None:
-                    response_text = (
-                        json.dumps(
-                            {
-                                "outcome": "cancelled"
-                                if session.routing.handling == "cancel"
-                                else "replied",
-                                "answer": turn.response,
-                                "routing": session.routing.model_dump(mode="json"),
-                            },
-                            ensure_ascii=False,
-                            indent=2,
-                        )
-                        if json_output
-                        else turn.response
-                    )
-                else:
-                    response_text = (
-                        json.dumps(turn.result.model_dump(mode="json"), ensure_ascii=False, indent=2)
-                        if json_output
-                        else format_result(turn.result)
-                    )
-                display_response(response_text, json_output=json_output)
-                warnings = (
-                    *turn.memory_warnings,
-                    *agent.record_response(session, response_text, trace_id=turn.trace_id),
-                )
-                for warning in dict.fromkeys(warnings):
-                    print(messages.MEMORY_WRITE_FAILED.format(warning=warning))
-                exit_code = (
-                    0
-                    if (
-                        turn.response is not None
-                        or (turn.result.execution_status == "COMPLETED" and turn.result.output_complete)
-                    )
-                    else 1
-                )
+            from prompt_toolkit.patch_stdout import patch_stdout
+
+            manager = TaskManager(agent, max_concurrent=max_concurrent_tasks, observer=observer)
+            with patch_stdout(raw=True) if sys.stdout.isatty() else nullcontext():
+                return await run_console(manager, session, read_input=read_input,
+                                         display=display_response, json_output=json_output)
         finally:
             try:
                 try:
@@ -314,7 +258,11 @@ def main() -> None:
         "--observe", nargs="?", const=DEFAULT_PORT, type=int, metavar="PORT",
         help=messages.CLI_OBSERVE_HELP.format(port=DEFAULT_PORT),
     )
+    parser.add_argument("--max-concurrent-tasks", type=int, default=DEFAULT_MAX_CONCURRENT_TASKS,
+                        help=messages.TASK_CONCURRENCY_HELP.format(count=DEFAULT_MAX_CONCURRENT_TASKS))
     args = parser.parse_args()
+    if args.max_concurrent_tasks < 1:
+        parser.error(messages.TASK_CONCURRENCY_INVALID)
     if args.observe is not None and not 1 <= args.observe <= 65535:
         parser.error(messages.CLI_INVALID_OBSERVE_PORT)
     if args.wechat_login and (args.wechat or args.json or args.observe is not None):
@@ -326,6 +274,8 @@ def main() -> None:
             asyncio.run(bind_weixin(force=True))
             raise SystemExit(0)
         options = {"wechat": True} if args.wechat else {}
+        if args.max_concurrent_tasks != DEFAULT_MAX_CONCURRENT_TASKS:
+            options["max_concurrent_tasks"] = args.max_concurrent_tasks
         raise SystemExit(asyncio.run(converse(
             json_output=args.json, timezone=args.timezone, observe_port=args.observe, **options,
         )))

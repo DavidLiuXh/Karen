@@ -13,7 +13,8 @@ from pydantic import ValidationError
 
 from ...intent import IntentSession
 from ...message import messages
-from ...model.response import format_result
+from ...model.response import format_task_event
+from ...task import DEFAULT_MAX_CONCURRENT_TASKS, TaskInteraction, TaskManager
 from . import instructions as prompt_text
 from . import media
 from .api import WeixinError, retry_delay
@@ -21,7 +22,8 @@ from .instructions import FILE_DELIVERY_INSTRUCTION
 
 
 class WeixinChannel:
-    def __init__(self, *, agent, client, store, credentials, initial_session, observer):
+    def __init__(self, *, agent, client, store, credentials, initial_session, observer,
+                 max_concurrent_tasks=DEFAULT_MAX_CONCURRENT_TASKS):
         self.agent, self.client, self.store = agent, client, store
         self.credentials, self.observer = credentials, observer
         saved = store.session(initial_session)
@@ -31,6 +33,12 @@ class WeixinChannel:
                              "file_delivery": FILE_DELIVERY_INSTRUCTION},
         })
 
+        self.manager = TaskManager(agent, max_concurrent=max_concurrent_tasks, observer=observer)
+        self.interaction = TaskInteraction(self.manager, self.session)
+        if self.session.questions:
+            restored = self.manager.restore_waiting(self.session)
+            self.interaction.focus = restored.task_id
+
     def event(self, kind, *, status="ok", **data):
         self.observer.emit(f"weixin.{kind}", status=status, data=data)
 
@@ -39,13 +47,20 @@ class WeixinChannel:
         with self.observer.span("weixin.channel"):
             self.event("started", interrupted_tasks=recovered)
         tasks = [asyncio.create_task(loop()) for loop in (
-            self.poll, self.process, self.deliver,
+            self.poll, self.process, self.task_results, self.deliver,
         )]
         try:
             await self.notify(started=True)
             # The first permanent failure stops the channel; it must never disappear silently.
             await asyncio.gather(*tasks)
         finally:
+            await self.manager.close()
+            joined = asyncio.create_task(self.manager.events.join())
+            try:
+                await asyncio.wait({joined, tasks[2]}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                joined.cancel()
+                await asyncio.gather(joined, return_exceptions=True)
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -136,33 +151,18 @@ class WeixinChannel:
                                 failed_messages=counts["outbox"].get("failed", 0),
                             ), record=False)
                         continue
-                    task = asyncio.create_task(self.agent.advance(
-                        self.session, text, received_at=datetime.fromisoformat(row["received_at"]),
-                    ))
-                    typing = asyncio.create_task(self.set_typing(message, active=True))
-                    try:
-                        finished, _ = await asyncio.wait({task}, timeout=15)
-                        if not finished:
-                            self.store.progress(row)
-                        turn = await task
-                    finally:
-                        task.cancel()
-                        typing.cancel()
-                        await asyncio.gather(task, typing, return_exceptions=True)
-                        await self.set_typing(message, active=False)
-                    response = turn.response
-                    if response is None:
-                        response = format_result(turn.result) if turn.result else "\n".join(turn.session.questions)
-                    if not response:
-                        raise WeixinError("WEIXIN_RESPONSE_EMPTY")
-                    files = ()
-                    if turn.result and turn.result.execution_status == "COMPLETED":
-                        files = self.store.files_for(turn.result.run_id)
-                    self.store.finish(row, turn.session, response, files=files,
-                                      trace_id=turn.trace_id, record=bool(turn.response or turn.result))
-                    self.session = turn.session
-                    self.event("processed", trace_id=turn.trace_id, attachments=len(files),
-                               memory_warnings=list(turn.memory_warnings))
+                    response = self.interaction.accept(
+                        text, received_at=datetime.fromisoformat(row["received_at"]), source=row,
+                    )
+                    if text.startswith("/cancel "):
+                        cancelled = self.manager.tasks.get(text.partition(" ")[2])
+                        if cancelled is not None:
+                            self.session = cancelled.session
+                    origin = self.interaction.submitted_source
+                    if origin is not None and origin["id"] == row["id"]:
+                        self.store.notice(row, response)
+                    else:
+                        self.store.finish(row, self.session, response, record=False)
                 except WeixinError as exc:
                     self.event("input_failed", status="failed", error_code=exc.code, **exc.details)
                     self.store.finish(row, self.session, messages.WEIXIN_MODEL_FAILED.format(code=exc.code), record=False)
@@ -172,6 +172,27 @@ class WeixinChannel:
                     self.store.finish(row, self.session,
                                       messages.WEIXIN_TURN_FAILED.format(code=code), record=False)
                 # Unexpected exceptions and cancellation leave 'running' for explicit recovery.
+
+    async def task_results(self):
+        while True:
+            event = await self.manager.events.get()
+            try:
+                text = messages.TASK_EVENT.format(
+                    task_id=event.task_id, state=messages.TASK_STATE_LABELS[event.state], text=format_task_event(event),
+                )
+                turn = event.turn
+                session = turn.session if turn is not None else self.manager.tasks[event.task_id].session
+                self.session = session
+                files = ()
+                if turn is not None and turn.result is not None and event.state == "completed":
+                    files = self.store.files_for(turn.result.run_id)
+                self.store.finish(event.source, session, text, files=files,
+                                  trace_id=turn.trace_id if turn else None,
+                                  record=bool(turn and (turn.response or turn.result)))
+                self.event("processed", task_id=event.task_id, state=event.state,
+                           attachments=len(files))
+            finally:
+                self.manager.events.task_done()
 
     async def set_typing(self, message, *, active):
         with suppress(WeixinError, TimeoutError):

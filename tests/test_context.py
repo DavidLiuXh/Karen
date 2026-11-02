@@ -1083,7 +1083,7 @@ async def test_normal_cli_exit_waits_for_raw_persistence(tmp_path, monkeypatch):
     captured = []
 
     class DisplayAgent:
-        async def advance(self, session, user_input):
+        async def advance(self, session, user_input, **kwargs):
             captured.append(service.submit(event(user_input)))
             return TaskTurn(
                 session,

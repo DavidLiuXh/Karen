@@ -21,6 +21,7 @@ import pytest
 from dynamic_graph import FakeModelClient, RunResult
 
 from karen import IntentSession, TaskTurn, cli
+from karen.model.response import format_result
 
 
 class MemoryStub:
@@ -316,7 +317,7 @@ def test_readable_result_does_not_append_internal_evidence_and_limitations():
             "limitations": [{"description": "仅确认打开请求已发出。"}],
         },
     )
-    displayed = cli.format_result(result)
+    displayed = format_result(result)
     assert "HTML 已保存到 /tmp/github.html" in displayed
     assert displayed == result.outputs["answer"]
     assert result.outputs["evidence"] and result.outputs["limitations"]
@@ -339,7 +340,7 @@ def test_unsuccessful_result_labels_partial_answer_and_diagnostics(status, compl
         outputs={"answer": "已完成部分抓取。"},
         diagnostics=[{"code": "TOOL_FAILED", "phase": "execution", "message": "文件写入失败。"}],
     )
-    displayed = cli.format_result(result)
+    displayed = format_result(result)
     assert displayed.startswith(expected)
     assert "部分回答" in displayed
     assert "已完成部分抓取。" in displayed
@@ -353,7 +354,7 @@ def test_custom_result_fields_are_preserved():
         output_complete=True,
         outputs={"draft": "中文邮件草稿", "repositories": [{"name": "example/repo"}]},
     )
-    displayed = cli.format_result(result)
+    displayed = format_result(result)
     assert "draft：\n中文邮件草稿" in displayed
     assert "repositories" in displayed and "example/repo" in displayed
 
@@ -376,7 +377,7 @@ async def test_conversation_displays_readable_answer_or_full_json(monkeypatch, c
     )
 
     class CompletedAgent(DisplayAgent):
-        async def advance(self, session, user_input):
+        async def advance(self, session, user_input, **kwargs):
             assert session.timezone == "America/New_York"
             return TaskTurn(IntentSession(), result)
 
@@ -384,9 +385,10 @@ async def test_conversation_displays_readable_answer_or_full_json(monkeypatch, c
     assert await cli.converse(json_output=json_output, timezone="America/New_York") == 0
     output = capsys.readouterr().out
     if json_output:
-        assert json.loads(output) == result.model_dump(mode="json")
+        assert next(json.loads(line)["result"] for line in output.splitlines()
+                    if json.loads(line).get("type") == "task") == result.model_dump(mode="json")
     else:
-        assert output == "Karen：中文邮件草稿\n"
+        assert "中文邮件草稿" in output and "已完成" in output
 
 
 async def test_invalid_cli_timezone_stops_before_model_initialization(capsys):
@@ -412,7 +414,7 @@ async def test_cli_continues_after_each_task(monkeypatch, capsys, first_status):
     received = []
 
     class TwoTaskAgent(DisplayAgent):
-        async def advance(self, session, user_input):
+        async def advance(self, session, user_input, **kwargs):
             received.append(user_input)
             first = len(received) == 1
             return TaskTurn(
@@ -426,7 +428,7 @@ async def test_cli_continues_after_each_task(monkeypatch, capsys, first_status):
             )
 
     monkeypatch.setattr(cli, "Karen", lambda **kwargs: TwoTaskAgent())
-    assert await cli.converse() == 0
+    assert await cli.converse() == (1 if first_status == "FAILED" else 0)
     assert received == ["第一项任务", "第二项任务"]
     output = capsys.readouterr().out
     assert "第一项任务结果" in output and "第二项任务结果" in output
@@ -439,7 +441,7 @@ async def test_cli_returns_last_task_failure_code_on_exit(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
     class FailedAgent(DisplayAgent):
-        async def advance(self, session, user_input):
+        async def advance(self, session, user_input, **kwargs):
             return TaskTurn(session, RunResult(run_id="test-run", execution_status="FAILED"))
 
     monkeypatch.setattr(cli, "Karen", lambda **kwargs: FailedAgent())
@@ -585,7 +587,7 @@ class Memory:
         print('PERSISTENCE_COMPLETE', flush=True)
 
 class WaitingAgent:
-    async def advance(self, session, user_input):
+    async def advance(self, session, user_input, **kwargs):
         print('TASK_STARTED', flush=True)
         await asyncio.Event().wait()
 
@@ -738,7 +740,7 @@ def test_answer_preserves_requested_sources_and_material_limitations():
             "limitations": [{"description": "INTERNAL_BUDGET_CODE"}],
         },
     )
-    assert cli.format_result(result) == answer
+    assert format_result(result) == answer
 
 
 def test_evidence_and_limitations_remain_visible_without_an_answer():
@@ -751,7 +753,7 @@ def test_evidence_and_limitations_remain_visible_without_an_answer():
             "limitations": [{"description": "仍缺傍晚预报"}],
         },
     )
-    text = cli.format_result(result)
+    text = format_result(result)
     assert "https://example.com" in text and "仍缺傍晚预报" in text
 
 
@@ -769,7 +771,7 @@ async def test_cli_displays_direct_reply_without_execution_result(monkeypatch, c
     displayed = []
 
     class DirectAgent:
-        async def advance(self, session, user_input):
+        async def advance(self, session, user_input, **kwargs):
             return TaskTurn(
                 IntentSession(timezone="UTC", routing=route, reply="好的，了解了，你住在北京。")
             )
@@ -782,11 +784,12 @@ async def test_cli_displays_direct_reply_without_execution_result(monkeypatch, c
     assert await cli.converse(json_output=json_output, timezone="UTC") == 0
     output = capsys.readouterr().out
     if json_output:
-        data = json.loads(output)
-        assert data["outcome"] == "replied" and data["answer"] == "好的，了解了，你住在北京。"
+        data = next(json.loads(line) for line in output.splitlines()
+                    if json.loads(line).get("type") == "task")
+        assert data["state"] == "completed" and data["answer"] == "好的，了解了，你住在北京。"
         assert "execution_status" not in data and "run_id" not in data
     else:
-        assert output == "Karen：好的，了解了，你住在北京。\n"
+        assert "好的，了解了，你住在北京。" in output and "已完成" in output
     assert len(displayed) == 1 and "好的，了解了" in displayed[0]
 
 
@@ -807,7 +810,7 @@ def test_tool_failure_presentation_explains_safe_cause_without_dumping_details(d
                       "message": "Registered tool failed",
                       "details": {**details, "internal_only": "private-diagnostic-value"}}],
     )
-    text = cli.format_result(result)
+    text = format_result(result)
     assert expected in text and "任务执行失败" in text
     assert "private-diagnostic-value" not in text and "private-provider-value" not in text
     assert "ConnectError" not in text
@@ -826,10 +829,32 @@ async def test_unavailable_workflow_index_preserves_normal_conversation(monkeypa
             raise sqlite3.DatabaseError('unreadable index')
 
     class ReplyAgent(DisplayAgent):
-        async def advance(self, session, text):
+        async def advance(self, session, text, **kwargs):
             return TaskTurn(session.model_copy(update={'reply': 'Hello'}))
 
     monkeypatch.setattr(cli, 'create_workflows', lambda *args: BrokenWorkflows())
     monkeypatch.setattr(cli, 'Karen', lambda **kwargs: ReplyAgent())
     assert await cli.converse(timezone='UTC') == 0
-    assert 'Karen：Hello' in capsys.readouterr().out
+    assert 'Hello' in capsys.readouterr().out
+
+
+def test_task_concurrency_option_is_forwarded(monkeypatch):
+    captured = {}
+
+    async def converse(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "converse", converse)
+    monkeypatch.setattr(sys, "argv", ["karen", "--max-concurrent-tasks", "4", "--wechat"])
+    with pytest.raises(SystemExit) as exit:
+        cli.main()
+    assert exit.value.code == 0
+    assert captured["max_concurrent_tasks"] == 4 and captured["wechat"] is True
+
+
+def test_task_concurrency_option_rejects_zero(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["karen", "--max-concurrent-tasks", "0"])
+    with pytest.raises(SystemExit) as exit:
+        cli.main()
+    assert exit.value.code == 2

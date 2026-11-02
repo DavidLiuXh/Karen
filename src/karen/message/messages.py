@@ -140,3 +140,25 @@ CANCELLED_PENDING_TASK = "好的，已取消当前待澄清的任务。"
 MEMORY_READ_INCOMPLETE = "本轮记忆读取未能完成。"
 
 HISTORY_LINK_UNVERIFIED = "关联核验未完成，不能确定所指任务。"
+
+# Concurrent task interaction
+TASK_HELP = "/new 内容：新任务；/tasks：列表；/use ID：选中任务；/reply ID 内容：回复；/cancel ID：取消；/exit：退出。未指定任务且有待回答问题时，请先选择任务。"
+TASK_ACCEPTED = "[{task_id}] 已接收，正在排队或处理。"
+TASK_LIST_ITEM = "[{task_id}] {state} · {title}"
+TASK_LIST_EMPTY = "当前没有任务。"
+TASK_UNKNOWN = "没有找到这个任务，请用 /tasks 查看任务编号。"
+TASK_FOCUSED = "已选中任务 [{task_id}]；后续普通输入属于此任务，使用 /new 发起无关任务。"
+TASK_CANCEL_REQUESTED = "[{task_id}] 已请求取消。"
+TASK_NOT_WAITING = "该任务当前不等待回答；运行中的任务请等待或取消，其他请求请使用 /new。"
+TASK_SELECT_OWNER = "这条输入已保留。请用 /use ID 指定它回答的任务；若它是新请求，用 /new 直接将这条输入建为新任务。"
+TASK_SELECT_PENDING = "还有一条输入等待关联，请先用 /use ID 指定任务，再发送其他补充。"
+TASK_INPUT_REJECTED = "任务输入未接收（{code}）。"
+TASK_EVENT = "[{task_id} · {state}]\n{text}"
+TASK_ERROR = "本轮未完成（{code}）。任务保留在列表中；第一版不自动重放失败任务。"
+TASK_CANCELLED = "任务已取消；已发生的外部操作不会回滚。"
+TASK_CONCURRENCY_HELP = "同时推进的任务数，默认 {count}；执行阶段暂时串行以隔离共享资源"
+TASK_CONCURRENCY_INVALID = "--max-concurrent-tasks 必须为正整数"
+TASK_STATE_LABELS = {
+    "queued": "排队中", "running": "处理中", "waiting": "等待回复",
+    "completed": "已完成", "failed": "失败", "cancelled": "已取消",
+}

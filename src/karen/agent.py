@@ -1,5 +1,6 @@
 """Connect intent reception, selective context recall and task execution."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -43,6 +44,7 @@ class Karen:
         self.memory = memory
         self.observer = observer or Observer()
         self.workflows = workflows
+        self._execution_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def _foreground(self):
@@ -340,50 +342,52 @@ class Karen:
         self._capture(session, "goal_created", session.goal.model_dump(mode="json"), warnings)
         if policy is None:
             policy = all_capabilities_policy(self.engine)
-        with self.observer.span("execution"):
-            self.observer.emit(
-                "execution.started",
-                data={
-                    "goal": session.goal,
-                    "policy": policy,
-                    "runs_dir": str(self.engine.config.runs_dir),
-                },
-            )
-            if workflow is not None and workflow.status == "matched":
-                with self.observer.span("workflow.execution"):
-                    result = await self.engine.run_graph(
-                        goal=session.goal,
-                        graph_spec=workflow.graph_spec,
-                        policy=policy,
-                        cancellation_token=cancellation_token,
+        # First version serializes engine runs; understanding/clarification stays concurrent.
+        async with self._execution_lock:
+            with self.observer.span("execution"):
+                self.observer.emit(
+                    "execution.started",
+                    data={
+                        "goal": session.goal,
+                        "policy": policy,
+                        "runs_dir": str(self.engine.config.runs_dir),
+                    },
+                )
+                if workflow is not None and workflow.status == "matched":
+                    with self.observer.span("workflow.execution"):
+                        result = await self.engine.run_graph(
+                            goal=session.goal,
+                            graph_spec=workflow.graph_spec,
+                            policy=policy,
+                            cancellation_token=cancellation_token,
+                        )
+                    self.workflows.record_outcome(
+                        workflow_id=workflow.workflow_id,
+                        version=workflow.version,
+                        result=result,
+                        request_id=session.request_id,
                     )
-                self.workflows.record_outcome(
-                    workflow_id=workflow.workflow_id,
-                    version=workflow.version,
-                    result=result,
-                    request_id=session.request_id,
+                else:
+                    result = await self.engine.run(
+                        goal=session.goal, policy=policy, cancellation_token=cancellation_token
+                    )
+                self.observer.emit(
+                    "execution.result",
+                    status="ok"
+                    if result.execution_status == "COMPLETED" and result.output_complete
+                    else "failed",
+                    data={
+                        "run_id": result.run_id,
+                        "execution_status": result.execution_status,
+                        "output_complete": result.output_complete,
+                        "outputs": result.outputs,
+                        "diagnostics": result.diagnostics,
+                        "node_records": result.node_records,
+                        "recording": result.recording,
+                        "usage": result.usage,
+                        "business_acceptance": "not_evaluated",
+                    },
                 )
-            else:
-                result = await self.engine.run(
-                    goal=session.goal, policy=policy, cancellation_token=cancellation_token
-                )
-            self.observer.emit(
-                "execution.result",
-                status="ok"
-                if result.execution_status == "COMPLETED" and result.output_complete
-                else "failed",
-                data={
-                    "run_id": result.run_id,
-                    "execution_status": result.execution_status,
-                    "output_complete": result.output_complete,
-                    "outputs": result.outputs,
-                    "diagnostics": result.diagnostics,
-                    "node_records": result.node_records,
-                    "recording": result.recording,
-                    "usage": result.usage,
-                    "business_acceptance": "not_evaluated",
-                },
-            )
         public_result = result.model_dump(
             mode="json",
             include={

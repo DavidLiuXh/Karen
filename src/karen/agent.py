@@ -97,7 +97,10 @@ class Karen:
         policy: ExecutionPolicy | None = None,
         cancellation_token: CancellationToken | None = None,
         received_at: datetime | None = None,
+        continue_task: bool = False,
     ) -> TaskTurn:
+        if continue_task and not session.questions:
+            raise ValueError("NO_PENDING_TASK")
         previous_goal = session.goal
         previous_run_id = session.completed_run_id
         if session.completed:
@@ -135,6 +138,17 @@ class Karen:
                             occurred_at=received_at,
                         )
                         raise
+                if continue_task and routing.task_relation != "continue":
+                    self.observer.emit(
+                        "task.routing_bound",
+                        data={
+                            "request_id": session.request_id,
+                            "model_relation": routing.task_relation,
+                            "effective_relation": "continue",
+                            "reason": "explicit_task_assignment",
+                        },
+                    )
+                    routing = routing.model_copy(update={"task_relation": "continue"})
                 session = self.intent.prepare_session(session, routing, received_at=received_at)
                 with self.observer.span("turn", request_id=session.request_id) as outcome:
                     self.observer.emit(

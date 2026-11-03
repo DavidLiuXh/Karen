@@ -116,7 +116,8 @@ class TaskManager:
                 self._observe(task)
                 with self.observer.span("task.turn", task_id=task.task_id):
                     turn = await self.agent.advance(
-                        task.session, text, received_at=received_at, cancellation_token=task.token
+                        task.session, text, received_at=received_at, cancellation_token=task.token,
+                        continue_task=bool(task.session.questions),
                     )
                 task.session, task.turn = turn.session, turn
                 if task.token.cancelled:

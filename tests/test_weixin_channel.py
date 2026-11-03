@@ -612,3 +612,37 @@ async def test_parallel_tasks_report_to_their_own_messages(store, credentials):
         await until(lambda: len(value.agent.displayed) == 2)
         final = [item for item in value.client.sent if "已完成" in str(item[1])]
         assert {item[2]["context_token"] for item in final} == {"context-1", "context-2"}
+
+
+async def test_completed_followup_keeps_clarification_task_and_message_delivery_context(store, credentials):
+    from test_task_manager import ConversationAgent
+
+    value = channel(store, credentials, agent=ConversationAgent())
+
+    async def send(text, identifier, expected):
+        await value.client.batches.put({"msgs": [incoming(text, identifier=identifier)]})
+        await until(lambda: any(
+            kwargs["context_token"] == f"context-{identifier}" and expected in str(item)
+            for _, item, kwargs in value.client.sent
+        ))
+
+    async with running(value):
+        await send("/new completed", 1, "已完成")
+        original = next(iter(value.manager.tasks.values()))
+        await send(f"/use {original.task_id}", 2, "已选中任务")
+        await send("new request", 3, "等待回复")
+        successor = value.manager.tasks[value.interaction.focus]
+        request_id = successor.session.request_id
+        await send("first detail", 4, "等待回复")
+        await send("second detail", 5, "已完成")
+        assert len(value.manager.tasks) == 2
+        assert successor.task_id != original.task_id
+        assert successor.state == "completed" and successor.session.request_id == request_id
+        assert [m.content for m in successor.session.messages] == [
+            "new request", "first detail", "second detail",
+        ]
+        for identifier in [3, 4, 5]:
+            assert any(
+                kwargs["context_token"] == f"context-{identifier}" and successor.task_id in str(item)
+                for _, item, kwargs in value.client.sent
+            )

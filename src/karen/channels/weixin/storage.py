@@ -212,12 +212,16 @@ class WeixinStore:
         """).fetchone()
         return row if row and row["next_attempt"] <= time.time() else None
 
-    def progress(self, row):
+    def notice(self, row, text):
         with self.db:
-            self.db.execute(
-                "INSERT INTO outbox(inbox_id, client_id, item, is_progress) VALUES (?, ?, ?, 1)",
-                (row["id"], uuid4().hex, PROGRESS_ITEM),
-            )
+            for item in text_items(text):
+                self.db.execute(
+                    "INSERT INTO outbox(inbox_id, client_id, item, is_progress) VALUES (?, ?, ?, 1)",
+                    (row["id"], uuid4().hex, json.dumps(item, ensure_ascii=False)),
+                )
+
+    def progress(self, row):
+        self.notice(row, messages.WEIXIN_PROGRESS)
 
     def uploaded(self, row, item):
         with self.db:

@@ -155,3 +155,8 @@ After binding a real account, verify:
 
 Live QR scanning, message acceptance and real CDN delivery require the owner's phone
 and must be verified separately from automated tests.
+
+
+## Concurrent tasks (first version)
+
+Weixin now uses the shared task manager; the earlier single-task processing description is superseded by this section. Configure concurrent task advancement with `karen --wechat --max-concurrent-tasks 2`. Use `/new`, `/tasks`, `/use ID`, `/reply ID answer`, and `/cancel ID`. Task replies include their ID and are delivered through the triggering message’s own context token. Independent engine runs can overlap; run-scoped file leases coordinate conflicting paths, and unclassified tools use conservative serialization. Existing overwrite rules remain unchanged. The outbox still persists and retries delivery; the in-memory task set is not restored after restart. Only the existing last single-session clarification checkpoint remains. See [task management](TASK_MANAGER.md) for the complete boundaries.

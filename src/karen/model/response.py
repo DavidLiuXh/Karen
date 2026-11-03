@@ -80,3 +80,16 @@ def format_result(result: RunResult) -> str:
         label = messages.WARNING_LABEL if diagnostic.severity == "warning" else messages.DIAGNOSTIC_LABEL
         lines.append(messages.DIAGNOSTIC_ITEM.format(label=label, code=diagnostic.code, message=_diagnostic_message(diagnostic)))
     return "\n\n".join(lines)
+
+
+def format_task_event(event, *, json_output=False):
+    if event.state == "cancelled" and (event.turn is None or event.turn.result is None):
+        return messages.TASK_CANCELLED
+    if event.error:
+        return messages.TASK_ERROR.format(code=event.error)
+    turn = event.turn
+    if turn is None:
+        return messages.TASK_ERROR.format(code="NO_RESULT")
+    if turn.result is not None:
+        return turn.result.model_dump_json(indent=2) if json_output else format_result(turn.result)
+    return turn.response if turn.response is not None else "\n".join(turn.session.questions)

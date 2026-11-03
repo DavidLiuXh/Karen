@@ -22,6 +22,7 @@ Karen aims to reduce that work and make the path from a request to a result more
 | Capability | What it supports |
 | --- | --- |
 | Multi-turn conversation and input routing | Distinguishes information sharing, casual conversation, questions, task requests, and updates or cancellation of a task awaiting clarification |
+| Concurrent task management | Shared CLI and Weixin scheduling, isolated sessions, addressed multi-turn replies, queueing and cancellation; two concurrent advances by default |
 | Necessary clarification | Asks specific questions when required information is missing, merges the answers, and reassesses until the goal is clear |
 | Personal contextual memory | Automatically extracts and verifies long-term facts, preferences, and event summaries; supports retrieval across restarts and changes to facts |
 | Research and deliverables | Searches public sources, reads web pages, organizes text, writes text or HTML files under `/tmp`, and requests that the local browser open HTML files |
@@ -30,34 +31,45 @@ Karen aims to reduce that work and make the path from a request to a result more
 
 For example, you can tell Karen “I like history and archaeology” and “I enjoy sports, such as cycling,” then later ask “What are my hobbies?” You can also ask it to research a topic, organize the findings, and save them as HTML. Memory writes run in the background, so new information may take time to become retrievable.
 
-The current interaction interface is a CLI. Task completion depends on registered tools, available data, and model decisions. Known semantic and execution issues are described in the evaluation section below.
+The current interaction interfaces are the CLI and personal Weixin. Task completion depends on registered tools, available data, and model decisions. Known semantic and execution issues are described in the evaluation section below.
 
 ## How Karen works
 
-Karen uses modules with high cohesion and low coupling. Input understanding, contextual memory, reusable workflows, and observability are separate modules within Karen; [DynamicAgentGraph](https://github.com/DavidLiuXh/DynamicAgentGraph) handles task planning and execution.
+Karen uses modules with high cohesion and low coupling. Input understanding, contextual memory, task management, reusable workflows, and observability are separate modules within Karen; [DynamicAgentGraph](https://github.com/DavidLiuXh/DynamicAgentGraph) handles task planning and execution.
 
 ```mermaid
 flowchart TD
-    U[User input] --> R[Classify input and its relation to the current task]
+    U[CLI / personal Weixin input] --> I[TaskInteraction: commands and task addressing]
+    I --> T[TaskManager: queue, concurrency slots, isolated sessions, cancellation]
+    T --> R[Classify input and its relation to the current task]
     R -->|Information sharing or conversation| A[Respond directly]
     R -->|Question or task| M[Retrieve relevant memories as needed]
     M --> D{Can it be answered directly?}
     D -->|Yes| A
-    D -->|Requires task execution| W{Compatible enabled workflow?}
+    D -->|Requires execution| W{Compatible enabled workflow?}
     W -->|No| C[Assess clarity]
-    W -->|Yes; bind current parameters| X[DynamicAgentGraph validates and executes supplied graph]
-    X --> O
     C -->|Necessary information is missing| Q[Ask clarification questions]
-    Q -->|User answers; preserve the original request| U
+    Q -->|Release slot; wait for an addressed reply| T
     C -->|Clear| G[Build GoalSpec]
-    G --> E[DynamicAgentGraph plans and executes]
-    E --> O[Show the result or failure reason]
-    U -. Save and extract asynchronously .-> K[Contextual memory]
+    W -->|Yes| B[Bind current parameters; build GoalSpec and graph]
+    G --> L[ExecutionResources: run admission and file conflict protection]
+    B --> L
+    L --> E[DynamicAgentGraph: plan or validate supplied graph, then execute]
+    E --> O[Task events: result, failure or cancellation]
+    A --> O
+    Q --> V[CLI / Weixin delivery with task ID]
+    O --> V
+    R -. Save and extract asynchronously .-> K[Contextual memory]
     O -. Record task results asynchronously .-> K
+    K --> M
     O -. Discover, verify and save asynchronously .-> F[Reusable workflows]
     F --> W
-    K --> M
+    T -. State and turn traces .-> Z[Observability]
+    E -. Graphs, tools and artifacts .-> Z
+    L -. Admission and resource waits .-> Z
 ```
+
+Task management sits between the channels and input understanding: `TaskInteraction` assigns messages explicitly, while `TaskManager` maintains isolated sessions, controls concurrency and delivers events. Waiting for clarification releases a slot; an addressed reply resumes the same session. Execution resources control run admission and file access, acquiring path leases at actual tool calls and retaining them until the graph ends. Independent graphs can overlap; reused and newly planned graphs follow the same protection rules. Background memory writes and workflow discovery do not occupy foreground task-advancement slots.
 
 ### From input to an executable goal
 
@@ -66,6 +78,12 @@ The input module uses LangGraph to express response, clarification, and goal-bui
 Clarification preserves the original request, pending questions, and their associated answers. A partial answer does not discard other pending questions. Each turn reassesses clarity and asks only for information necessary to determine the goal, scope, deliverable, or acceptance criteria. The user's timezone and the initial input time provide the reference for relative dates such as “today” and “tomorrow.”
 
 Once the goal is clear, Karen creates a DynamicAgentGraph `GoalSpec` containing the objective, success criteria, constraints, inputs, and context. The engine plans an execution graph, invokes authorized capabilities, and returns a result. Valid execution status and output structure do not mean that every business success criterion has been independently verified.
+
+### Concurrent tasks
+
+CLI and personal Weixin now accept tasks while earlier tasks are still running. The default is two concurrent task advances; configure it with `--max-concurrent-tasks N` (also works with `--wechat`). Each task has an independent conversation and task ID. Use `/new request`, `/tasks`, `/use ID`, `/reply ID answer`, and `/cancel ID`. Unassigned answers are retained until you select a task; the first version does not guess their owner. Background responses carry task IDs.
+
+Task understanding and independent engine runs may overlap. Known file operations use run-scoped path leases: conflicting access waits, while independent paths can progress in parallel. Unclassified tools retain conservative whole-run serialization. Existing overwrite rules remain unchanged; this does not preserve old contents at a reused path. Waiting for a user releases a task slot. Task scheduling is in memory, without general restart recovery or automatic replay. Existing Weixin delivery retries and its last single-session clarification checkpoint remain. `--json` now emits JSON Lines with `notice` and `task` events. See [task management](docs/TASK_MANAGER.md) for commands, shutdown and recovery boundaries.
 
 ### Reusable workflows
 
@@ -237,9 +255,9 @@ Summarize information from the past month about lure-fishing waters in Beijing. 
 Save the summary you just prepared as /tmp/beijing-lure.html and open it in my local browser.
 ```
 
-Answer clarification questions directly. Karen merges the current task's requirements and reassesses them; unrelated new requests are handled separately. It waits for another input after each task finishes.
+Answer clarification with `/reply ID answer`, or select its task with `/use ID` first. Karen merges only that task's requirements and reassesses them. Use `/new request` for unrelated work while questions remain pending; other tasks can keep progressing.
 
-Exit with `/exit`, EOF, or Ctrl+C. Normal shutdown waits for original records and recovery state to be persisted; unfinished background model jobs can resume on the next startup. Forced termination may lose information that has not reached disk. After restarting, Karen can retrieve saved memories, but it does not restore an unfinished clarification or execution session.
+Exit with `/exit`, EOF, or Ctrl+C. EOF waits for accepted advances to finish; `/exit` and Ctrl+C cancel unfinished tasks. Normal shutdown drains memory persistence; durable memory jobs keep their existing recovery behavior. Task scheduling itself is in memory and does not resume after restart. Weixin retains only its existing last single-session clarification checkpoint. Forced termination can lose information not yet on disk.
 
 ### Available tools
 

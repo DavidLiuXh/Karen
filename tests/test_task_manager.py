@@ -166,7 +166,7 @@ async def test_explicit_completed_followup_creates_new_task_without_mutating_pre
     await manager.close()
 
 
-async def test_karen_serializes_engine_access_while_two_tasks_progress(tmp_path):
+async def test_karen_runs_isolated_engines_in_parallel(tmp_path):
     from dynamic_graph import GoalSpec, RunResult
 
     from karen import Karen
@@ -212,10 +212,10 @@ async def test_karen_serializes_engine_access_while_two_tasks_progress(tmp_path)
     tasks = [manager.submit(text, IntentSession()) for text in ["one", "two"]]
     try:
         await asyncio.sleep(0.02)
-        assert intent.understood == 2 and engine.active == 1
+        assert intent.understood == 2 and engine.active == 2
         engine.release.set()
         await manager.drain()
-        assert engine.peak == 1 and all(t.state == "completed" for t in tasks)
+        assert engine.peak == 2 and all(t.state == "completed" for t in tasks)
     finally:
         await manager.close()
 

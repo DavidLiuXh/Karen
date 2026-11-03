@@ -329,6 +329,9 @@ async def test_incomplete_output_is_not_shown_as_successful_completion(tmp_path)
     class IncompleteEngine:
         config = EngineConfig(runs_dir=tmp_path / "runs")
 
+        def list_capabilities(self):
+            return []
+
         async def run(self, **kwargs):
             return RunResult(
                 run_id=uuid4().hex,

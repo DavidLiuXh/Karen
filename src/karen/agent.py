@@ -1,6 +1,5 @@
 """Connect intent reception, selective context recall and task execution."""
 
-import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,6 +12,7 @@ from .context import ContextEvent, ContextMemory, RecallQuery, RecallResult
 from .context.contracts import MemoryError
 from .intent import IntentRecognizer, IntentSession
 from .observability import Observer
+from .task.resources import ExecutionResources
 from .workflow import CompletedWorkflowRun, ReusableWorkflows, WorkflowRequest
 
 
@@ -38,13 +38,14 @@ class Karen:
         memory: ContextMemory | None = None,
         observer: Observer | None = None,
         workflows: ReusableWorkflows | None = None,
+        resources: ExecutionResources | None = None,
     ):
         self.intent = intent
         self.engine = engine
         self.memory = memory
         self.observer = observer or Observer()
         self.workflows = workflows
-        self._execution_lock = asyncio.Lock()
+        self.resources = resources or ExecutionResources(self.observer)
 
     @asynccontextmanager
     async def _foreground(self):
@@ -342,8 +343,7 @@ class Karen:
         self._capture(session, "goal_created", session.goal.model_dump(mode="json"), warnings)
         if policy is None:
             policy = all_capabilities_policy(self.engine)
-        # First version serializes engine runs; understanding/clarification stays concurrent.
-        async with self._execution_lock:
+        async with self.resources.run(self.engine.list_capabilities()):
             with self.observer.span("execution"):
                 self.observer.emit(
                     "execution.started",

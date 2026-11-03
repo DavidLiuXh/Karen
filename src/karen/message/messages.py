@@ -156,7 +156,7 @@ TASK_INPUT_REJECTED = "任务输入未接收（{code}）。"
 TASK_EVENT = "[{task_id} · {state}]\n{text}"
 TASK_ERROR = "本轮未完成（{code}）。任务保留在列表中；第一版不自动重放失败任务。"
 TASK_CANCELLED = "任务已取消；已发生的外部操作不会回滚。"
-TASK_CONCURRENCY_HELP = "同时推进的任务数，默认 {count}；执行阶段暂时串行以隔离共享资源"
+TASK_CONCURRENCY_HELP = "同时推进的任务数，默认 {count}；独立执行图可并行，同一文件的冲突操作等待"
 TASK_CONCURRENCY_INVALID = "--max-concurrent-tasks 必须为正整数"
 TASK_STATE_LABELS = {
     "queued": "排队中", "running": "处理中", "waiting": "等待回复",

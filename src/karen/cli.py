@@ -33,6 +33,7 @@ from .observability import ObservedModel, Observer
 from .observability.viewer import DEFAULT_PORT, background_server
 from .task import DEFAULT_MAX_CONCURRENT_TASKS, TaskManager
 from .task.console import run_console
+from .task.resources import ExecutionResources
 from .workflow import ReusableWorkflows
 
 
@@ -150,15 +151,23 @@ async def converse(
                 worker=model,
             ),
         )
+        resources_guard = ExecutionResources(observer)
         for tool_factory in (
             file_read_text_tool,
             file_write_text_tool,
             browser_open_local_page_tool,
             web_fetch_tool,
         ):
-            engine.register_tool(tool_factory())
+            definition = tool_factory()
+            if tool_factory is not web_fetch_tool:
+                definition = resources_guard.file_tool(
+                    definition, write=tool_factory is file_write_text_tool,
+                )
+            else:
+                definition = resources_guard.independent_read(definition)
+            engine.register_tool(definition)
         if os.environ.get("TAVILY_API_KEY", "").strip():
-            engine.register_tool(tavily_search_tool())
+            engine.register_tool(resources_guard.independent_read(tavily_search_tool()))
         else:
             print(messages.TAVILY_UNAVAILABLE)
         memory_model = ObservedModel(deepseek_client(thinking=False), observer)
@@ -182,6 +191,7 @@ async def converse(
                 memory=memory,
                 observer=observer,
                 workflows=workflows,
+                resources=resources_guard,
             )
             if wechat:
                 import httpx
@@ -195,7 +205,7 @@ async def converse(
 
                 store = WeixinStore(Path.home() / ".Karne" / "weixin", credentials)
                 resources.callback(store.close)
-                engine.register_tool(prepare_file_tool(store))
+                engine.register_tool(resources_guard.file_tool(prepare_file_tool(store)))
                 http = await resources.enter_async_context(httpx.AsyncClient(trust_env=False))
                 channel = WeixinChannel(
                     agent=agent, client=ILinkClient(http, token=credentials.token,

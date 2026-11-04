@@ -142,7 +142,7 @@ MEMORY_READ_INCOMPLETE = "本轮记忆读取未能完成。"
 HISTORY_LINK_UNVERIFIED = "关联核验未完成，不能确定所指任务。"
 
 # Concurrent task interaction
-TASK_HELP = "/new 内容：新任务；/tasks：列表；/use ID：选中任务；/reply ID 内容：回复；/cancel ID：取消；/exit：退出。未指定任务且有待回答问题时，请先选择任务。"
+TASK_HELP = "/new 内容：新任务；/tasks：列表；/use ID：选中任务；/reply ID 内容：回复；/cancel ID：取消；/schedule：定时任务；/exit：退出。未指定任务且有待回答问题时，请先选择任务。"
 TASK_ACCEPTED = "[{task_id}] 已接收，正在排队或处理。"
 TASK_LIST_ITEM = "[{task_id}] {state} · {title}"
 TASK_LIST_EMPTY = "当前没有任务。"
@@ -161,4 +161,35 @@ TASK_CONCURRENCY_INVALID = "--max-concurrent-tasks 必须为正整数"
 TASK_STATE_LABELS = {
     "queued": "排队中", "running": "处理中", "waiting": "等待回复",
     "completed": "已完成", "failed": "失败", "cancelled": "已取消",
+}
+
+# Native scheduled tasks
+SCHEDULE_UNAVAILABLE = "定时任务存储未打开，本次未接受操作。"
+SCHEDULE_EMPTY = "还没有定时任务。用 /schedule 每天中午12点生成GitHub趋势的精美HTML页面 新增；/schedule 后也可用自然语言修改、删除或立即执行。"
+SCHEDULE_CREATED = "已保存定时任务。仅在 Karen 运行期间触发。"
+SCHEDULE_UPDATED = "已更新定时任务，正在执行的任务继续使用原来的内容。"
+SCHEDULE_DELETED = "已删除定时任务 [{schedule_id}]；已经开始的执行仍可通过 /cancel 执行任务编号 取消。"
+SCHEDULE_TRIGGERED = "已触发定时任务 [{schedule_id}]，执行任务编号 [{task_id}]。原定时间不变。"
+SCHEDULE_CLARIFY = "{question}\n请用 /schedule 重新发送包含所需信息的完整操作。"
+SCHEDULE_FAILED = "定时任务操作未完成（{code}），请检查后重新发送。"
+SCHEDULE_NO_NEXT = "无（单次规则已到期或已触发）"
+SCHEDULE_DAILY = "每天 {time}"
+SCHEDULE_WEEKLY = "每周{day} {time}"
+SCHEDULE_INTERVAL = "每隔 {minutes:g} 分钟"
+SCHEDULE_ITEM = "[{schedule_id}] {name}\n规则：{timing}（{timezone}）\n下次触发：{next_time}\n最近执行：{state}；执行任务编号：{task_id}；最近跳过：{skipped}\n执行内容：{prompt}"
+SCHEDULE_EVENT = "[定时任务 {schedule_id} · {name}]\n{text}"
+SCHEDULE_START_FAILED = "Karen：定时任务存储无法打开，本次未启动对话。"
+SCHEDULE_STATE_LABELS = {
+    "not_run": "尚未执行", "interrupted": "上次执行因退出中断，未自动重做",
+    "rejected": "未接收执行，请检查任务队列或交付渠道",
+}
+SCHEDULE_SKIP_LABELS = {"busy": "上一轮尚未结束", "missed": "离线期间错过，未补跑"}
+SCHEDULE_ERRORS = {
+    "SCHEDULE_NOT_FOUND": "未找到该定时任务。请用 /schedule list 查看编号或完整名称。",
+    "SCHEDULE_TARGET_AMBIGUOUS": "存在同名定时任务，请用 /schedule list 查看后指定编号。",
+    "SCHEDULE_EXPLICIT_TARGET_REQUIRED": "请在 /schedule 操作中写出完整任务名称或编号，可用 /schedule list 查看。",
+    "SCHEDULE_BUSY": "该定时任务上一轮仍在排队、执行或等待回复，请先处理它。",
+    "SCHEDULE_PAST_TIME": "单次执行时间必须在将来，请明确日期和时间。",
+    "SCHEDULE_LIMIT": "最多保存 100 项定时任务，请先删除不再需要的规则。",
+    "SCHEDULE_CONTEXT_TOO_LARGE": "这次操作的任务内容过多，请用 /schedule list 查看后指定单个任务编号。",
 }

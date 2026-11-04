@@ -34,6 +34,7 @@ class MemoryStub:
 
 @pytest.fixture(autouse=True)
 def local_memory_only(monkeypatch):
+    monkeypatch.setattr(cli, "create_schedules", lambda *args: None)
     monkeypatch.setattr(cli, "create_workflows", lambda *args: None)
     monkeypatch.setattr(cli, "create_memory", lambda model, **kwargs: MemoryStub())
     monkeypatch.setattr(cli, "create_observer", lambda: cli.Observer())
@@ -592,6 +593,7 @@ class WaitingAgent:
         await asyncio.Event().wait()
 
 cli.create_memory = lambda model, **kwargs: Memory()
+cli.create_schedules = lambda *args: None
 cli.create_observer = lambda: cli.Observer(
     Path(os.environ['KAREN_TEST_PERSISTED']).parent / 'observability'
 ) if '--observe' in sys.argv else cli.Observer()

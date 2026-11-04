@@ -149,6 +149,71 @@ def test_private_state_and_exclusive_process_lock(tmp_path, credentials, store):
         WeixinStore(tmp_path / "weixin", credentials)
 
 
+async def test_scheduled_results_have_own_inbox_and_keep_regular_replies(store, credentials):
+    from karen.schedule.contracts import ScheduleCommand, ScheduleRule
+
+    value = WeixinChannel(
+        agent=Agent(), client=Client(), store=store, credentials=credentials,
+        initial_session=IntentSession(timezone="Asia/Shanghai"), observer=Observer(),
+        schedule_model=FakeModelClient(),
+    )
+    await value.schedules.start()
+    await value.schedules.stop()
+    store.accept({"msgs": [incoming(identifier=1), incoming(identifier=2)]}, "owner")
+    regular = store.next_input()
+    store.finish(regular, value.session, "普通消息回复", record=False)
+    value.schedules.apply(ScheduleCommand(
+        action="create", name="GitHub趋势", prompt="生成当天GitHub趋势页面",
+        rule=ScheduleRule(kind="daily", timezone="Asia/Shanghai", time="12:00"),
+    ))
+    entry = next(iter(value.schedules.entries.values()))
+    value.schedules.apply(ScheduleCommand(action="run", target=entry.schedule_id))
+    await value.manager.drain()
+    consumer = asyncio.create_task(value.task_results())
+    try:
+        await value.manager.events.join()
+        rows = store.db.execute("SELECT * FROM inbox ORDER BY id").fetchall()
+        assert len(rows) == 3
+        assert rows[0]["response"] == "普通消息回复" and rows[1]["status"] == "pending"
+        assert rows[2]["message_id"].startswith("schedule:") and rows[2]["status"] == "done"
+        assert "GitHub趋势" in rows[2]["response"]
+        assert json.loads(rows[2]["message"])["context_token"] == "context-2"
+        # Sending/retrying only works with the saved output, never another execution.
+        store.sent(store.next_output())
+        scheduled_output = store.next_output()
+        assert scheduled_output["inbox_id"] == rows[2]["id"]
+        store.failed(scheduled_output, WeixinError("NETWORK", retryable=False))
+        assert store.retry_failed("new-context") == 1
+        assert len(value.agent.inputs) == 1
+        assert store.db.execute("SELECT response FROM inbox WHERE id=?", (regular["id"],)).fetchone()[0] == "普通消息回复"
+    finally:
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+        await value.manager.close()
+        value.schedules.close()
+
+
+async def test_weixin_schedule_command_is_not_dispatched_as_an_ordinary_task(store, credentials):
+    response = {"action": "create", "name": "每日趋势", "prompt": "生成当天GitHub趋势的精美HTML页面",
+                "rule": {"kind": "daily", "timezone": "Asia/Shanghai", "time": "12:00"}}
+
+    class Model:
+        async def generate(self, request):
+            return SimpleNamespace(payload=response)
+
+    value = WeixinChannel(
+        agent=Agent(), client=Client(), store=store, credentials=credentials,
+        initial_session=IntentSession(timezone="Asia/Shanghai"), observer=Observer(),
+        schedule_model=Model(),
+    )
+    async with running(value):
+        await value.client.batches.put({"msgs": [incoming(text="/schedule 每天12点生成GitHub趋势页面")]})
+        await until(lambda: value.client.sent)
+        assert len(value.schedules.entries) == 1 and not value.agent.inputs
+        assert "已保存定时任务" in value.client.sent[0][1]["text_item"]["text"]
+        assert not store.db.execute("SELECT count(*) FROM inbox WHERE status='running'").fetchone()[0]
+
+
 def test_restart_preserves_clarification_and_never_reexecutes_uncertain_task(tmp_path, credentials):
     root = tmp_path / "state"
     session = IntentSession(timezone="UTC", user_context={"clarification-test": "retained"})

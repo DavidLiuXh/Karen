@@ -4,7 +4,7 @@ English | [简体中文](README_cn.md)
 
 Karen is a personal agent that understands what you want to do, retrieves relevant memories, turns requests into goals with success criteria, and uses tools to carry them out.
 
-Our aim is to build a Personal Agent that understands its user, proactively identifies problems, and moves work forward. **The current version supports user-initiated conversations, contextual memory, task execution, reusable workflows, and observability. Proactive task discovery and pausing execution for user confirmation are not yet implemented.**
+Our aim is to build a Personal Agent that understands its user, proactively identifies problems, and moves work forward. **The current version supports user-initiated conversations, contextual memory, task execution, scheduled tasks, reusable workflows, and observability. Proactive task discovery and pausing execution for user confirmation are not yet implemented.**
 
 ## Why build Karen?
 
@@ -23,6 +23,7 @@ Karen aims to reduce that work and make the path from a request to a result more
 | --- | --- |
 | Multi-turn conversation and input routing | Distinguishes information sharing, casual conversation, questions, task requests, and updates or cancellation of a task awaiting clarification |
 | Concurrent task management | Shared CLI and Weixin scheduling, isolated sessions, addressed multi-turn replies, queueing and cancellation; two concurrent advances by default |
+| Scheduled tasks | Create, update, delete, list, or manually trigger schedules through `/schedule` and natural language in CLI or Weixin; rules survive restarts |
 | Necessary clarification | Asks specific questions when required information is missing, merges the answers, and reassesses until the goal is clear |
 | Personal contextual memory | Automatically extracts and verifies long-term facts, preferences, and event summaries; supports retrieval across restarts and changes to facts |
 | Research and deliverables | Searches public sources, reads web pages, organizes text, writes text or HTML files under `/tmp`, and requests that the local browser open HTML files |
@@ -83,7 +84,41 @@ Once the goal is clear, Karen creates a DynamicAgentGraph `GoalSpec` containing 
 
 CLI and personal Weixin now accept tasks while earlier tasks are still running. The default is two concurrent task advances; configure it with `--max-concurrent-tasks N` (also works with `--wechat`). Each task has an independent conversation and task ID. Use `/new request`, `/tasks`, `/use ID`, `/reply ID answer`, and `/cancel ID`. Unassigned answers are retained until you select a task; the first version does not guess their owner. Background responses carry task IDs. `/new`, `/reply`, and successful submissions to a selected task focus the actual accepted task; clarification replies keep that task ID and session. Explicit task assignment also constrains model routing, preventing a mistaken “new request” decision from clearing the pending conversation. A completed, failed or cancelled task no longer receives ordinary input through stale focus. Explicitly address a completed task to start a follow-up; its new task becomes selected.
 
-Task understanding and independent engine runs may overlap. Known file operations use run-scoped path leases: conflicting access waits, while independent paths can progress in parallel. Unclassified tools retain conservative whole-run serialization. Existing overwrite rules remain unchanged; this does not preserve old contents at a reused path. Waiting for a user releases a task slot. Task scheduling is in memory, without general restart recovery or automatic replay. Existing Weixin delivery retries and its last single-session clarification checkpoint remain. `--json` now emits JSON Lines with `notice` and `task` events. See [task management](docs/TASK_MANAGER.md) for commands, shutdown and recovery boundaries.
+Task understanding and independent engine runs may overlap. Known file operations use run-scoped path leases: conflicting access waits, while independent paths can progress in parallel. Unclassified tools retain conservative whole-run serialization. Existing overwrite rules remain unchanged; this does not preserve old contents at a reused path. Waiting for a user releases a task slot. Execution sessions and the task queue are held in memory, without general restart recovery or automatic replay; scheduled trigger rules are persisted separately as described below. Existing Weixin delivery retries and its last single-session clarification checkpoint remain. `--json` now emits JSON Lines with `notice` and `task` events. See [task management](docs/TASK_MANAGER.md) for commands, shutdown and recovery boundaries.
+
+### Scheduled tasks
+
+CLI and Weixin support `/schedule` followed by natural language. Listing, triggering by ID, and deleting by ID also have deterministic commands that do not call the model:
+
+```text
+/schedule Every day at noon, generate a beautiful HTML page of today's GitHub Trending
+/schedule Move the GitHub Trending task to 1pm every day
+/schedule Summarize the latest technology news every 2 hours
+/schedule list
+/schedule run SCHEDULE_ID
+/schedule delete SCHEDULE_ID
+/schedule Delete "GitHub Trending"
+```
+
+Creation and updates show the saved execution request, explicit rule, timezone, and next occurrence. Use `/schedule list` for the actual generated names, schedule IDs, latest execution states, and execution task IDs. Address a schedule by its full ID or exact name; duplicate names require an ID. Ambiguous rules or targets prompt for more information; resend a complete `/schedule` command. Creating a rule does not execute it immediately.
+
+The ID before the name in a creation response (for example, `[95b5ec78] GitHub Trending`) is the **schedule ID**, identifying the saved rule. Each automatic or manual trigger creates a separate **execution task ID** for that occurrence. Use the schedule ID to manage the rule, and the execution task ID to answer clarification or cancel that execution:
+
+```text
+/schedule run 95b5ec78
+/schedule Move 95b5ec78 to 10am every day
+/schedule delete 95b5ec78
+/reply EXECUTION_TASK_ID additional information
+/cancel EXECUTION_TASK_ID
+```
+
+Supported rules are one-time, daily, weekly, and fixed intervals (one minute to 366 days). The default timezone comes from `--timezone`, or the local machine when omitted; a command can explicitly specify another timezone. “Every two hours” starts from creation or an interval change, with the first run two hours later. Manual triggers leave the original timing unchanged. Calendar rules follow local clock time; nonexistent daylight-saving times are skipped, and repeated clock times use only the first occurrence.
+
+Each occurrence creates an independent task, interpreting “today” against its actual execution time and reusing existing concurrency slots, tool permissions, memory, workflows, and delivery. If that schedule's previous task is queued, running, or waiting for clarification, the occurrence is skipped and shown in the list; a manual trigger is rejected while it remains active. Answer clarification with `/reply EXECUTION_TASK_ID answer`. Failures or a full queue are recorded without automatic retries; future occurrences remain scheduled. Deleting a rule does not cancel work already started, and updates do not rewrite an active execution. Use `/cancel EXECUTION_TASK_ID` to cancel it.
+
+**Triggers run only while the Karen process is running; no background service is installed.** Rules persist in `~/.Karne/schedules/cli/` for CLI, or `~/.Karne/weixin/<account-directory>/schedules/` for the current Weixin account. Each channel manages its own rules. Restarting skips missed recurring occurrences; missed one-time rules have no next occurrence and are not replayed. Interrupted executions are not resumed or repeated automatically. CLI EOF and exit stop scheduled triggering.
+
+Results return to the rule's originating channel with schedule and execution task IDs. CLI `--json` task events add `schedule_id` for scheduled executions. Each Weixin occurrence gets its own inbox record and uses the account's latest incoming reply context; delivery retries do not execute the task again. Delivery still depends on a valid Weixin reply context, with the existing `/retry` flow available for failed sends. Scheduling saves execution requests without adding tool capabilities; email access is not integrated.
 
 ### Reusable workflows
 

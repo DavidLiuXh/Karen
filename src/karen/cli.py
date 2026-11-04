@@ -31,6 +31,7 @@ from .message import messages
 from .model.models import deepseek_client, memory_embeddings
 from .observability import ObservedModel, Observer
 from .observability.viewer import DEFAULT_PORT, background_server
+from .schedule import ScheduledTasks
 from .task import DEFAULT_MAX_CONCURRENT_TASKS, TaskManager
 from .task.console import run_console
 from .task.resources import ExecutionResources
@@ -70,6 +71,13 @@ def create_observer() -> Observer:
     return Observer(
         Path.home() / ".Karne" / "observability",
         sensitive_values=(os.environ.get("DEEPSEEK_API_KEY"), os.environ.get("TAVILY_API_KEY")),
+    )
+
+
+def create_schedules(manager, session, model):
+    return ScheduledTasks(
+        root_dir=Path.home() / ".Karne" / "schedules" / "cli",
+        manager=manager, session=session, model=model,
     )
 
 
@@ -212,6 +220,7 @@ async def converse(
                                                   base_url=credentials.base_url),
                     store=store, credentials=credentials, initial_session=session, observer=observer,
                     max_concurrent_tasks=max_concurrent_tasks,
+                    schedule_model=memory_model,
                 )
                 print(messages.WEIXIN_STARTED, file=sys.stderr)
                 await channel.run()
@@ -219,9 +228,13 @@ async def converse(
             from prompt_toolkit.patch_stdout import patch_stdout
 
             manager = TaskManager(agent, max_concurrent=max_concurrent_tasks, observer=observer)
+            schedules = create_schedules(manager, session, memory_model)
+            if schedules is not None:
+                resources.callback(schedules.close)
             with patch_stdout(raw=True) if sys.stdout.isatty() else nullcontext():
                 return await run_console(manager, session, read_input=read_input,
-                                         display=display_response, json_output=json_output)
+                                         display=display_response, json_output=json_output,
+                                         schedules=schedules)
         finally:
             try:
                 try:

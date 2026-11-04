@@ -161,6 +161,24 @@ class WeixinStore:
                 self.db.execute("UPDATE inbox SET status='running' WHERE id=?", (row["id"],))
         return row
 
+    def scheduled_input(self, schedule_id, name):
+        """Give every scheduled execution its own durable response/outbox owner."""
+        latest = self.db.execute(
+            "SELECT message FROM inbox WHERE message_id NOT LIKE 'schedule:%' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if latest is None:
+            raise ValueError("SCHEDULE_WEIXIN_CONTEXT_MISSING")
+        message = json.loads(latest["message"])
+        source = {"context_token": message["context_token"],
+                  "schedule_id": schedule_id, "schedule_name": name}
+        with self.db:
+            result = self.db.execute(
+                "INSERT INTO inbox(message_id, message, received_at, status) VALUES (?, ?, ?, 'running')",
+                ("schedule:" + uuid4().hex, json.dumps(source, ensure_ascii=False),
+                 datetime.now(UTC).isoformat()),
+            )
+        return self.db.execute("SELECT * FROM inbox WHERE id=?", (result.lastrowid,)).fetchone()
+
     def recover(self, initial):
         # Execution cannot be made exactly-once across process death. Fail closed instead of replay.
         rows = self.db.execute("SELECT * FROM inbox WHERE status='running' ORDER BY id").fetchall()

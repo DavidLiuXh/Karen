@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from ...intent import IntentSession
 from ...message import messages
 from ...model.response import format_task_event
+from ...schedule import ScheduledTasks
 from ...task import DEFAULT_MAX_CONCURRENT_TASKS, TaskInteraction, TaskManager
 from . import instructions as prompt_text
 from . import media
@@ -23,7 +24,7 @@ from .instructions import FILE_DELIVERY_INSTRUCTION
 
 class WeixinChannel:
     def __init__(self, *, agent, client, store, credentials, initial_session, observer,
-                 max_concurrent_tasks=DEFAULT_MAX_CONCURRENT_TASKS):
+                 max_concurrent_tasks=DEFAULT_MAX_CONCURRENT_TASKS, schedule_model=None):
         self.agent, self.client, self.store = agent, client, store
         self.credentials, self.observer = credentials, observer
         saved = store.session(initial_session)
@@ -35,25 +36,45 @@ class WeixinChannel:
 
         self.manager = TaskManager(agent, max_concurrent=max_concurrent_tasks, observer=observer)
         self.interaction = TaskInteraction(self.manager, self.session)
+        self.schedules = (ScheduledTasks(
+            root_dir=store.root / "schedules", manager=self.manager, session=self.session,
+            model=schedule_model, submit=self.submit_scheduled,
+        ) if schedule_model is not None else None)
         if self.session.questions:
             restored = self.manager.restore_waiting(self.session)
             self.interaction.focus = restored.task_id
+
+    def submit_scheduled(self, entry, now):
+        source = self.store.scheduled_input(entry.schedule_id, entry.name)
+        session = self.session.new_request().model_copy(update={"timezone": entry.rule.timezone})
+        try:
+            return self.manager.submit(entry.prompt, session, received_at=now, source=source)
+        except ValueError:
+            self.store.finish(source, session, messages.SCHEDULE_FAILED.format(
+                code="TASK_INPUT_REJECTED"), record=False)
+            raise
 
     def event(self, kind, *, status="ok", **data):
         self.observer.emit(f"weixin.{kind}", status=status, data=data)
 
     async def run(self):
         recovered = self.store.recover(self.session)
+        if self.schedules is not None:
+            await self.schedules.start()
         with self.observer.span("weixin.channel"):
             self.event("started", interrupted_tasks=recovered)
         tasks = [asyncio.create_task(loop()) for loop in (
             self.poll, self.process, self.task_results, self.deliver,
         )]
+        if self.schedules is not None:
+            tasks.append(self.schedules.runner)
         try:
             await self.notify(started=True)
             # The first permanent failure stops the channel; it must never disappear silently.
             await asyncio.gather(*tasks)
         finally:
+            if self.schedules is not None:
+                await self.schedules.stop()
             await self.manager.close()
             joined = asyncio.create_task(self.manager.events.join())
             try:
@@ -64,6 +85,8 @@ class WeixinChannel:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if self.schedules is not None:
+                self.schedules.close()
             await self.notify(started=False)
             with self.observer.span("weixin.channel"):
                 self.event("stopped")
@@ -138,6 +161,11 @@ class WeixinChannel:
                                     conversation_id=self.session.conversation_id):
                 try:
                     text = await self.user_input(message)
+                    if self.schedules is not None:
+                        response = await self.schedules.handle(text)
+                        if response is not None:
+                            self.store.finish(row, self.session, response, record=False)
+                            continue
                     if text == "/retry":
                         count = self.store.retry_failed(message["context_token"])
                         self.store.finish(row, self.session, messages.WEIXIN_REQUEUED.format(count=count), record=False)
@@ -177,9 +205,17 @@ class WeixinChannel:
         while True:
             event = await self.manager.events.get()
             try:
+                if self.schedules is not None:
+                    self.schedules.record_event(event)
                 text = messages.TASK_EVENT.format(
                     task_id=event.task_id, state=messages.TASK_STATE_LABELS[event.state], text=format_task_event(event),
                 )
+                source_message = json.loads(event.source["message"])
+                if "schedule_id" in source_message:
+                    text = messages.SCHEDULE_EVENT.format(
+                        schedule_id=source_message["schedule_id"],
+                        name=source_message["schedule_name"], text=text,
+                    )
                 turn = event.turn
                 session = turn.session if turn is not None else self.manager.tasks[event.task_id].session
                 self.session = session

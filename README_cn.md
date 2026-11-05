@@ -47,23 +47,54 @@ Karen 负责上下文、澄清与任务管理。**[DynamicAgentGraph](https://gi
 Karen 依靠这一层完成从理解请求到协同执行、从单次任务到流程复用的衔接。
 
 ```mermaid
-flowchart LR
-    U[用户请求] --> T[任务管理]
-    S[定时触发] --> T
-    T --> I[理解与澄清]
-    M[个人记忆] --> I
-    I -->|直接回答| R[结果交付]
-    I -->|可执行目标| W[匹配已核验流程]
-    W -->|匹配：传入已有图| V
-    W -->|未匹配| P
-    subgraph DAG[DynamicAgentGraph]
-        P[生成任务图] --> V[校验并绑定能力]
-        V --> E[通过 LangGraph 执行]
+flowchart TB
+    subgraph ENTRY["交互入口"]
+        direction LR
+        U(["用户请求"])
+        S(["定时触发"])
     end
+
+    subgraph KAREN["Karen · 上下文与任务协调"]
+        direction LR
+        T["任务管理<br/>排队 · 独立会话 · 取消"] --> I["理解与澄清<br/>路由 · 召回 · 补齐必要信息"]
+        I -->|GoalSpec| W{"已核验流程<br/>匹配与参数绑定"}
+    end
+
+    subgraph DAG["DynamicAgentGraph · 执行基础"]
+        direction LR
+        P["规划任务图"] --> V["校验执行图<br/>契约 · 权限 · 预算"]
+        V --> E["通过 LangGraph 执行<br/>模型 · 工具 · 并行步骤"]
+    end
+
+    U --> T
+    S --> T
+    M[("个人记忆<br/>m1 · m2 · m3")] -->|相关背景| I
+    I -->|直接回答| R(["结果交付"])
+    W -->|重新规划| P
+    W -->|复用执行图| V
     E --> R
-    R -. 后台更新记忆 .-> M
-    E -. 执行记录 .-> O[运行观测]
+    R -. 后台更新 .-> M
+    E -. 执行记录 .-> O["运行观测<br/>决策 · 调用 · 产物"]
+
+    classDef input fill:#F1F5F9,stroke:#94A3B8,color:#0F172A
+    classDef core fill:#EFF6FF,stroke:#3B82F6,color:#1E3A8A
+    classDef engine fill:#F5F3FF,stroke:#8B5CF6,color:#4C1D95
+    classDef memory fill:#ECFDF5,stroke:#10B981,color:#065F46
+    classDef result fill:#0F766E,stroke:#0F766E,color:#FFFFFF
+    classDef observe fill:#FFFBEB,stroke:#D97706,color:#78350F
+    class U input
+    class T,I,W core
+    class P,V,E engine
+    class M memory
+    class R result
+    class O observe
+    style ENTRY fill:#F8FAFC,stroke:#CBD5E1,color:#334155
+    style KAREN fill:#F8FBFF,stroke:#93C5FD,color:#1E40AF
+    style DAG fill:#FAF8FF,stroke:#A78BFA,stroke-width:2px,color:#5B21B6
+    class S input
 ```
+
+实线表示请求与执行流程，虚线表示后台更新与诊断记录。复用执行图与新规划的图经过相同的校验和执行边界。
 
 ## 快速开始
 

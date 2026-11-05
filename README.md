@@ -4,7 +4,19 @@ English | [简体中文](README_cn.md)
 
 A personal agent that remembers useful context and turns your requests into results.
 
-Tell Karen what you need. It retrieves relevant memories, asks for missing information when necessary, and uses tools to research, organize, and deliver the work. Use it in your terminal or through personal WeChat.
+Tell Karen what you need. It retrieves relevant memories, asks for missing information when necessary, and uses tools to research, organize, and deliver the work. Use it from your terminal.
+
+## Why build Karen?
+
+Working with an agent often means repeating your background, turning a rough idea into a precise prompt, and connecting the steps yourself. Karen aims to reduce that effort over repeated use.
+
+Its focus is continuity between **your context, your intent, and the work delivered**:
+
+- **Personal context across tasks.** Retrieve relevant preferences and past events while keeping unrelated task conversations separate.
+- **Clarification before execution.** Preserve the original request and your answers, asking for information needed to make the goal actionable.
+- **Experience that can be reused.** Turn completed work into verified workflows that compatible requests can reuse with current parameters and permissions.
+
+These choices shape Karen as a personal agent for an ongoing relationship with its user. Proactively discovering and advancing work remains the longer-term direction.
 
 ## What you can do
 
@@ -22,6 +34,25 @@ Research today's GitHub Trending projects and save a summary to /tmp/trending.ht
 ```
 
 Karen is under active development. Task results depend on available tools and model decisions; proactive task discovery is not yet supported.
+
+## Architecture
+
+Karen manages context, clarification, and tasks; [DynamicAgentGraph](https://github.com/DavidLiuXh/DynamicAgentGraph) plans and executes the work.
+
+```mermaid
+flowchart LR
+    U[Your request] --> T[Task management]
+    S[Scheduled triggers] --> T
+    T --> I[Understand and clarify]
+    M[Personal memory] --> I
+    I -->|Direct answer| R[Result]
+    I -->|Actionable goal| W[Match verified workflow]
+    W -->|Match: supplied graph| E[DynamicAgentGraph]
+    W -->|No match: plan a graph| E
+    E --> R
+    R -. Background memory updates .-> M
+    E -. Execution records .-> O[Observability]
+```
 
 ## Quick start
 
@@ -73,13 +104,7 @@ Open the printed dashboard address, usually `http://127.0.0.1:8765/`. Omit `--ob
 
 Schedules persist across restarts, but **trigger only while Karen is running**. Missed occurrences are not replayed.
 
-To use personal WeChat, run the following and scan the QR code:
-
-```bash
-uv run --env-file .env karen --wechat
-```
-
-See [WeChat setup](docs/WEIXIN.md) for details. Gmail read-only access is also available with [separate OAuth configuration](docs/GMAIL.md); continuous new-mail monitoring is not implemented yet.
+Gmail read-only access is available with [separate OAuth configuration](docs/GMAIL.md); continuous new-mail monitoring is not implemented yet.
 
 ## See the work
 

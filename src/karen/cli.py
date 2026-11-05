@@ -19,7 +19,7 @@ from dynamic_graph.tools import (
     web_fetch_tool,
 )
 from prompt_toolkit import PromptSession
-from prompt_toolkit.history import DummyHistory
+from prompt_toolkit.history import InMemoryHistory
 from rich.console import Console
 from rich.markdown import Markdown
 
@@ -36,6 +36,10 @@ from .task import DEFAULT_MAX_CONCURRENT_TASKS, TaskManager
 from .task.console import run_console
 from .task.resources import ExecutionResources
 from .workflow import ReusableWorkflows
+
+# Keep one history for the lifetime of the CLI process so each prompt can
+# browse commands entered at earlier prompts.
+_input_history = InMemoryHistory()
 
 
 def display_response(text: str, *, json_output: bool = False) -> None:
@@ -85,8 +89,7 @@ async def read_input() -> str:
     """Cancel terminal editing cleanly; keep redirected input compatible with input()."""
     if sys.stdin.isatty():
         # Async editing restores terminal modes before cancellation or Ctrl+C propagates.
-        # Do not retain user requests in the line editor's history.
-        return await PromptSession(history=DummyHistory()).prompt_async(messages.INPUT_PROMPT)
+        return await PromptSession(history=_input_history).prompt_async(messages.INPUT_PROMPT)
 
     # A cancelled pipe read must not hold asyncio's executor shutdown open.
     loop = asyncio.get_running_loop()

@@ -45,6 +45,28 @@ class DisplayAgent:
         return ()
 
 
+@pytest.mark.asyncio
+async def test_read_input_reuses_history_for_interactive_prompts(monkeypatch):
+    sessions = []
+
+    class Prompt:
+        def __init__(self, *, history):
+            sessions.append(history)
+
+        async def prompt_async(self, prompt):
+            return "用户输入"
+
+    stdin = io.StringIO()
+    monkeypatch.setattr(stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli.sys, "stdin", stdin)
+    monkeypatch.setattr(cli, "PromptSession", Prompt)
+
+    assert await cli.read_input() == "用户输入"
+    assert await cli.read_input() == "用户输入"
+    assert len(sessions) == 2
+    assert sessions[0] is sessions[1]
+
+
 @pytest.mark.parametrize("tty,term,json_output", [
     (False, "xterm", False),
     (True, "dumb", False),

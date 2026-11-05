@@ -359,3 +359,7 @@ uv run ruff check .
 `GMAIL_CLIENT_SECRET` 和 `GMAIL_REFRESH_TOKEN`。CLI 和微信会注册邮箱资料、收件箱分页、
 邮件详情及历史变更四个只读工具。配置变更后需重启；授权流程与持续新邮件监测尚未实现。
 接口和隐私边界见 [Gmail 访问](GMAIL.md)。
+
+### 网页正文读取
+
+已注册 `web.read_page`，提取带来源链接和明确截断标记的简洁网页文本。详见[网页正文提取](WEB.md)。已有使用原始 `web.fetch` 的流程不会自动迁移。

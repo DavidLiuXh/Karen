@@ -362,3 +362,7 @@ OAuth grant with `gmail.readonly` scope before starting Karen. CLI and WeChat th
 four read-only Gmail tools for profile, inbox pages, message details, and history changes.
 Restart after configuration changes. OAuth setup and continuous new-mail monitoring are
 not implemented yet. See [Gmail access](GMAIL.md) for the API and privacy boundaries.
+
+### Readable webpages
+
+The registered `web.read_page` tool extracts compact webpage text with links and explicit truncation metadata. See [webpage extraction](WEB.md). Existing workflows using raw `web.fetch` are not automatically migrated.

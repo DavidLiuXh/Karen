@@ -315,6 +315,7 @@ async def test_cli_registers_and_authorizes_all_available_tools(monkeypatch, cap
         "file.write_text@1.0.0",
         "browser.open_local_page@1.0.0",
         "web.fetch@1.0.0",
+        "web.read_page@1.0.0",
     }
     if api_key:
         expected_tools.add("tavily.search@1.0.0")

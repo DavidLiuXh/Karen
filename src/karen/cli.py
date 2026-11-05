@@ -37,6 +37,7 @@ from .task.console import run_console
 from .task.resources import ExecutionResources
 from .tools.gmail import GmailClient, GmailCredentials
 from .tools.gmail_tools import gmail_tools
+from .tools.web import web_read_page_tool
 from .workflow import ReusableWorkflows
 
 # Keep one history for the lifetime of the CLI process so each prompt can
@@ -187,9 +188,10 @@ async def converse(
             file_write_text_tool,
             browser_open_local_page_tool,
             web_fetch_tool,
+            web_read_page_tool,
         ):
             definition = tool_factory()
-            if tool_factory is not web_fetch_tool:
+            if tool_factory not in {web_fetch_tool, web_read_page_tool}:
                 definition = resources_guard.file_tool(
                     definition, write=tool_factory is file_write_text_tool,
                 )

@@ -193,3 +193,5 @@ SCHEDULE_ERRORS = {
     "SCHEDULE_LIMIT": "最多保存 100 项定时任务，请先删除不再需要的规则。",
     "SCHEDULE_CONTEXT_TOO_LARGE": "这次操作的任务内容过多，请用 /schedule list 查看后指定单个任务编号。",
 }
+
+GMAIL_CONFIG_INCOMPLETE = "Karen：Gmail 配置不完整，需同时设置 GMAIL_CLIENT_ID、GMAIL_CLIENT_SECRET 和 GMAIL_REFRESH_TOKEN；本次未启用 Gmail 工具。"

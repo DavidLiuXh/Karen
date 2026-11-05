@@ -47,23 +47,54 @@ Karen manages context, clarification, and tasks. **[DynamicAgentGraph](https://g
 Karen relies on this layer to move from understanding a request to coordinated execution, and from one completed task to a reusable process.
 
 ```mermaid
-flowchart LR
-    U[Your request] --> T[Task management]
-    S[Scheduled triggers] --> T
-    T --> I[Understand and clarify]
-    M[Personal memory] --> I
-    I -->|Direct answer| R[Result]
-    I -->|Actionable goal| W[Match verified workflow]
-    W -->|Match: supplied graph| V
-    W -->|No match| P
-    subgraph DAG[DynamicAgentGraph]
-        P[Generate task graph] --> V[Validate and bind capabilities]
-        V --> E[Execute through LangGraph]
+flowchart TB
+    subgraph ENTRY["Inputs"]
+        direction LR
+        U(["Your request"])
+        S(["Scheduled trigger"])
     end
+
+    subgraph KAREN["Karen · Context & coordination"]
+        direction LR
+        T["Task management<br/>Queue · Sessions · Cancellation"] --> I["Understand & clarify<br/>Route · Retrieve · Resolve gaps"]
+        I -->|GoalSpec| W{"Verified workflow<br/>Match & bind parameters"}
+    end
+
+    subgraph DAG["DynamicAgentGraph · Execution foundation"]
+        direction LR
+        P["Plan task graph"] --> V["Validate graph<br/>Contracts · Permissions · Budgets"]
+        V --> E["Execute with LangGraph<br/>Models · Tools · Parallel steps"]
+    end
+
+    U --> T
+    S --> T
+    M[("Personal memory<br/>m1 · m2 · m3")] -->|Relevant context| I
+    I -->|Direct answer| R(["Result delivery"])
+    W -->|New plan| P
+    W -->|Reuse graph| V
     E --> R
-    R -. Background memory updates .-> M
-    E -. Execution records .-> O[Observability]
+    R -. Background updates .-> M
+    E -. Execution records .-> O["Observability<br/>Decisions · Calls · Artifacts"]
+
+    classDef input fill:#F1F5F9,stroke:#94A3B8,color:#0F172A
+    classDef core fill:#EFF6FF,stroke:#3B82F6,color:#1E3A8A
+    classDef engine fill:#F5F3FF,stroke:#8B5CF6,color:#4C1D95
+    classDef memory fill:#ECFDF5,stroke:#10B981,color:#065F46
+    classDef result fill:#0F766E,stroke:#0F766E,color:#FFFFFF
+    classDef observe fill:#FFFBEB,stroke:#D97706,color:#78350F
+    class U input
+    class T,I,W core
+    class P,V,E engine
+    class M memory
+    class R result
+    class O observe
+    style ENTRY fill:#F8FAFC,stroke:#CBD5E1,color:#334155
+    style KAREN fill:#F8FBFF,stroke:#93C5FD,color:#1E40AF
+    style DAG fill:#FAF8FF,stroke:#A78BFA,stroke-width:2px,color:#5B21B6
+    class S input
 ```
+
+Solid arrows show request and execution flow; dashed arrows show background updates and diagnostic records. Reused graphs share the same validation and execution boundary.
 
 ## Quick start
 

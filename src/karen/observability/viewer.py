@@ -10,6 +10,7 @@ import sqlite3
 import threading
 import webbrowser
 from contextlib import contextmanager
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -20,6 +21,52 @@ from .recorder import sanitize
 
 IDENTIFIER = re.compile(r"[a-f0-9]{32}")
 DEFAULT_PORT = 8765
+
+
+def trace_timing(events):
+    """Separate recorded clarification gaps from per-turn reranking spans."""
+    turns = {}
+    for event in events:
+        if event.get("stage") == "turn" and event.get("request_id"):
+            turns[event.get("trace_id")] = event["request_id"]
+    inputs = {}
+    for event in events:
+        trace = event.get("trace_id")
+        if trace in turns and event.get("event_type") in {"input.received", "turn.input"}:
+            inputs.setdefault(trace, event["timestamp_utc"])
+    waits, reranking = [], []
+    starts = {(e.get("trace_id"), e.get("span_id")): e for e in events
+              if e.get("event_type") == "span.started"}
+    for event in events:
+        if event.get("event_type") != "span.finished":
+            continue
+        trace = event.get("trace_id")
+        if (event.get("stage") == "turn"
+                and event.get("data", {}).get("outcome") == "needs_clarification"):
+            start = event["timestamp_utc"]
+            following = sorted(t for other, t in inputs.items()
+                               if other != trace and turns[other] == turns.get(trace) and t > start)
+            end = following[0] if following else None
+            try:
+                duration = ((datetime.fromisoformat(end) - datetime.fromisoformat(start))
+                            .total_seconds() * 1000) if end else None
+            except (TypeError, ValueError):
+                duration = None
+            waits.append({"trace_id": trace, "start_utc": start, "end_utc": end,
+                          "duration_ms": duration})
+        if event.get("stage") == "memory.recall.rank":
+            start = starts.get((trace, event.get("span_id")))
+            degraded = any(e.get("trace_id") == trace and
+                           e.get("span_id") == event.get("span_id") and
+                           e.get("event_type") == "memory.degraded" for e in events)
+            reranking.append({
+                "trace_id": trace,
+                "start_utc": start.get("timestamp_utc") if start else None,
+                "end_utc": event["timestamp_utc"],
+                "duration_ms": event.get("duration_ms"),
+                "status": "degraded" if degraded else event.get("status"),
+            })
+    return {"clarification_waits": waits, "reranking": reranking}
 
 
 class TraceStore:
@@ -267,6 +314,7 @@ class TraceStore:
                 "coverage": coverage,
                 "runs": [],
                 "checks": check_trace(events, coverage),
+                "timing": trace_timing(events),
             }
         request_id = root.get("request_id")
         paths, partial = self._files()
@@ -331,6 +379,7 @@ class TraceStore:
             "coverage": coverage,
             "runs": runs,
             "checks": check_trace(events, coverage),
+            "timing": trace_timing(events),
         }
 
     def _runs(self, request_id):

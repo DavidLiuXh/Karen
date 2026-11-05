@@ -467,3 +467,60 @@ async def test_workflow_jobs_are_independent_linked_and_interrupted_if_process_c
         'data': {'job_id': uuid4().hex, 'state': 'queued', 'pid': 999999999}, 'trace_id': task_id,
     }])
     assert view['jobs'][0]['state'] == 'interrupted_unknown'
+
+
+def test_trace_timing_separates_clarification_gaps_and_rerank_retries(tmp_path):
+    traces = tmp_path / "traces"
+    traces.mkdir()
+    first, second, unrelated, background = [uuid4().hex for _ in range(4)]
+
+    def event(trace, time, kind, stage, **extra):
+        return {"trace_id": trace, "timestamp_utc": "2026-11-05T" + time + "+00:00",
+                "event_type": kind, "stage": stage, "data": {}, **extra}
+
+    records = [
+        event(first, "02:31:30", "input.received", "input"),
+        event(first, "02:31:32", "span.started", "turn", request_id="request"),
+        event(first, "02:31:38", "span.started", "memory.recall.rank", span_id="rank1"),
+        event(first, "02:32:04", "model.error", "model.call", span_id="call1"),
+        event(first, "02:32:53", "memory.degraded", "memory.recall.rank", span_id="rank1"),
+        event(first, "02:32:53", "span.finished", "memory.recall.rank", span_id="rank1",
+              duration_ms=75000, status="ok"),
+        event(first, "02:32:54", "span.finished", "turn", request_id="request",
+              data={"outcome": "needs_clarification"}),
+        event(background, "02:32:58", "memory.indexed", "memory.index",
+              request_id="request", source_trace_id=first),
+        event(unrelated, "02:35:00", "input.received", "input"),
+        event(unrelated, "02:35:01", "span.started", "turn", request_id="other"),
+        event(second, "02:44:02", "input.received", "input"),
+        event(second, "02:44:03", "span.started", "turn", request_id="request"),
+        event(second, "02:44:08", "span.started", "memory.recall.rank", span_id="rank2"),
+        event(second, "02:45:23", "span.finished", "memory.recall.rank", span_id="rank2",
+              duration_ms=74871, status="ok"),
+        event(second, "02:46:46", "span.finished", "turn", request_id="request",
+              data={"outcome": "COMPLETED"}),
+    ]
+    for trace in [first, second, unrelated, background]:
+        (traces / f"{trace}.jsonl").write_text("".join(
+            json.dumps(e) + "\n" for e in records if e["trace_id"] == trace
+        ))
+    for selected in [first, second]:
+        timing = TraceStore(tmp_path).trace(selected)["timing"]
+        assert timing["clarification_waits"] == [{
+            "trace_id": first, "start_utc": "2026-11-05T02:32:54+00:00",
+            "end_utc": "2026-11-05T02:44:02+00:00", "duration_ms": 668000,
+        }]
+        assert [r["duration_ms"] for r in timing["reranking"]] == [75000, 74871]
+        assert [r["status"] for r in timing["reranking"]] == ["degraded", "ok"]
+
+
+def test_trace_timing_does_not_invent_end_for_unanswered_clarification():
+    from karen.observability.viewer import trace_timing
+
+    event = {"trace_id": "turn", "request_id": "request", "stage": "turn",
+             "event_type": "span.finished", "timestamp_utc": "2026-11-05T02:32:54+00:00",
+             "data": {"outcome": "needs_clarification"}}
+    timing = trace_timing([event])
+    assert timing["clarification_waits"][0]["end_utc"] is None
+    assert timing["clarification_waits"][0]["duration_ms"] is None
+    assert timing["reranking"] == []

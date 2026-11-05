@@ -188,6 +188,42 @@ def relation_bundle(mid, memories, reverse, *, timeline=False):
     return sorted(found & required)
 
 
+def ranking_records(memories, record_ids):
+    """Share evidence once while preserving distinct facts and version boundaries."""
+    records, sources, source_keys = [], {}, {}
+    for mid in sorted(record_ids):
+        record = memories[mid].ranking_context()
+        references = []
+        for source in record.pop("sources"):
+            compact = {key: source[key] for key in (
+                "event_id", "source_role", "occurred_at", "sequence", "storage_state", "quote", "quote_truncated"
+            ) if key in source}
+            # Pointer distinguishes independent evidence within the same event.
+            identity = encode([source.get("pointer"), compact])
+            if identity not in source_keys:
+                reference = f"s{len(sources)}"
+                source_keys[identity] = reference
+                sources[reference] = compact
+            reference = source_keys[identity]
+            if reference not in references:
+                references.append(reference)
+        record["sources"] = references
+        if record.get("value") == record.get("text"):
+            record.pop("value", None)
+        for reference in references:
+            source = sources[reference]
+            if not source.get("quote_truncated") and source.get("quote") == record.get("text"):
+                record["text_source"] = reference
+                record.pop("text")
+                break
+        for key in ("valid_from", "valid_to", "conflict_group_id", "supersedes", "corrects",
+                    "related_memory_ids"):
+            if record.get(key) is None or record.get(key) == []:
+                record.pop(key, None)
+        records.append(record)
+    return records, sources
+
+
 class Retriever:
     def __init__(self, service):
         self.service = service
@@ -210,8 +246,9 @@ class Retriever:
             },
             "rank": lambda r: r,
             "assemble": lambda r: r,
+            "skip": lambda r: r,
         }
-        for name in ("analyze", "retrieve", "rank", "assemble"):
+        for name in ("analyze", "retrieve", "rank", "assemble", "skip"):
             graph.add_node(
                 name,
                 service.observer.node(
@@ -219,7 +256,11 @@ class Retriever:
                 ),
             )
         graph.add_edge(START, "analyze")
-        graph.add_edge("analyze", "retrieve")
+        graph.add_conditional_edges(
+            "analyze", lambda state: "retrieve" if state["analysis"].recall_needed else "skip",
+            {"retrieve": "retrieve", "skip": "skip"},
+        )
+        graph.add_edge("skip", END)
         graph.add_edge("retrieve", "rank")
         graph.add_edge("rank", "assemble")
         graph.add_edge("assemble", END)
@@ -296,6 +337,17 @@ class Retriever:
                 },
             )
 
+    async def skip(self, state):
+        analysis = state["analysis"]
+        self.service.observer.emit("memory.recall.skipped", data={
+            "reason": analysis.recall_reason, "recall_needed": False,
+        })
+        return {"result": RecallResult(status="empty", coverage={
+            "complete": True, "recall_needed": False, "recall_reason": analysis.recall_reason,
+            "query_kind": analysis.kind, "dialogue_dependency": analysis.dialogue_dependency,
+            "requires_history": False,
+        })}
+
     async def call(self, state, role, instruction, inputs, schema):
         model = self.service.rerank_model if role == "memory_rerank" else self.service.model
         remaining = min(state["deadline"] - time.monotonic() - 1.5,
@@ -309,18 +361,18 @@ class Retriever:
             task_instruction=instruction,
             input_data=inputs,
             output_schema=schema.model_json_schema(),
-            max_output_tokens=4096,
+            max_output_tokens=8192 if role == "memory_rerank" else 4096,
             timeout_seconds=remaining,
         )
         async with asyncio.timeout(remaining):
-            for attempt in range(2):
+            for attempt in range(1 if role == "memory_rerank" else 2):
                 try:
                     response = await model.generate(
                         replace(request, timeout_seconds=max(0, deadline - time.monotonic()))
                     )
                     return schema.model_validate(response.payload)
                 except ModelCallError as error:
-                    if attempt or error.code != "MODEL_RESPONSE_TRUNCATED":
+                    if role == "memory_rerank" or attempt or error.code != "MODEL_RESPONSE_TRUNCATED":
                         raise
                     expanded = expanded_output_budget(request.max_output_tokens, model)
                     if expanded <= request.max_output_tokens:
@@ -362,7 +414,7 @@ class Retriever:
             analysis = QueryAnalysis(search_text=query.text, time_mode="unspecified")
             degraded.append("QUERY_ANALYSIS_FAILED")
         if query.time_constraint:
-            analysis = analysis.model_copy(update={"time_range": query.time_constraint})
+            analysis = analysis.model_copy(update={"time_range": query.time_constraint, "recall_needed": True})
         return {"analysis": analysis, "degraded": degraded}
 
     async def retrieve(self, state):
@@ -475,13 +527,15 @@ class Retriever:
             }
             for e in state["anchors"]
         ]
+        records_input, sources = ranking_records(state["memories"], records)
         inputs = {
             "query": state["query"].text,
             "current_request_id": state["query"].request_id,
             "current_task_messages": state["query"].current_task_messages,
             "analysis": analysis.model_dump(mode="json"),
             "primary_ids": list(primary),
-            "memories": [state["memories"][mid].ranking_context() for mid in sorted(records)],
+            "memories": records_input,
+            "sources": sources,
             "history_candidates": anchors,
         }
         # Bound the whole request, including raw locating clues, not just memories.
@@ -495,13 +549,15 @@ class Retriever:
             primary.remove(removed)
             records = {mid for root in primary for mid in state["bundles"][root]}
             inputs["primary_ids"] = primary
-            inputs["memories"] = [
-                state["memories"][mid].ranking_context() for mid in sorted(records)
-            ]
+            inputs["memories"], inputs["sources"] = ranking_records(state["memories"], records)
             degraded.append("RERANK_INPUT_BUDGET_LIMIT")
         while len(encode(inputs).encode()) > RERANK_INPUT_MAX_BYTES and inputs["history_candidates"]:
             inputs["history_candidates"].pop()
             degraded.append("HISTORY_CANDIDATE_BUDGET_LIMIT")
+        self.service.observer.emit("memory.rerank.input", data={
+            "primary_count": len(primary), "record_count": len(inputs["memories"]),
+            "source_count": len(inputs["sources"]), "input_bytes": len(encode(inputs).encode()),
+        })
         allowed_event_ids = {item["event_id"] for item in inputs["history_candidates"]}
         try:
             if len(encode(inputs).encode()) > RERANK_INPUT_MAX_BYTES:
@@ -864,6 +920,9 @@ class Retriever:
                 degraded.append("COLLECTION_RAW_WRITES_PENDING")
         coverage = {
             "complete": not degraded,
+            "recall_needed": analysis.recall_needed,
+            "recall_reason": analysis.recall_reason,
+            "search_text": analysis.search_text,
             "query_kind": analysis.kind,
             "dialogue_dependency": analysis.dialogue_dependency,
             "requires_history": analysis.requires_task_selection,

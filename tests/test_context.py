@@ -1078,6 +1078,7 @@ async def test_normal_cli_exit_waits_for_raw_persistence(tmp_path, monkeypatch):
     service = ContextMemory(root_dir=tmp_path, model=MemoryModel(), embeddings=LocalEmbeddings())
     monkeypatch.setattr(cli, "create_memory", lambda model, **kwargs: service)
     monkeypatch.setattr(cli, "create_observer", lambda: cli.Observer())
+    monkeypatch.setattr(cli, "create_schedules", lambda *args: None)
     monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
     captured = []
@@ -2113,7 +2114,8 @@ async def test_distinct_user_uses_survive_verbose_assistant_guidance(memory):
         if request.role == "memory_rerank":
             records = {r["memory_id"]: r for r in request.input_data["memories"]}
             response.payload["ranking"].sort(key=lambda r: not any(
-                s["source_role"] == "assistant" for s in records[r["memory_id"]]["sources"]
+                request.input_data["sources"][ref]["source_role"] == "assistant"
+                for ref in records[r["memory_id"]]["sources"]
             ))
         return response
 
@@ -2279,9 +2281,10 @@ async def test_derived_memory_persists_canonical_source_without_an_extra_model_c
     assert len([r for r in model.requests if r.role == "memory_extract"]) == 1
 
 
-@pytest.mark.parametrize("role", ["memory_query", "memory_rerank"])
-@pytest.mark.parametrize("recovers", [True, False])
-async def test_recall_truncation_expands_once_without_changing_profiles_or_fusion(tmp_path, role, recovers):
+@pytest.mark.parametrize("role,recovers", [
+    ("memory_query", True), ("memory_query", False), ("memory_rerank", False),
+])
+async def test_recall_truncation_respects_role_budget_without_changing_profiles_or_fusion(tmp_path, role, recovers):
     class Model(MemoryModel):
         def __init__(self, allowed_roles):
             super().__init__()
@@ -2305,10 +2308,13 @@ async def test_recall_truncation_expands_once_without_changing_profiles_or_fusio
         await service.flush(service.submit(event("我住在北京。")))
         result = await service.recall(query("我住在哪里？"))
         model = base if role == "memory_query" else ranker
-        assert [r.max_output_tokens for r in model.truncations] == [4096, 8192]
-        first, retry = model.truncations
-        assert first.input_data == retry.input_data and first.output_schema == retry.output_schema
-        assert 0 < retry.timeout_seconds <= first.timeout_seconds
+        if role == "memory_rerank":
+            assert [r.max_output_tokens for r in model.truncations] == [8192]
+        else:
+            assert [r.max_output_tokens for r in model.truncations] == [4096, 8192]
+            first, retry = model.truncations
+            assert first.input_data == retry.input_data and first.output_schema == retry.output_schema
+            assert 0 < retry.timeout_seconds <= first.timeout_seconds
         assert 14 < base.requests[-1].timeout_seconds <= 15
         assert 89 < ranker.requests[0].timeout_seconds <= 90
         assert result.m1 and result.m1[0].memory.value == "北京"
@@ -2431,7 +2437,14 @@ async def test_rerank_accepts_larger_inputs_but_still_enforces_capacity(memory, 
     result = await service.recall(query("Review our discussions"))
     request = [r for r in backend.requests if r.role == "memory_rerank"][-1]
     size = len(encode(request.input_data).encode())
-    assert 24 * 1024 < size <= 48 * 1024
+    assert 0 < size <= 48 * 1024
+    assert {ref for record in request.input_data["memories"] for ref in record["sources"]} == set(request.input_data["sources"])
+    _, stored, _ = service.storage.snapshot()
+    expanded = {**request.input_data, "memories": [
+        stored[m["memory_id"]].ranking_context() for m in request.input_data["memories"]
+    ]}
+    expanded.pop("sources")
+    assert size < len(encode(expanded).encode())
     if text_length == 450:
         assert len(request.input_data["primary_ids"]) == 20
         assert "RERANK_INPUT_BUDGET_LIMIT" not in result.degradations
@@ -2456,3 +2469,66 @@ async def test_time_collection_display_budget_does_not_reduce_total(memory):
         assert result.status == "degraded" and not result.coverage["complete"]
         assert "COLLECTION_DISPLAY_BUDGET_LIMIT" in result.degradations
         assert len(encode(result.context()).encode()) <= 12 * 1024
+
+
+async def test_ranking_projection_shares_evidence_without_merging_facts(memory):
+    from karen.context.retrieval import ranking_records
+
+    service, _ = memory
+    await service.flush(service.submit(event("我住在北京")))
+    _, stored, _ = service.storage.snapshot()
+    original = next(m for m in stored.values() if m.layer == "m1")
+    # Distinct fact identities may share evidence without being collapsed.
+    records = {
+        str(i): original.model_copy(update={
+            "memory_id": str(i), "text": "我住在北京", "value": "我住在北京",
+            "state": "active" if i else "superseded",
+            "supersedes": ["0"] if i == 1 else [],
+        }) for i in range(12)
+    }
+    before = encode([m.ranking_context() for m in records.values()])
+    compact, sources = ranking_records(records, records)
+    assert len(compact) == len(records) and len(sources) == 1
+    assert len(encode({"memories": compact, "sources": sources}).encode()) < len(before.encode()) * .6
+    assert {r["memory_id"] for r in compact} == set(records)
+    assert compact[0]["state"] == "superseded"
+    successor = next(r for r in compact if r["memory_id"] == "1")
+    assert successor["supersedes"] == ["0"]
+    for record in compact:
+        assert "value" not in record and "text" not in record
+        assert sources[record["text_source"]]["quote"] == "我住在北京"
+        assert sources[record["sources"][0]]["source_role"] == "user"
+        assert "recorded_at" in record and "verification_state" in record
+    assert all("pointer" not in source and "relative_file" not in source for source in sources.values())
+    # Projection must not mutate storage or strip the evidence used after ranking.
+    assert original.context()["sources"][0]["pointer"]
+    assert original.context()["sources"][0]["relative_file"]
+    assert records["0"].value == records["0"].text == "我住在北京"
+
+
+async def test_ranking_projection_preserves_source_roles_and_truncation(memory):
+    from karen.context.retrieval import ranking_records
+
+    service, _ = memory
+    await service.flush(service.submit(event("我住在北京")))
+    _, stored, _ = service.storage.snapshot()
+    original = next(m for m in stored.values() if m.layer == "m1")
+    user = original.sources[0]
+    assistant = user.model_copy(update={"source_role": "assistant", "storage_state": "failed"})
+    long_source = user.model_copy(update={"quote": "用户的长说明" * 400})
+    records = {
+        "user": original.model_copy(update={"memory_id": "user", "sources": [user]}),
+        "assistant": original.model_copy(update={"memory_id": "assistant", "sources": [assistant]}),
+        "long": original.model_copy(update={"memory_id": "long", "sources": [long_source]}),
+        "empty_value": original.model_copy(update={"memory_id": "empty_value", "value": []}),
+    }
+    compact, sources = ranking_records(records, records)
+    by_id = {r["memory_id"]: r for r in compact}
+    assert len(sources) == 3
+    assert by_id["empty_value"]["value"] == []
+    assert sources[by_id["user"]["sources"][0]]["source_role"] == "user"
+    assistant_evidence = sources[by_id["assistant"]["sources"][0]]
+    assert assistant_evidence["source_role"] == "assistant"
+    assert assistant_evidence["storage_state"] == "failed"
+    assert sources[by_id["long"]["sources"][0]]["quote_truncated"] is True
+    assert "text" in by_id["long"]  # Truncated evidence does not replace a summary.

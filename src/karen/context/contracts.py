@@ -358,6 +358,8 @@ class RecallQuery(Contract):
 
 
 class QueryAnalysis(Contract):
+    recall_needed: bool = Field(default=True, description=prompt_text.QUERY_RECALL_NEEDED_DESCRIPTION)
+    recall_reason: str = Field(default="", description=prompt_text.QUERY_RECALL_REASON_DESCRIPTION)
     search_text: str = Field(min_length=1)
     kind: Literal["relevance", "facts", "detail", "collection"] = Field(
         default="relevance",
@@ -404,7 +406,15 @@ class QueryAnalysis(Contract):
     task_status: Literal["COMPLETED", "FAILED", "CANCELLED"] | None = None
 
     @model_validator(mode="after")
-    def valid_at(self):
+    def validate_scope_and_time(self):
+        if not self.recall_needed and (
+            self.kind != "relevance" or self.uses_external_history or self.needed_fact_keys
+            or self.requires_task_selection or self.time_range is not None
+            or self.time_mode in {"effective_at", "known_at", "timeline"}
+        ):
+            raise PydanticCustomError(
+                "recall_scope_conflict", "Skipping recall conflicts with required memory scope",
+            )
         if self.requires_task_selection and not self.uses_external_history:
             raise PydanticCustomError(
                 "external_task_required", "Task selection requires external history",

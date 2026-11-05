@@ -527,3 +527,37 @@ async def test_explicit_clarification_assignment_cannot_be_reset_by_model_routin
         assert session.reference_time_utc == original_time
     finally:
         await manager.close()
+
+
+@pytest.mark.parametrize("command", [
+    "/tasks", "/tasks 列表", "/tasks list", "  /tasks   列表  ", "/tasks\tlist",
+])
+def test_task_list_command_never_submits_or_calls_agent(command):
+    class ReadOnlyManager:
+        tasks = {
+            "existing": SimpleNamespace(task_id="existing", state="waiting", title="Existing task"),
+        }
+
+        def submit(self, *args, **kwargs):
+            pytest.fail("Listing tasks must never submit work")
+
+    ui = TaskInteraction(ReadOnlyManager(), IntentSession())
+    ui.focus = "existing"
+    ui.pending = ("unassigned answer", None, None)
+    pending = ui.pending
+    result = ui.accept(command)
+    assert "existing" in result and "Existing task" in result
+    assert ui.focus == "existing" and ui.pending is pending
+    assert ui.submitted_source is None
+
+
+@pytest.mark.parametrize("command", ["/tasks", "/tasks 列表", "/tasks list"])
+def test_task_list_reports_empty_without_submitting(command):
+    ui = TaskInteraction(SimpleNamespace(tasks={}), IntentSession())
+    assert ui.accept(command) == messages.TASK_LIST_EMPTY
+
+
+@pytest.mark.parametrize("command", ["/tasks running", "/tasks 列表 extra"])
+def test_invalid_task_list_arguments_show_usage_instead_of_submitting(command):
+    ui = TaskInteraction(SimpleNamespace(tasks={}), IntentSession())
+    assert ui.accept(command) == messages.TASK_LIST_USAGE

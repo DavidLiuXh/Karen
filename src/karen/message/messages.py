@@ -146,6 +146,7 @@ TASK_HELP = "/new 内容：新任务；/tasks：列表；/use ID：选中任务�
 TASK_ACCEPTED = "[{task_id}] 已接收，正在排队或处理。"
 TASK_LIST_ITEM = "[{task_id}] {state} · {title}"
 TASK_LIST_EMPTY = "当前没有任务。"
+TASK_LIST_USAGE = "用 /tasks 查看全部任务，也可输入 /tasks 列表 或 /tasks list；不支持其他参数。"
 TASK_UNKNOWN = "没有找到这个任务，请用 /tasks 查看任务编号。"
 TASK_FOCUSED = "已选中任务 [{task_id}]；后续普通输入属于此任务，使用 /new 发起无关任务；任务结束后需重新指定。"
 TASK_CANCEL_REQUESTED = "[{task_id}] 已请求取消。"

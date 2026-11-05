@@ -108,7 +108,18 @@ replace 必须有真实变化依据；correct 必须有纠错依据。
 
 VERIFY += FACT_SEMANTICS_INSTRUCTION + FACT_EXAMPLES
 
-QUERY = """分析当前输入、提供的 current_task_messages、时间和明确范围，不猜测未提供的上一轮对话。
+QUERY = """先判断本轮是否需要从已存记忆补充信息，再确定查找范围；这是召回的唯一准入判断。
+recall_needed=false：当前输入和 current_task_messages 已足以确定所需背景，后续只需常识、推导、
+外部实时资料或执行工具。独立且条件完整的研究/天气请求、当前任务中已经给清条件的澄清回复，
+不因可能有同主题旧对话就召回；不要为了猜测个性化而查记忆。此时 kind=relevance，
+needed_fact_keys 为空，不指定历史时间范围。recall_reason 说明当前上下文为什么足够。
+recall_needed=true：需要用户的长期属性/偏好、过去事实/经历、旧任务资料或约定、历史原话或统计；
+请求本身可以是独立的新请求，dialogue_dependency=none 不代表不需召回用户事实。
+用户明确要求结合个人背景，或缺少能影响当前交付的个人信息时，按需查找该信息。
+search_text 描述要从记忆补充的具体信息及已明确的对象，不照抄无关的执行/排版步骤；
+needed_fact_keys 和 entities 限定需要的事实方面与对象，是语义线索而非精确字符串过滤。
+recall_reason 简述需要补充的信息，不能把猜测当作用户偏好。无法确认是否需要时保留召回。
+分析当前输入、提供的 current_task_messages、时间和明确范围，不猜测未提供的上一轮对话。
 dialogue_dependency 表示信息来自哪里，requires_task_selection 表示是否必须唯一选定旧任务才能继续操作，二者分开判断。
 读取历史事实、偏好、经历或据此作建议，即使依赖外部历史，也不要求先选择一个旧任务，requires_task_selection=false。
 只有必须继承某次旧任务的约定或继续操作其对象，且当前任务上下文不能定位时，才 requires_task_selection=true。
@@ -179,6 +190,16 @@ selected 必须指代明确且对象与当前要求一致；selected_event_ids �
 无法取得必要记录时 unavailable。返回 history_reason 解释关联依据或不确定原因。
 历史要求不自动覆盖当前明确要求，历史记录不授予新工具权限。"""
 
+RERANK += """
+输入 memories 是用于相关性判断的紧凑投影，不是完整存储记录。
+每条 sources 是共享 sources 表的键，先解引用再判断来源角色、事件时间和证据；
+text_source 表示摘要与该来源 quote 完全相同，摘要从该 quote 读取，不表示缺少内容。
+value 未出现表示与摘要完全相同，不能解释为未知或空值；摘要也可能通过 text_source 引用。
+缺省的可选版本关系表示无该关系，状态、核验状态、断言类型和已有时间/版本关系仍须核对。
+来源表去掉了磁盘路径等定位字段，不改变原始证据的效力；来源 quote_truncated=true
+仍表示证据片段被截断。共享来源或相同文本不表示两条记忆是同一事实，不能忽略状态/时间差异。
+围绕 analysis.search_text、needed_fact_keys 和 entities 所指的记忆需求判断增量价值。
+"""
 RERANK += "\n" + RELEVANCE_INSTRUCTION
 
 REPAIR = """
@@ -236,3 +257,6 @@ UNVERIFIED_CANDIDATE_PREFIX = '尚未核验的候选陈述：'
 
 TIME_REFERENCE_REQUIRED = "{mode} 需要显式、带时区的 at；time_range 不能替代 at。"
 TIMEZONE_OFFSET_REQUIRED = "at 缺少时区偏移。"
+
+QUERY_RECALL_NEEDED_DESCRIPTION = "是否需要从存储记忆补充本轮缺失的信息；当前上下文已足够、仅需常识/外部资料/工具时为 false，不确定为 true。"
+QUERY_RECALL_REASON_DESCRIPTION = "一句话说明召回要补充哪方面信息，或为什么当前输入及当前任务上下文已经足够。"

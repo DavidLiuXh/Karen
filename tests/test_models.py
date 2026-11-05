@@ -176,3 +176,45 @@ async def test_truncation_recovery_changes_actual_http_budget_once(monkeypatch, 
     assert all(call["reasoning_effort"] == effort for call in calls)
     assert client.metadata["reasoning_effort"] == effort
     assert client.metadata["effective_reasoning_effort"] == effective
+
+
+async def test_rerank_sends_8192_and_does_not_retry_truncation(monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    from karen.context.contracts import Ranking
+    from karen.context.retrieval import Retriever
+    from karen.observability import Observer
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    calls = []
+
+    async def send(request):
+        calls.append(json.loads(request.content))
+        truncated = len(calls) == 1
+        return httpx.Response(200, request=request, json={
+            "id": "rerank-budget", "object": "chat.completion", "created": 1,
+            "model": "deepseek-flash", "choices": [{"index": 0,
+                "finish_reason": "length" if truncated else "stop",
+                "message": {"role": "assistant", "content": '{"ranking":' if truncated
+                            else '{"ranking": [], "history_status": "none"}'}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(send)) as http:
+        monkeypatch.setattr(karen.model.models, "ChatDeepSeek", partial(ChatDeepSeek, http_async_client=http))
+        client = deepseek_client(reasoning_effort="low")
+        retriever = Retriever(SimpleNamespace(
+            model=client, rerank_model=client, storage=None, observer=Observer(),
+        ))
+        with pytest.raises(ModelCallError) as failed:
+            await retriever.call({"deadline": time.monotonic() + 180}, "memory_rerank",
+                                 "Rank the synthetic candidates", {}, Ranking)
+        assert failed.value.code == "MODEL_RESPONSE_TRUNCATED"
+        assert len(calls) == 1
+        result = await retriever.call({"deadline": time.monotonic() + 180}, "memory_rerank",
+                                      "Rank the synthetic candidates", {}, Ranking)
+        assert result.ranking == []
+    assert [call["max_tokens"] for call in calls] == [8192, 8192]
+    assert all(call["thinking"] == {"type": "enabled"} for call in calls)
+    assert all(call["reasoning_effort"] == "low" for call in calls)

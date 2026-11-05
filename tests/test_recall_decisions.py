@@ -284,3 +284,95 @@ async def test_invalid_rerank_ids_are_reported_as_validation_failure(tmp_path):
     )
     assert failure["error_code"] == "INVALID_RERANK_IDS"
     assert "private-input" not in str(failure)
+
+
+@pytest.mark.parametrize("dependency,messages", [
+    ("none", []),
+    ("current_task", [{"role": "user", "content": "只需公开信息，时间和地点已经给出。"}]),
+])
+async def test_query_can_skip_all_memory_reads_when_current_context_is_sufficient(
+    tmp_path, dependency, messages, monkeypatch,
+):
+    model = FakeModelClient([{
+        "search_text": "公开资料查询", "recall_needed": False,
+        "recall_reason": "条件已齐全，只需外部资料", "dialogue_dependency": dependency,
+    }])
+    service = ContextMemory(root_dir=tmp_path, model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        def unexpected(*args, **kwargs):
+            raise AssertionError("Skipping recall must not read the index or embed candidates")
+
+        monkeypatch.setattr(service.storage, "retrieval_snapshot", unexpected)
+        monkeypatch.setattr(service, "embed", unexpected)
+        current = query("查阅公开资料").model_copy(update={"current_task_messages": messages})
+        result = await service.recall(current)
+        assert result.status == "empty" and not result.degradations
+        assert result.coverage["recall_needed"] is False
+        assert result.coverage["recall_reason"] == "条件已齐全，只需外部资料"
+        assert result.history.status == "none" and result.m1 == result.m2 == result.details == []
+        assert len(model.requests) == 1
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("scope", [
+    {"kind": "facts"}, {"kind": "detail"}, {"kind": "collection"},
+    {"dialogue_dependency": "needed"}, {"needed_fact_keys": ["preferences"]},
+    {"time_mode": "timeline"},
+])
+def test_skip_decision_cannot_discard_explicit_memory_requirements(scope):
+    with pytest.raises(ValidationError) as error:
+        QueryAnalysis.model_validate({"search_text": "background", "recall_needed": False, **scope})
+    assert error.value.errors()[0]["type"] == "recall_scope_conflict"
+
+
+async def test_query_searches_for_missing_information_instead_of_the_whole_task(tmp_path):
+    class ScopedModel(MemoryModel):
+        async def generate(self, request):
+            if request.role == "memory_query":
+                self.requests.append(request)
+                from dynamic_graph import ModelResponse
+
+                return ModelResponse({
+                    "recall_needed": True, "recall_reason": "需要用户偏好的运动类型",
+                    "search_text": "用户偏好的运动类型", "needed_fact_keys": ["运动偏好"],
+                })
+            return await super().generate(request)
+
+    embeddings = LocalEmbeddings()
+    service = ContextMemory(root_dir=tmp_path, model=ScopedModel(), embeddings=embeddings)
+    await service.start()
+    try:
+        await service.flush(service.submit(event("我喜欢摄影")))
+        calls = []
+        original = service.embed
+
+        async def track(texts, **kwargs):
+            calls.extend(texts)
+            return await original(texts, **kwargs)
+
+        service.embed = track
+        result = await service.recall(query("按我的运动喜好推荐活动，并生成一个HTML页面"))
+        assert calls == ["用户偏好的运动类型"]
+        assert result.coverage["search_text"] == "用户偏好的运动类型"
+        assert result.m1 or result.m2  # Semantic hints must not become exact-key filters.
+    finally:
+        await service.close()
+
+
+async def test_invalid_skip_decision_falls_back_to_recall_with_degradation(tmp_path):
+    service = ContextMemory(
+        root_dir=tmp_path, embeddings=LocalEmbeddings(),
+        model=FakeModelClient([{
+            "search_text": "个人偏好", "recall_needed": False, "kind": "facts",
+        }]),
+    )
+    await service.start()
+    try:
+        result = await service.recall(query("个人偏好"))
+        assert result.status == "degraded"
+        assert result.coverage["recall_needed"] is True
+        assert "QUERY_ANALYSIS_FAILED" in result.degradations
+    finally:
+        await service.close()

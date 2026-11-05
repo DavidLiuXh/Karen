@@ -354,3 +354,11 @@ uv run ruff check .
 ```
 
 Offline checks use controlled responses and do not consume model API credits. Live model evaluations run separately under the evaluation protocol, use isolated directories, and do not read the user's global memory. Model services and live retrieval incur costs and can produce varying results. Fixes remain general: they must not introduce special branches for individual evaluation cases or change labels to improve scores.
+
+### Gmail read-only tools
+
+Set `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, and `GMAIL_REFRESH_TOKEN` from an existing
+OAuth grant with `gmail.readonly` scope before starting Karen. CLI and WeChat then register
+four read-only Gmail tools for profile, inbox pages, message details, and history changes.
+Restart after configuration changes. OAuth setup and continuous new-mail monitoring are
+not implemented yet. See [Gmail access](docs/GMAIL.md) for the API and privacy boundaries.

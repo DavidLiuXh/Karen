@@ -35,6 +35,8 @@ from .schedule import ScheduledTasks
 from .task import DEFAULT_MAX_CONCURRENT_TASKS, TaskManager
 from .task.console import run_console
 from .task.resources import ExecutionResources
+from .tools.gmail import GmailClient, GmailCredentials
+from .tools.gmail_tools import gmail_tools
 from .workflow import ReusableWorkflows
 
 # Keep one history for the lifetime of the CLI process so each prompt can
@@ -118,6 +120,23 @@ async def read_input() -> str:
     return await future
 
 
+async def register_gmail_tools(engine, resources, resources_guard):
+    """Enable Gmail only when the complete existing OAuth grant is configured."""
+    names = ("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN")
+    values = [os.environ.get(name, "").strip() for name in names]
+    if not any(values):
+        return
+    if not all(values):
+        print(messages.GMAIL_CONFIG_INCOMPLETE, file=sys.stderr)
+        return
+    import httpx
+
+    http = await resources.enter_async_context(httpx.AsyncClient())
+    client = GmailClient(http, GmailCredentials(*values))
+    for definition in gmail_tools(client):
+        engine.register_tool(resources_guard.independent_read(definition))
+
+
 async def converse(
     *, json_output: bool = False, timezone: str | None = None, observe_port: int | None = None,
     wechat: bool = False, max_concurrent_tasks: int = DEFAULT_MAX_CONCURRENT_TASKS,
@@ -181,6 +200,7 @@ async def converse(
             engine.register_tool(resources_guard.independent_read(tavily_search_tool()))
         else:
             print(messages.TAVILY_UNAVAILABLE)
+        await register_gmail_tools(engine, resources, resources_guard)
         memory_model = ObservedModel(deepseek_client(thinking=False), observer)
         memory = create_memory(memory_model, rerank_model=model, observer=observer)
         try:

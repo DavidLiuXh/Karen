@@ -352,3 +352,10 @@ uv run ruff check .
 ```
 
 离线检查使用可控响应，不消耗模型 API 额度。真实模型评测单独按评测协议运行，使用隔离目录，不读取用户全局记忆；模型服务和实时检索会产生费用及结果波动。修复保持通用，不为单个评测题增加专用分支或修改标签来提高分数。
+
+### Gmail 只读工具
+
+启动 Karen 前，配置已有 `gmail.readonly` OAuth 授权的 `GMAIL_CLIENT_ID`、
+`GMAIL_CLIENT_SECRET` 和 `GMAIL_REFRESH_TOKEN`。CLI 和微信会注册邮箱资料、收件箱分页、
+邮件详情及历史变更四个只读工具。配置变更后需重启；授权流程与持续新邮件监测尚未实现。
+接口和隐私边界见 [Gmail 访问](docs/GMAIL.md)。

@@ -367,6 +367,19 @@
   <script>
     // UI copy only: source text, identifiers and JSON payloads remain unchanged.
     const english = {
+      " 分 ": " min ",
+      "等待澄清回复": "Waiting for clarification reply",
+      "等待澄清区间": "Clarification wait intervals",
+      "尚无后续输入记录": "No subsequent input recorded",
+      "等待回复的间隔不计入精排耗时；后台记忆事件可能出现在等待期间。": "Reply gaps are separate from reranking time; background memory events may occur while waiting.",
+      "精排耗时（本轮）": "Reranking time (selected turn)",
+      "精排耗时（逐轮）": "Reranking time by turn",
+      "未记录完成耗时": "No completed duration recorded",
+      "包含精排内部重试；降级仍计入实际耗时。": "Includes retries within reranking; degraded attempts still count toward elapsed time.",
+      "精排结束": "Reranking finished",
+      "未记录等待区间": "No wait interval recorded",
+      "精排降级": "Reranking degraded",
+
       "开始": "Started",
       "结束": "Finished",
       "决策证据": "Decision evidence",
@@ -608,6 +621,10 @@
     }
     function stamp(v) {
       return v ? new Date(v).toLocaleString(language) : "";
+    }
+    function waitDuration(ms) {
+      const minutes = Math.floor(ms / 60000);
+      return (minutes ? minutes + t(" 分 ") : "") + ((ms % 60000) / 1000).toFixed(2) + t(" 秒");
     }
     function payload(parent, title, value, key) {
       const d = el("details", undefined, "record");
@@ -856,6 +873,8 @@
       const failures = data.events.filter(
         (e) => e.status === "failed" || e.event_type === "node_failed",
       );
+      const timing = data.timing || {clarification_waits: [], reranking: []};
+      const rankTimes = timing.reranking.filter((r) => r.trace_id === selected && r.duration_ms != null);
       const cards = el("div", undefined, "cards");
       for (const [label, value] of [
         [
@@ -880,6 +899,9 @@
                 ? t("交互已结束")
                 : t("记录未终结"),
         ],
+        [t("精排耗时（本轮）"), rankTimes.length
+          ? (rankTimes.reduce((sum, r) => sum + r.duration_ms, 0) / 1000).toFixed(2) + t(" 秒")
+          : t("未记录完成耗时")],
         [t("任务模型调用"), requests.length + t(" 次")],
         [t("失败事件"), failures.length + t(" 条")],
       ]) {
@@ -888,6 +910,24 @@
         cards.append(c);
       }
       target.append(cards);
+      const timingBox = el("div", undefined, "section");
+      timingBox.append(el("h3", t("等待澄清区间")),
+        el("p", t("等待回复的间隔不计入精排耗时；后台记忆事件可能出现在等待期间。"), "meta"));
+      if (!timing.clarification_waits.length) timingBox.append(el("p", t("未记录等待区间"), "meta"));
+      for (const wait of timing.clarification_waits) {
+        timingBox.append(el("p", stamp(wait.start_utc) + " → " +
+          (wait.end_utc ? stamp(wait.end_utc) : t("尚无后续输入记录")) +
+          (wait.duration_ms != null ? " · " + waitDuration(wait.duration_ms) : ""), "notice"));
+      }
+      timingBox.append(el("h3", t("精排耗时（逐轮）")),
+        el("p", t("包含精排内部重试；降级仍计入实际耗时。"), "meta"));
+      if (!timing.reranking.length) timingBox.append(el("p", t("未记录完成耗时"), "meta"));
+      for (const rank of timing.reranking) {
+        timingBox.append(el("p", stamp(rank.start_utc) + " → " + stamp(rank.end_utc) + " · " +
+          (rank.duration_ms != null ? (rank.duration_ms / 1000).toFixed(2) + t(" 秒") : t("未记录完成耗时")) +
+          " · " + (rank.status === "degraded" ? t("精排降级") : statusLabel(rank.status))));
+      }
+      target.append(timingBox);
       const acceptance = el("div", undefined, "section");
       acceptance.append(el("h3", t("结果与流程检查")));
       acceptance.append(
@@ -1030,7 +1070,20 @@
     function renderEvents(data, timeline) {
       const entries = timeline.querySelector(".entries");
       entries.replaceChildren();
-      for (const e of data.events) {
+      const waits = (data.timing?.clarification_waits || []).map((wait) => ({
+        event_id: "wait-" + wait.trace_id, timestamp_utc: wait.start_utc,
+        stage: t("等待澄清回复"), event_type: "clarification.wait", status: "ok",
+        duration_ms: wait.duration_ms, data: wait,
+      }));
+      const rankEvents = (data.timing?.reranking || []).map((rank) => ({
+        event_id: "rank-" + rank.trace_id + "-" + rank.end_utc,
+        timestamp_utc: rank.end_utc, stage: "memory.recall.rank",
+        event_type: rank.status === "degraded" ? "精排降级" : "精排结束",
+        status: rank.status, duration_ms: rank.duration_ms, data: rank,
+      }));
+      const events = [...data.events, ...waits, ...rankEvents].sort((a, b) =>
+        a.timestamp_utc.localeCompare(b.timestamp_utc) || (a.seq || 0) - (b.seq || 0));
+      for (const e of events) {
         if (
           filter === "key" &&
           [
@@ -1063,7 +1116,9 @@
         summary.append(
           el("time", new Date(e.timestamp_utc).toLocaleTimeString(language)),
           el("strong", e.stage || e.phase || ""),
-          el("span", t(labels[e.event_type] || e.event_type)),
+          el("span", e.event_type === "clarification.wait"
+            ? (e.data.end_utc ? stamp(e.data.start_utc) + " → " + stamp(e.data.end_utc) : t("尚无后续输入记录"))
+            : t(labels[e.event_type] || e.event_type)),
         );
         const meta = el("span", undefined, "meta");
         if (e.origin === "engine") meta.append(el("span", t("引擎")));

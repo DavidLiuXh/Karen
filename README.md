@@ -14,6 +14,7 @@ Its focus is continuity between **your context, your intent, and the work delive
 
 - **Personal context across tasks.** Retrieve relevant preferences and past events while keeping unrelated task conversations separate.
 - **Clarification before execution.** Preserve the original request and your answers, asking for information needed to make the goal actionable.
+- **Execution shaped by the goal.** DynamicAgentGraph generates a task graph for each confirmed goal, organizing model and tool calls with explicit data dependencies. New goals can use the available capabilities without a handwritten workflow for each request.
 - **Experience that can be reused.** Turn completed work into verified workflows that compatible requests can reuse with current parameters and permissions.
 
 These choices shape Karen as a personal agent for an ongoing relationship with its user. Proactively discovering and advancing work remains the longer-term direction.
@@ -37,7 +38,13 @@ Karen is under active development. Task results depend on available tools and mo
 
 ## Architecture
 
-Karen manages context, clarification, and tasks; [DynamicAgentGraph](https://github.com/DavidLiuXh/DynamicAgentGraph) plans and executes the work.
+Karen manages context, clarification, and tasks. **[DynamicAgentGraph](https://github.com/DavidLiuXh/DynamicAgentGraph) is the execution foundation that turns those decisions into work.** Its central design connects goal-driven graph generation with programmatic validation and execution:
+
+- **Generate the structure for the goal.** The planner selects registered capabilities and defines steps, dependencies, and state in a structured graph, including parallel work where appropriate.
+- **Validate before acting.** Code checks tool versions, input/output contracts, dependencies, permissions, and resource limits before compiling an accepted graph into LangGraph. Invalid candidates receive bounded repair feedback.
+- **Give experience an executable form.** Recorded graphs provide the structure Karen uses to discover reusable workflows. Reused graphs pass through the same authorization and validation boundary.
+
+Karen relies on this layer to move from understanding a request to coordinated execution, and from one completed task to a reusable process.
 
 ```mermaid
 flowchart LR
@@ -47,8 +54,12 @@ flowchart LR
     M[Personal memory] --> I
     I -->|Direct answer| R[Result]
     I -->|Actionable goal| W[Match verified workflow]
-    W -->|Match: supplied graph| E[DynamicAgentGraph]
-    W -->|No match: plan a graph| E
+    W -->|Match: supplied graph| V
+    W -->|No match| P
+    subgraph DAG[DynamicAgentGraph]
+        P[Generate task graph] --> V[Validate and bind capabilities]
+        V --> E[Execute through LangGraph]
+    end
     E --> R
     R -. Background memory updates .-> M
     E -. Execution records .-> O[Observability]

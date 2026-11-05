@@ -16,7 +16,12 @@ class TaskInteraction:
         text = text.strip()
         if not text:
             return messages.TASK_INPUT_REJECTED.format(code="EMPTY_TASK_INPUT")
-        if text == "/tasks":
+        parts = text.split(maxsplit=1)
+        command = parts[0]
+        rest = parts[1] if len(parts) == 2 else ""
+        if command == "/tasks":
+            if rest not in {"", "列表", "list"}:
+                return messages.TASK_LIST_USAGE
             return (
                 "\n".join(
                     messages.TASK_LIST_ITEM.format(task_id=t.task_id, state=messages.TASK_STATE_LABELS[t.state], title=t.title)
@@ -24,7 +29,6 @@ class TaskInteraction:
                 )
                 or messages.TASK_LIST_EMPTY
             )
-        command, _, rest = text.partition(" ")
         target = None
         consume_pending = False
         if command == "/use":

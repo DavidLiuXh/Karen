@@ -244,6 +244,8 @@ async def test_discovery_restart_match_and_real_prepared_execution(tmp_path):
         assert result.outputs["answer"] == "2026-10-25"
         assert calls == [{"value": DAY}, {"value": "2026-10-25"}]
         assert len(executor.requests) == 2 and all(r.role == "worker" for r in executor.requests)
+        assert executor.requests[-1].input_data["_karen_user_timezone"] == "Asia/Shanghai"
+        assert "convert timezone-aware timestamps" in executor.requests[-1].task_instruction
         workflows.record_outcome(
             workflow_id=resolution.workflow_id,
             version=resolution.version,

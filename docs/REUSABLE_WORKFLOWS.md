@@ -112,3 +112,10 @@ uv run pytest tests/test_workflow.py tests/test_workflow_revisions.py tests/test
 业务核验评价的是来源任务实际已经产生的结果；参数化安全评价的是 prepared_graph/prepared_goal，二者不互相冒充。用户认可只补足其明确确认的 unknown 标准，不能覆盖结构失败或客观失败，也不能证明未来每次执行都成功。含糊认可继续保持 unknown。审批证据与新版本一同持久化；接受输入不会直接更新旧 JSON 或把旧记录的状态强改为 enabled。
 
 离线新增测试位于 `tests/test_workflow_revisions.py`，覆盖固定/变量区分、精确槽位、跨日与路径组合、旧库迁移及中断回滚、源请求反馈关联、新话题隔离、版本发布失败、原定义保留与重启去重。模型的语义判断仍可能失误，遇到协议或证据不充分时保留候选。
+
+### 展示时间的时区
+
+实例化复用图时，将当前请求的 IANA 时区作为 `_karen_user_timezone` 绑定到每个 LLM 节点的输入，
+并提示面向用户的文字和 HTML 按该时区转换时间，明确标注时区。原始抓取时间及证据仍保留 UTC。
+仅将时区写入 GoalSpec.context 不保证执行节点能读取，因此这里使用实际节点输入绑定。
+此改动作用于下一次实例化的流程；已生成页面需重新生成或单独修正。模型输出的具体转换仍需验收。

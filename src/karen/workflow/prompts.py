@@ -118,3 +118,12 @@ PARAMETER_REFERENCE_INSTRUCTION = (
 )
 
 CONTRACT_REPAIR_INSTRUCTION = '\nRepair the response to conform exactly to the supplied output schema and contract_feedback.'
+
+TIME_DISPLAY = """
+The structured input _karen_user_timezone is the current user's IANA timezone.
+Preserve original source timestamps as evidence. For human-facing text and HTML,
+convert timezone-aware timestamps to that timezone and label the timezone clearly,
+unless the current request explicitly asks for another display timezone.
+Do not relabel a UTC clock time as local time without conversion or invent a timezone
+for an ambiguous timestamp. For example, +00:00 and UTC identify UTC source times.
+"""

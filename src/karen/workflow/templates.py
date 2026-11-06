@@ -314,6 +314,18 @@ def instantiate(definition, request, parameters):
     graph = parameterized_graph(
         definition.goal_template, definition.graph_spec, definition.proposal, parameters
     )
+    document = graph.document()
+    for node in document["nodes"]:
+        if node["kind"] != "llm":
+            continue
+        field = "_karen_user_timezone"
+        if field in node["input_bindings"] or field in node["input_schema"]["properties"]:
+            raise ValueError("reserved_timezone_input")
+        node["input_schema"]["properties"][field] = {"type": "string"}
+        node["input_schema"].setdefault("required", []).append(field)
+        node["input_bindings"][field] = {"literal": request.timezone}
+        node["instruction"] += "\n" + prompt_text.TIME_DISPLAY
+    graph = GraphSpec.model_validate(document)
     old_strings = {}
     for parameter in definition.proposal.parameters:
         old = parameter.source_value

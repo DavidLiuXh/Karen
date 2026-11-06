@@ -2331,14 +2331,14 @@ async def test_recall_truncation_respects_role_budget_without_changing_profiles_
         result = await service.recall(query("我住在哪里？"))
         model = base if role == "memory_query" else ranker
         if role == "memory_rerank":
-            assert [r.max_output_tokens for r in model.truncations] == [8192]
+            assert [r.max_output_tokens for r in model.truncations] == [32768]
         else:
             assert [r.max_output_tokens for r in model.truncations] == [4096, 8192]
             first, retry = model.truncations
             assert first.input_data == retry.input_data and first.output_schema == retry.output_schema
             assert 0 < retry.timeout_seconds <= first.timeout_seconds
         assert 14 < base.requests[-1].timeout_seconds <= 15
-        assert 89 < ranker.requests[0].timeout_seconds <= 90
+        assert 479 < ranker.requests[0].timeout_seconds <= 480
         assert result.m1 and result.m1[0].memory.value == "北京"
         if not recovers:
             code = "QUERY_ANALYSIS_FAILED" if role == "memory_query" else "RERANK_FAILED_FUSION_ORDER"
@@ -2554,3 +2554,20 @@ async def test_ranking_projection_preserves_source_roles_and_truncation(memory):
     assert assistant_evidence["storage_state"] == "failed"
     assert sources[by_id["long"]["sources"][0]]["quote_truncated"] is True
     assert "text" in by_id["long"]  # Truncated evidence does not replace a summary.
+
+
+@pytest.mark.parametrize('remaining,expected_limit', [(600, 480), (20, 18.5)])
+async def test_rerank_uses_full_output_budget_but_respects_outer_deadline(tmp_path, remaining, expected_limit):
+    from karen.context.contracts import Ranking
+    from karen.context.retrieval import Retriever
+
+    model = MemoryModel()
+    service = ContextMemory(root_dir=tmp_path, model=model, embeddings=LocalEmbeddings())
+    response = await Retriever(service).call(
+        {'deadline': time.monotonic() + remaining}, 'memory_rerank', 'Rank the inputs',
+        {'history_candidates': [], 'primary_ids': []}, Ranking,
+    )
+    request = model.requests[-1]
+    assert response.ranking == []
+    assert request.max_output_tokens == 32768
+    assert expected_limit - 0.5 < request.timeout_seconds <= expected_limit

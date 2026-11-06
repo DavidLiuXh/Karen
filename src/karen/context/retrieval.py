@@ -29,7 +29,9 @@ from .contracts import (
 from .prompts import MEMORY_SYSTEM, QUERY, RERANK, TRUNCATION_REPAIR
 from .storage import digest, encode, terms
 
-RECALL_TIMEOUT_SECONDS = 180
+RECALL_TIMEOUT_SECONDS = 600
+RERANK_TIMEOUT_SECONDS = 480
+RERANK_MAX_OUTPUT_TOKENS = 32768
 RERANK_INPUT_MAX_BYTES = 48 * 1024
 
 
@@ -365,7 +367,7 @@ class Retriever:
     async def call(self, state, role, instruction, inputs, schema):
         model = self.service.rerank_model if role == "memory_rerank" else self.service.model
         remaining = min(state["deadline"] - time.monotonic() - 1.5,
-                        90 if role == "memory_rerank" else 15)
+                        RERANK_TIMEOUT_SECONDS if role == "memory_rerank" else 15)
         if remaining <= 0:
             raise TimeoutError("RECALL_DEADLINE")
         deadline = time.monotonic() + remaining
@@ -375,7 +377,7 @@ class Retriever:
             task_instruction=instruction,
             input_data=inputs,
             output_schema=schema.model_json_schema(),
-            max_output_tokens=8192 if role == "memory_rerank" else 4096,
+            max_output_tokens=RERANK_MAX_OUTPUT_TOKENS if role == "memory_rerank" else 4096,
             timeout_seconds=remaining,
         )
         async with asyncio.timeout(remaining):

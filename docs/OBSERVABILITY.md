@@ -57,6 +57,8 @@ CLI 默认保存位置：
 新降级诊断只作用于后续运行，旧记录中的通用错误码不会被回写成推测的失败原因。
 现有 worker ModelRequest 不携带 run_id/node_id，因此模型调用通过任务与 execution span 关联，不能精确一一绑定并发节点；节点状态、尝试次数与产物采用引擎原生记录，不根据时间相邻关系猜测绑定。
 
+页面提供独立的“LLM 交互”区，按 trace_id 和 span_id 配对请求、返回、错误及调用结束事件，显示耗时；展开保留完整已存事件及裁剪标记。缺少请求或返回明确标为记录缺失，不推断仍在运行。此区不受时间线默认隐藏模型事件的筛选影响。
+
 ## 事件和因果关系
 
 事件包含 schema_version、event_id、UTC 时间、process_session_id、进程序号、trace_id、span_id、parent_span_id、stage、event_type、status、duration_ms、data 和 coverage。

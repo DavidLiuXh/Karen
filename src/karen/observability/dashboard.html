@@ -394,6 +394,8 @@
       "微信请求处理失败": "WeChat processing failed",
       "微信输入无法处理": "WeChat input could not be processed",
       "微信响应记忆写入异常": "WeChat response memory write failed",
+      "模型配置": "Model configuration",
+      "未知模型": "Unknown model",
       "LLM 交互": "LLM interactions",
       "按追踪与调用标识配对；内容为已脱敏的客户端记录，可能裁剪。缺少返回不代表调用仍在运行。": "Paired by trace and call ID. Client records are redacted and may be truncated. A missing response does not imply the call is still running.",
       "已返回": "Returned",
@@ -1067,12 +1069,15 @@
         const first = request || events[0];
         const detail = el("details", undefined, "event " + (error ? "failed" : finish?.status || ""));
         detail.dataset.key = "llm-" + key;
+        const model = request?.data?.model || response?.data?.model;
+        const modelName = typeof model === "string" ? model : model?.model;
         const summary = el("summary");
         summary.append(el("time", new Date(first.timestamp_utc).toLocaleTimeString(language)),
-          el("strong", JSON.stringify(request?.data?.model || response?.data?.model || {})),
+          el("strong", modelName || t("未知模型")),
           el("span", error ? t("失败") : response ? t("已返回") : t("返回记录缺失")));
         if (finish?.duration_ms != null) summary.append(el("span", finish.duration_ms.toFixed(1) + " ms", "meta"));
         detail.append(summary);
+        if (model != null) detail.append(el("h4", t("模型配置")), el("pre", JSON.stringify(model, null, 2)));
         for (const [label, event] of [["输入", request], ["输出", response], ["错误", error], ["调用结束", finish]]) {
           if (!event && (label === "错误" || label === "调用结束")) continue;
           detail.append(el("h4", t(label)), el("pre", event ? JSON.stringify(event, null, 2) : t("记录缺失")));

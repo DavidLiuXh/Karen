@@ -101,6 +101,22 @@ def test_display_response_renders_markdown_in_terminal(monkeypatch):
     assert "**" not in rendered and "```" not in rendered
 
 
+@pytest.mark.parametrize("state", ["等待回复", "已完成", "失败"])
+def test_terminal_task_header_preserves_reply_and_respects_no_color(monkeypatch, state):
+    output = io.StringIO()
+    monkeypatch.setattr(output, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    cli.display_response(f"[abc123 · {state}]\n**回答**含有 [red] 普通文本")
+
+    rendered = output.getvalue()
+    assert f"[abc123 · {state}]" in rendered
+    assert "回答" in rendered and "[red]" in rendered
+    assert all(code not in rendered for code in ("\x1b[31m", "\x1b[32m", "\x1b[33m", "\x1b[35m"))
+
+
 @pytest.mark.parametrize("arguments,port", [([], None), (["--observe"], 8765),
                                             (["--observe", "8766"], 8766)])
 def test_cli_observation_parameter(monkeypatch, arguments, port):
@@ -543,7 +559,7 @@ def test_real_console_submits_edited_chinese_text(keystrokes):
             output += os.read(master, 65536)
 
     try:
-        read_until("你：".encode())
+        read_until("❯".encode())
         deadline = time.monotonic() + 10  # Editing has its own budget after interpreter startup.
         os.write(master, keystrokes + b"\r")
         read_until(b"RESULT=")
@@ -702,7 +718,7 @@ def test_cli_exit_restores_terminal_and_waits_for_persistence(local_cli_script, 
         arguments,
         extra_env={"KAREN_TEST_PERSISTED": str(persisted)},
     ) as (process, master, read_until, wait_for_exit):
-        read_until("你：".encode())
+        read_until("❯".encode())
         if observe:
             assert observation_get(port, "/")[0] == 200
         if exit_method == "task_ctrl_c":
@@ -739,7 +755,7 @@ def test_shell_accepts_another_command_after_karen_ctrl_c(local_cli_script):
         read_until(b"SHELL_READY> ")
         command = shlex.join([sys.executable, "-u", str(script), "--timezone", "Asia/Shanghai"])
         os.write(master, command.encode() + b"\r")
-        read_until("你：".encode())
+        read_until("❯".encode())
         os.write(master, "未提交的任务".encode() + b"\x03")
         read_until(b"PERSISTENCE_COMPLETE")
         read_until(b"SHELL_READY> ")

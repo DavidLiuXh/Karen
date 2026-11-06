@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -19,9 +20,11 @@ from dynamic_graph.tools import (
     web_fetch_tool,
 )
 from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import InMemoryHistory
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.text import Text
 
 from .agent import Karen
 from .context import ContextMemory
@@ -51,8 +54,29 @@ def display_response(text: str, *, json_output: bool = False) -> None:
         print(text)
     elif sys.stdout.isatty() and os.environ.get("TERM") != "dumb":
         console = Console(file=sys.stdout)
-        console.print(messages.KAREN_PREFIX, markup=False)
-        console.print(Markdown(text))
+        console.print()
+        if text == messages.TASK_HELP:
+            console.print(Text(messages.CLI_TITLE, style="bold magenta"))
+            console.print(Text(text, style="dim"))
+        else:
+            console.print(Text(messages.KAREN_PREFIX, style="bold magenta"))
+            # Only decorate the event envelope; leave reply contents as Markdown.
+            header, separator, body = text.partition("\n")
+            match = re.fullmatch(r"\[[^\]\n]+ · ([^\]\n]+)\]", header)
+            state_styles = {
+                messages.TASK_STATE_LABELS["queued"]: "cyan",
+                messages.TASK_STATE_LABELS["running"]: "cyan",
+                messages.TASK_STATE_LABELS["waiting"]: "yellow",
+                messages.TASK_STATE_LABELS["completed"]: "green",
+                messages.TASK_STATE_LABELS["failed"]: "red",
+                messages.TASK_STATE_LABELS["cancelled"]: "dim",
+            }
+            if separator and match and match[1] in state_styles:
+                console.print(Text(header, style=state_styles[match[1]]))
+                console.print(Markdown(body))
+            else:
+                console.print(Markdown(text))
+        console.print()
     else:
         print(messages.KAREN_PREFIX + text)
 
@@ -92,7 +116,11 @@ async def read_input() -> str:
     """Cancel terminal editing cleanly; keep redirected input compatible with input()."""
     if sys.stdin.isatty():
         # Async editing restores terminal modes before cancellation or Ctrl+C propagates.
-        return await PromptSession(history=_input_history).prompt_async(messages.INPUT_PROMPT)
+        prompt = messages.INPUT_PROMPT
+        if os.environ.get("TERM") != "dumb":
+            style = "" if "NO_COLOR" in os.environ else "bold ansicyan"
+            prompt = FormattedText([(style, messages.CLI_INPUT_PROMPT)])
+        return await PromptSession(history=_input_history).prompt_async(prompt)
 
     # A cancelled pipe read must not hold asyncio's executor shutdown open.
     loop = asyncio.get_running_loop()

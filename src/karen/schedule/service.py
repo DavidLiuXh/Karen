@@ -91,7 +91,7 @@ class ScheduledTasks:
 
     def _busy(self, entry):
         task = self.manager.tasks.get(entry.last_task_id)
-        return task is not None and task.state in {"queued", "running", "waiting"}
+        return task is not None and not task.closed and task.state in {"queued", "running", "waiting"}
 
     def _launch(self, entry, now):
         task = self.submit(entry, now)

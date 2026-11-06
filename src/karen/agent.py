@@ -98,13 +98,14 @@ class Karen:
         cancellation_token: CancellationToken | None = None,
         received_at: datetime | None = None,
         continue_task: bool = False,
+        routing=None,
+        task_id: str | None = None,
+        turn_id: str | None = None,
     ) -> TaskTurn:
-        if continue_task and not session.questions:
-            raise ValueError("NO_PENDING_TASK")
         previous_goal = session.goal
         previous_run_id = session.completed_run_id
         if session.completed:
-            session = session.new_request()
+            session = session.next_turn() if continue_task else session.new_request()
         from .intent.recognizer import Message
 
         Message(role="user", content=user_input)
@@ -116,14 +117,15 @@ class Karen:
             session = session.model_copy(update={"reference_time_utc": received_at})
         trace_id = uuid4().hex
         with self.observer.span(
-            "input", trace_id=trace_id, conversation_id=session.conversation_id, turn_id=uuid4().hex
+            "input", trace_id=trace_id, conversation_id=session.conversation_id,
+            task_id=task_id, turn_id=turn_id or uuid4().hex
         ) as input_outcome:
             self.observer.emit(
                 "input.received", data={"text": user_input, "timezone": session.timezone}
             )
             async with self._foreground():
                 try:
-                    routing = await self.intent.classify(session, user_input)
+                    routing = routing or await self.intent.classify(session, user_input)
                 except BaseException:
                     # Even a failed classifier must not discard the user's raw input.
                     with self.observer.span("turn", request_id=session.request_id):

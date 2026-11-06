@@ -138,11 +138,15 @@ Open the printed dashboard address, usually `http://127.0.0.1:8765/`. Omit `--ob
 | --- | --- |
 | `/new request` | Start an independent task |
 | `/tasks` | List tasks and their IDs |
-| `/reply ID answer` | Answer a task's clarification question |
-| `/cancel ID` | Cancel a task |
+| `/reply ID answer` | Continue a task: clarify, follow up, or revise a result |
+| `/use ID` | Select a task for the next input |
+| `/cancel ID` | Cancel the current round |
+| `/finish ID` | End a task explicitly |
 | `/schedule request` | Create or change a schedule in natural language |
 | `/schedule list` | List schedules |
 | `/exit` | Exit Karen |
+
+Follow-ups retain the task ID and its conversation. Independent topics start isolated tasks; use `/new` to force a new task. Tasks and round history currently live in memory; restarting does not restore all tasks.
 
 Schedules persist across restarts, but **trigger only while Karen is running**. Missed occurrences are not replayed.
 

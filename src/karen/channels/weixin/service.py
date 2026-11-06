@@ -179,13 +179,13 @@ class WeixinChannel:
                                 failed_messages=counts["outbox"].get("failed", 0),
                             ), record=False)
                         continue
-                    response = self.interaction.accept(
+                    response = await self.interaction.accept_input(
                         text, received_at=datetime.fromisoformat(row["received_at"]), source=row,
                     )
-                    if text.startswith("/cancel "):
+                    if text.startswith(("/cancel ", "/finish ")):
                         cancelled = self.manager.tasks.get(text.partition(" ")[2])
                         if cancelled is not None:
-                            self.session = cancelled.session
+                            self.session = cancelled.session.new_request() if cancelled.closed else cancelled.session
                     origin = self.interaction.submitted_source
                     if origin is not None and origin["id"] == row["id"]:
                         self.store.notice(row, response)
@@ -218,6 +218,8 @@ class WeixinChannel:
                     )
                 turn = event.turn
                 session = turn.session if turn is not None else self.manager.tasks[event.task_id].session
+                if self.manager.tasks[event.task_id].closed:
+                    session = session.new_request()
                 self.session = session
                 files = ()
                 if turn is not None and turn.result is not None and event.state == "completed":

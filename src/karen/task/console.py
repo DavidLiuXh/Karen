@@ -26,6 +26,7 @@ async def run_console(manager, session, *, read_input, display, json_output=Fals
                     payload = {
                         "type": "task",
                         "task_id": event.task_id,
+                        "turn_id": event.turn_id,
                         "state": event.state,
                         "answer": text,
                     }
@@ -112,7 +113,7 @@ async def run_console(manager, session, *, read_input, display, json_output=Fals
                 await flush_events()
                 return exit_code
             response = await schedules.handle(text) if schedules is not None else None
-            notice(response if response is not None else interaction.accept(text))
+            notice(response if response is not None else await interaction.accept_input(text))
             # Fairness also matters for redirected input that returns without yielding.
             await asyncio.sleep(0)
     finally:

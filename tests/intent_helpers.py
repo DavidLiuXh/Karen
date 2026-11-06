@@ -68,3 +68,10 @@ class TaskIntentModel(ClarityAwareModel):
                 }
             )
         return await super().generate(request)
+
+
+class NewTaskRouter:
+    async def classify(self, session, text):
+        from karen.intent import InputRouting
+        return InputRouting(input_types=["task_request"], handling="assess",
+                            task_relation="new", reason="Independent scripted input")

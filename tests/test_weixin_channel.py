@@ -21,7 +21,7 @@ from dynamic_graph import (
 from dynamic_graph.contracts import CallContext
 from dynamic_graph.models.client import ModelCallError
 from dynamic_graph.tools import file_write_text_tool
-from intent_helpers import TaskIntentModel
+from intent_helpers import NewTaskRouter, TaskIntentModel
 from test_execution import graph_response, ready
 
 from karen import IntentRecognizer, IntentSession, Karen, TaskTurn
@@ -83,7 +83,10 @@ class Client:
         pass
 
 
+
+
 class Agent:
+    intent = NewTaskRouter()
     def __init__(self):
         self.inputs, self.displayed = [], []
         self.wait = None
@@ -692,19 +695,19 @@ async def test_completed_followup_keeps_clarification_task_and_message_delivery_
         ))
 
     async with running(value):
-        await send("/new completed", 1, "已完成")
+        await send("/new completed", 1, "本轮完成")
         original = next(iter(value.manager.tasks.values()))
         await send(f"/use {original.task_id}", 2, "已选中任务")
         await send("new request", 3, "等待回复")
         successor = value.manager.tasks[value.interaction.focus]
         request_id = successor.session.request_id
         await send("first detail", 4, "等待回复")
-        await send("second detail", 5, "已完成")
-        assert len(value.manager.tasks) == 2
-        assert successor.task_id != original.task_id
+        await send("second detail", 5, "本轮完成")
+        assert len(value.manager.tasks) == 1
+        assert successor.task_id == original.task_id
         assert successor.state == "completed" and successor.session.request_id == request_id
-        assert [m.content for m in successor.session.messages] == [
-            "new request", "first detail", "second detail",
+        assert [m.content for m in successor.session.messages if m.role == "user"] == [
+            "completed", "new request", "first detail", "second detail",
         ]
         for identifier in [3, 4, 5]:
             assert any(

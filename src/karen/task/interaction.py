@@ -1,5 +1,10 @@
-"""Explicit task addressing shared by CLI and Weixin; never guess an input owner."""
+"""Task addressing and contextual follow-up routing shared by CLI and Weixin."""
 
+from datetime import UTC, datetime
+
+from dynamic_graph.models.client import ModelCallError
+
+from ..intent.recognizer import Message
 from ..message import messages
 
 
@@ -7,11 +12,35 @@ class TaskInteraction:
     def __init__(self, manager, session):
         self.manager, self.session = manager, session
         self.focus = None
-        self._completed_selected = False
+        self.explicit_focus = False
         self.pending = None
         self.submitted_source = None
 
-    def accept(self, text, *, received_at=None, source=None):
+    async def accept_input(self, text, *, received_at=None, source=None):
+        """Resolve ordinary follow-ups before admitting work to a task."""
+        self.submitted_source = None
+        received_at = received_at or datetime.now(UTC)
+        routing = None
+        if (text.strip() and not text.lstrip().startswith("/") and self.pending is None
+                and self.focus is not None and not self.explicit_focus):
+            task = self.manager.tasks[self.focus]
+            if task.closed:
+                self.focus = None
+            elif task.state != "waiting":
+                session = task.session
+                if task.state in {"queued", "running"}:
+                    session = session.model_copy(update={"messages": (
+                        *session.messages, Message(role="user", content=task.current_input),
+                    )})
+                try:
+                    routing = await self.manager.agent.intent.classify(session, text)
+                except (ModelCallError, ValueError, TimeoutError):
+                    return messages.TASK_ROUTING_FAILED
+                if routing.task_relation == "new":
+                    return self.accept("/new " + text, received_at=received_at, source=source, routing=routing)
+        return self.accept(text, received_at=received_at, source=source, routing=routing)
+
+    def accept(self, text, *, received_at=None, source=None, routing=None):
         self.submitted_source = None
         text = text.strip()
         if not text:
@@ -24,7 +53,7 @@ class TaskInteraction:
                 return messages.TASK_LIST_USAGE
             return (
                 "\n".join(
-                    messages.TASK_LIST_ITEM.format(task_id=t.task_id, state=messages.TASK_STATE_LABELS[t.state], title=t.title)
+                    messages.TASK_LIST_ITEM.format(task_id=t.task_id, state=messages.TASK_CLOSED_LABEL if t.closed else messages.TASK_STATE_LABELS[t.state], title=t.title)
                     for t in self.manager.tasks.values()
                 )
                 or messages.TASK_LIST_EMPTY
@@ -35,23 +64,30 @@ class TaskInteraction:
             if rest not in self.manager.tasks:
                 return messages.TASK_UNKNOWN
             if self.pending is None:
-                if self.manager.tasks[rest].state in {"failed", "cancelled"}:
+                if self.manager.tasks[rest].closed:
                     return messages.TASK_NOT_WAITING
                 self.focus = rest
-                # Explicit selection can address a completed task once. A stale
-                # focus alone must never turn later clarification into new work.
-                self._completed_selected = self.manager.tasks[rest].state == "completed"
+                self.explicit_focus = True
                 return messages.TASK_FOCUSED.format(task_id=rest)
             target = rest
             text, received_at, source = self.pending
             consume_pending = True
+        elif command == "/finish":
+            if rest not in self.manager.tasks:
+                return messages.TASK_UNKNOWN
+            try:
+                self.manager.finish(rest)
+            except ValueError:
+                return messages.TASK_NOT_WAITING
+            if self.focus == rest:
+                self.focus = None
+            return messages.TASK_FINISHED.format(task_id=rest)
         elif command == "/cancel":
             if rest not in self.manager.tasks:
                 return messages.TASK_UNKNOWN
             self.manager.cancel(rest)
             if self.focus == rest:
                 self.focus = None
-                self._completed_selected = False
             return messages.TASK_CANCEL_REQUESTED.format(task_id=rest)
         elif command == "/help":
             return messages.TASK_HELP
@@ -69,20 +105,13 @@ class TaskInteraction:
             if self.pending is not None:
                 return messages.TASK_SELECT_PENDING
             if self.focus is not None:
-                focused = self.manager.tasks[self.focus]
-                if (
-                    focused.state in {"completed", "failed", "cancelled"}
-                    and not self._completed_selected
-                ):
-                    self.focus = None
-            if self.focus is not None:
                 target = self.focus
-            elif any(t.state == "waiting" for t in self.manager.tasks.values()):
+            elif any(t.state == "waiting" and not t.closed for t in self.manager.tasks.values()):
                 self.pending = (text, received_at, source)
                 return messages.TASK_SELECT_OWNER
         try:
             task = self.manager.submit(
-                text, self.session, task_id=target, received_at=received_at, source=source
+                text, self.session, task_id=target, received_at=received_at, source=source, routing=routing
             )
         except KeyError:
             return messages.TASK_UNKNOWN
@@ -94,10 +123,7 @@ class TaskInteraction:
             )
         if consume_pending:
             self.pending = None
-        if target is not None or command == "/new":
-            # The manager may create a successor for a completed target. Follow
-            # the actual accepted task, never the old requested identifier.
-            self.focus = task.task_id
-        self._completed_selected = False
+        self.focus = task.task_id
+        self.explicit_focus = False
         self.submitted_source = source
         return messages.TASK_ACCEPTED.format(task_id=task.task_id)

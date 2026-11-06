@@ -427,7 +427,7 @@ async def test_cancel_pending_task_does_not_call_assessor_or_engine(tmp_path):
     )
     pending = await agent.advance(IntentSession(timezone="UTC"), "写邮件")
     cancelled = await agent.advance(pending.session, "不用做了")
-    assert cancelled.response == "好的，已取消当前待澄清的任务。"
+    assert cancelled.response == "好的，已取消当前待澄清的轮次。"
     assert (
         cancelled.session.request_id == pending.session.request_id and cancelled.session.completed
     )
@@ -486,7 +486,7 @@ async def test_direct_reply_can_clarify_and_reassess_its_followup(tmp_path):
 )
 async def test_cannot_cancel_or_continue_without_a_pending_task(payload):
     original = IntentSession(timezone="UTC")
-    with pytest.raises(ValueError, match="No pending task"):
+    with pytest.raises(ValueError, match="No task context"):
         await IntentRecognizer(FakeModelClient([payload])).advance(original, "取消")
     assert original.messages == ()
 

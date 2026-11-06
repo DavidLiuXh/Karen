@@ -1138,6 +1138,7 @@ class IntentRecognizer:
         memory = state.get("memory_context")
         if (
             memory
+            and state["session"].routing.handling == "assess"
             and (memory.get("coverage", {}).get("requires_history"))
             and memory.get("history", {}).get("status") != "selected"
         ):

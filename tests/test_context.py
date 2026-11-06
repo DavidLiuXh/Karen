@@ -576,7 +576,9 @@ async def test_failed_rerank_preserves_facts_but_does_not_authorize_old_task_con
     assert "RERANK_FAILED_FUSION_ORDER" in recalled.degradations
     assert recalled.history.status == "unavailable"
     assert recalled.coverage["requires_history"] is requires_task_selection
-    model = FakeModelClient([routing("respond", types=["question"]), reply("你之前说住在北京。")])
+    model = FakeModelClient([routing("assess" if requires_task_selection else "respond",
+                                     types=["task_request"] if requires_task_selection else ["question"]),
+                             reply("你之前说住在北京。")])
     result = await IntentRecognizer(model).advance(
         IntentSession(), text, memory_context=recalled.context(),
     )

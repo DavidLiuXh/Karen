@@ -969,12 +969,9 @@ async def test_optional_task_identity_does_not_block_supported_fact_reading(stat
         "按我记录的报价能省多少？",
         memory_context=memory,
     )
-    assert bool(result.questions) is required
-    if required:
-        assert result.reply is None and all(r.role != "intent_response" for r in model.requests)
-    else:
-        assert result.reply == "按记录的报价，差额是78美元。"
-        assert model.requests[-1].input_data["original_input"]["memory"]["details"] == memory["details"]
+    assert not result.questions and result.goal is None
+    assert result.reply == "按记录的报价，差额是78美元。"
+    assert model.requests[-1].input_data["original_input"]["memory"]["details"] == memory["details"]
 
 
 async def test_compatible_reference_alternatives_do_not_force_unique_selection():

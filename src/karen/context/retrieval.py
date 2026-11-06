@@ -32,6 +32,20 @@ from .storage import digest, encode, terms
 RECALL_TIMEOUT_SECONDS = 180
 RERANK_INPUT_MAX_BYTES = 48 * 1024
 
+
+def fit_history_messages(messages, budget):
+    """Keep selected event identities and share space by shortening long bodies."""
+    messages = [dict(message) for message in messages]
+    while len(encode(messages).encode()) > budget:
+        longest = max(messages, key=lambda message: len(message["content"].encode()), default=None)
+        if longest is None or not longest["content"]:
+            return []  # Even provenance alone cannot fit this boundary.
+        content = longest["content"]
+        longest["content"] = content[:len(content) // 2]
+        longest["truncated"] = True
+    return messages
+
+
 FALLBACK_STOP_WORDS = frozenset(
     {
         "我们",
@@ -674,7 +688,6 @@ class Retriever:
             m1.sort(key=lambda hit: hit.fusion_rank)
             m2.sort(key=lambda hit: hit.fusion_rank)
         history_messages = []
-        before_history = used
         if ranking.history_status == "selected":
             events = {e.event_id: e for e in state["anchors"]}
             selected = sorted(
@@ -700,20 +713,17 @@ class Retriever:
                 )
                 message["role"] = source.source_role
                 message["source"] = source.model_dump(mode="json")
-                size = len(encode(message).encode())
-                if used + size > 11 * 1024:
-                    degraded.append("HISTORY_BUDGET_LIMIT")
-                    break
+                # The body already carries this excerpt; retain its locator only.
+                if source.quote in message["content"]:
+                    message["source"].pop("quote", None)
                 history_messages.append(message)
-                used += size
+            history_messages = fit_history_messages(history_messages, 11 * 1024)
+            used += len(encode(history_messages).encode())
         history_status = ranking.history_status
         all_history_events = len(history_messages) == len(ranking.selected_event_ids)
         history_complete = all_history_events and not any(
             message["truncated"] for message in history_messages
         )
-        if history_status == "selected" and not all_history_events:
-            history_messages = []
-            used = before_history
         if history_status == "selected" and not history_complete:
             degraded.append("HISTORY_BUDGET_LIMIT")
         history = History(
@@ -993,15 +1003,21 @@ class Retriever:
                 }
             )
         if len(encode(result.context()).encode()) > 12 * 1024 and result.history.messages:
-            result = result.model_copy(
-                update={
-                    "history": result.history.model_copy(
-                        update={"messages": [], "complete": False}
+            result = result.model_copy(update={
+                "history": result.history.model_copy(update={"complete": False}),
+                "status": "degraded",
+                "coverage": {**result.coverage, "complete": False},
+                "degradations": list(dict.fromkeys([*result.degradations, "HISTORY_BUDGET_LIMIT"])),
+            })
+            overflow = len(encode(result.context()).encode()) - 12 * 1024
+            result = result.model_copy(update={
+                "history": result.history.model_copy(update={
+                    "messages": fit_history_messages(
+                        result.history.messages,
+                        len(encode(result.history.messages).encode()) - overflow,
                     ),
-                    "status": "degraded",
-                    "degradations": [*result.degradations, "HISTORY_BUDGET_LIMIT"],
-                }
-            )
+                }),
+            })
         if result.collection:
             while len(encode(result.context()).encode()) > 12 * 1024 and result.collection["items"]:
                 result.collection["items"].pop()

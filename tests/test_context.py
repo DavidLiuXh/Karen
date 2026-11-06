@@ -1806,6 +1806,24 @@ async def test_invalid_model_json_is_supplied_to_bounded_memory_repair(tmp_path,
         await service.close()
 
 
+@pytest.mark.parametrize("body", ["中文记录" * 3000, 'quote: "\\\\"\n' * 3000])
+def test_history_budget_retains_both_roles_and_source_locators(body):
+    from karen.context.retrieval import fit_history_messages
+
+    original = [
+        {"event_id": "user", "role": "user", "content": body,
+         "truncated": False, "source": {"event_id": "user"}},
+        {"event_id": "assistant", "role": "assistant", "content": body,
+         "truncated": False, "source": {"event_id": "assistant"}},
+    ]
+    packed = fit_history_messages(original, 2048)
+    assert len(encode(packed).encode()) <= 2048
+    assert len(packed) == 2
+    assert all(message["content"] and message["truncated"] for message in packed)
+    assert [message["source"] for message in packed] == [message["source"] for message in original]
+    assert all(message["content"] == body and not message["truncated"] for message in original)
+
+
 async def test_history_identity_survives_raw_message_budget_limit(memory):
     service, model = memory
     async with service.foreground():
@@ -1816,7 +1834,11 @@ async def test_history_identity_survives_raw_message_budget_limit(memory):
         model.dependency, model.history_status = "needed", "selected"
         result = await service.recall(query("继续上次的方案"))
         assert result.history.status == "selected"
-        assert not result.history.complete and result.history.messages == []
+        assert not result.history.complete
+        assert len(result.history.messages) == 2
+        assert {m["role"] for m in result.history.messages} == {"user", "assistant"}
+        assert all(m["content"] and m["truncated"] for m in result.history.messages)
+        assert len(encode(result.context()).encode()) <= 12 * 1024
         assert result.related_request_ids == ["identified-task"]
         assert "HISTORY_BUDGET_LIMIT" in result.degradations
         assert not result.coverage["complete"]

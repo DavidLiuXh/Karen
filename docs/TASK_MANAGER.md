@@ -58,6 +58,12 @@ CLI 的 EOF 等待已接收推进结束并交付结果；`/exit` 或取消关闭
 `task.state` 记录任务状态与错误码，`task.turn` 将一次推进与后续输入、召回、模型和执行 trace 关联。用户文案集中在 `message/messages.py`。任务管理者不调用模型或依赖任务数据库；定时服务单独使用 `schedule_command` 解析管理请求，在私有 SQLite 中保存规则与最近状态，并通过 `schedule.created/updated/deleted/triggered/skipped` 记录变更和触发。定时触发本身不调用解析模型。
 
 
+## 读取历史执行产物
+
+CLI 与微信共用的执行引擎注册 `runs.read_artifacts@1.0.0`。输入为历史运行的 artifacts 目录（绝对路径或相对 runs 根目录的 `<run_id>/artifacts`），返回实际记录的 JSON 文件名、路径与 UTF-8 正文。仅读取 manifest 标记为已结束的运行和 events.jsonl 中 node_returned 引用的产物，不读取 goal、policy、提示词或目录内未记录文件。拒绝越界与软链接，最多 64 个文件、总计 1 MiB；超限明确失败，不把裁剪内容标成完整。
+
+这解决历史结果位于 `~/.Karne/runs`、而通用 `file.read_text` 仅允许 `/tmp` 时的后续整合需求；通用文件读写与浏览器目录范围不变。产物目录经过现有文件资源保护，已结束运行的记录由此工具只读访问；读取文件不表示重新执行原任务。
+
 ## 执行资源接入
 
 `ExecutionResources` 与工具注册和 Karen 实例一起装配。使用 `file_tool(definition, root=..., write=...)` 包装已审查的文件工具，使用 `independent_read(definition)` 显式声明不访问受保护文件的远程读取，并将同一个实例传入 `Karen(resources=...)`。包装保留工具权限和 schema，以每文件互斥替代这些已知工具的全局不可重入锁。直接调用包装后的 engine.run_graph 时也必须在相同资源实例的 run 上下文中执行，否则工具拒绝运行。

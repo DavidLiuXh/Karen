@@ -1044,8 +1044,10 @@
           );
         target.append(box);
       }
-      const calls = el("div", undefined, "section");
-      calls.append(el("h3", t("LLM 交互")));
+      const calls = el("details", undefined, "section");
+      calls.dataset.key = "llm-interactions";
+      const callsSummary = el("summary", t("LLM 交互"));
+      calls.append(callsSummary);
       calls.append(el("p", t("按追踪与调用标识配对；内容为已脱敏的客户端记录，可能裁剪。缺少返回不代表调用仍在运行。"), "meta"));
       const groups = new Map();
       for (const event of data.events) {
@@ -1056,6 +1058,7 @@
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(event);
       }
+      callsSummary.textContent = t("LLM 交互") + " · " + groups.size + t(" 次");
       for (const [key, events] of groups) {
         const request = events.find(e => e.event_type === "model.request");
         const response = events.find(e => e.event_type === "model.response");

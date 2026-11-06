@@ -8,6 +8,8 @@ Templates use named format fields; callers supply data without changing the word
 KAREN_PREFIX = "Karen："
 
 INPUT_PROMPT = "你："
+CLI_TITLE = "Karen · Personal Agent"
+CLI_INPUT_PROMPT = "❯ "
 
 INVALID_TIMEZONE = (
     "Karen：无法确定有效的用户时区，请使用 --timezone 指定 IANA 时区，如 Asia/Shanghai。"

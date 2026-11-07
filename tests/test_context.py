@@ -2573,3 +2573,48 @@ async def test_rerank_uses_full_output_budget_but_respects_outer_deadline(tmp_pa
     assert response.ranking == []
     assert request.max_output_tokens == 32768
     assert expected_limit - 0.5 < request.timeout_seconds <= expected_limit
+
+
+@pytest.mark.parametrize('recovers', [True, False])
+async def test_history_selection_repairs_invalid_ids_once_and_never_accepts_them(memory, recovers):
+    service, model = memory
+    await service.flush(service.submit(event('需要回顾的原始方案。', request='original-task')))
+    model.dependency, model.history_status = 'needed', 'selected'
+    original = model.generate
+    calls = []
+
+    async def generate(request):
+        response = await original(request)
+        if request.role == 'memory_rerank':
+            calls.append(request)
+            if len(calls) == 1 or not recovers:
+                response.payload['selected_event_ids'] = ['unprovided-event']
+        return response
+
+    model.generate = generate
+    result = await service.recall(query('继续之前的方案'))
+    assert len(calls) == 2
+    assert calls[0].input_data == calls[1].input_data
+    assert calls[1].timeout_seconds <= calls[0].timeout_seconds
+    assert all(m['event_id'] != 'unprovided-event' for m in result.history.messages)
+    assert (result.history.status == 'selected') is recovers
+    assert ('RERANK_FAILED_FUSION_ORDER' in result.degradations) is not recovers
+
+
+async def test_retrieved_old_sources_precede_a_full_recent_history_window(memory, monkeypatch):
+    service, model = memory
+    receipt = service.submit(event('原始方案的完整结果。', request='old-task'))
+    await service.flush(receipt)
+    recent = [event(f'无关消息 {i}', request=f'recent-{i}') for i in range(24)]
+
+    async def full_recent(*args):
+        return recent
+
+    monkeypatch.setattr(service, 'recent', full_recent)
+    model.dependency, model.history_status = 'needed', 'selected'
+    result = await service.recall(query('继续原始方案'))
+    request = next(r for r in model.requests if r.role == 'memory_rerank')
+    anchors = request.input_data['history_candidates']
+    assert anchors[0]['event_id'] == receipt.event_id
+    assert len(anchors) == 24
+    assert any(m['event_id'] == receipt.event_id for m in result.history.messages)

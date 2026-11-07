@@ -496,24 +496,29 @@ class Retriever:
             unique.update(extra)
         anchors = []
         if analysis.uses_external_history:
-            anchors = await self.service.recent(query, analysis)
-            # Retrieved older tasks can be located even outside the recent window.
-            known_ids = {e.event_id for e in anchors}
+            recent = await self.service.recent(query, analysis)
+            # Retrieved evidence may predate the recent window. Give its actual
+            # sources admission priority, then fill unused slots with recent clues.
+            known_ids = set()
             for mid in primary:
                 for source in eligible[mid].sources:
                     if len(anchors) >= 24:
                         break
-                    if (
-                        source.event_id not in known_ids
-                        and source.event_id not in query.exclude_event_ids
-                    ):
-                        try:
-                            event = await self.service.load_event(source.event_id)
-                            known_ids.add(source.event_id)
-                            if event.request_id != query.request_id:
-                                anchors.append(event)
-                        except Exception:
-                            degraded.append("HISTORY_SOURCE_UNAVAILABLE")
+                    if source.event_id in known_ids or source.event_id in query.exclude_event_ids:
+                        continue
+                    try:
+                        event = await self.service.load_event(source.event_id)
+                        known_ids.add(source.event_id)
+                        if event.request_id != query.request_id:
+                            anchors.append(event)
+                    except Exception:
+                        degraded.append("HISTORY_SOURCE_UNAVAILABLE")
+            for event in recent:
+                if len(anchors) >= 24:
+                    break
+                if event.event_id not in known_ids:
+                    anchors.append(event)
+                    known_ids.add(event.event_id)
         return {
             "revision": revision,
             "memories": eligible,
@@ -578,13 +583,20 @@ class Retriever:
         try:
             if len(encode(inputs).encode()) > RERANK_INPUT_MAX_BYTES:
                 raise ValueError("RERANK_INPUT_TOO_LARGE")
-            ranking = await self.call(
-                state,
-                "memory_rerank",
-                RERANK,
-                inputs,
-                Ranking,
-            )
+            rank_state = {**state, "deadline": min(
+                state["deadline"], time.monotonic() + RERANK_TIMEOUT_SECONDS + 1.5,
+            )}
+            ranking = await self.call(rank_state, "memory_rerank", RERANK, inputs, Ranking)
+            if not set(ranking.selected_event_ids) <= allowed_event_ids:
+                self.service.observer.emit("memory.rerank.selection_repair", data={
+                    "invalid_event_count": len(set(ranking.selected_event_ids) - allowed_event_ids),
+                })
+                # Source-table IDs are evidence locators, not additional choices.
+                # Ask for a bounded correction; never silently accept unseen IDs.
+                ranking = await self.call(
+                    rank_state, "memory_rerank", RERANK + "\n" + prompt_text.HISTORY_SELECTION_REPAIR,
+                    inputs, Ranking,
+                )
             if sorted(r.memory_id for r in ranking.ranking) != sorted(primary):
                 raise ValueError("INVALID_RERANK_IDS")
             events = {e.event_id: e for e in state["anchors"] if e.event_id in allowed_event_ids}

@@ -1,6 +1,7 @@
 """Independent task sessions, bounded admission, cancellation and turn events."""
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -9,10 +10,20 @@ from uuid import uuid4
 from dynamic_graph import CancellationToken
 
 from ..intent import IntentSession
+from ..intent.recognizer import Message
 from ..message import messages
+from ..model.response import format_task_event
 from ..observability import Observer
 
 DEFAULT_MAX_CONCURRENT_TASKS = 2
+
+
+@dataclass(frozen=True)
+class TaskRound:
+    turn_id: str
+    text: str
+    received_at: datetime
+    event: "TaskEvent"
 
 
 @dataclass
@@ -20,6 +31,9 @@ class ManagedTask:
     task_id: str
     session: IntentSession
     title: str = ""
+    current_input: str = ""
+    closed: bool = False
+    turns: list[TaskRound] = field(default_factory=list)
     state: str = "queued"
     turn: Any = None
     error: str | None = None
@@ -34,6 +48,7 @@ class TaskEvent:
     turn: Any = None
     error: str | None = None
     source: Any = None
+    turn_id: str | None = None
 
 
 class TaskManager:
@@ -57,42 +72,40 @@ class TaskManager:
         self._observe(task)
         return task
 
-    def submit(self, text, session, *, task_id=None, received_at=None, source=None):
+    def submit(self, text, session, *, task_id=None, received_at=None, source=None, routing=None):
         if self._closed:
             raise ValueError("TASK_MANAGER_CLOSED")
         if not text.strip():
             raise ValueError("EMPTY_TASK_INPUT")
         if sum(t.state == "queued" for t in self.tasks.values()) >= 32:
             raise ValueError("TASK_QUEUE_FULL")
-        if task_id is not None and self.tasks[task_id].state == "completed":
-            # An explicitly addressed follow-up starts a new task, retaining the
-            # preceding result only for Karen's existing feedback linkage.
-            session = self.tasks[task_id].session
-            task_id = None
         if task_id is None:
             task_id = uuid4().hex[:8]
             while task_id in self.tasks:
                 task_id = uuid4().hex[:8]
             task = ManagedTask(
                 task_id,
-                session.model_copy(deep=True) if session.completed else session.new_request(),
+                session.new_request(),
                 title=text.splitlines()[0][:80],
             )
             self.tasks[task_id] = task
         else:
             task = self.tasks[task_id]
-            if task.state != "waiting":
+            if (task.closed or task.state in {"queued", "running"}
+                    or (task.runner is not None and not task.runner.done())):
                 raise ValueError("TASK_NOT_WAITING")
             task.state = "queued"
+            task.token = CancellationToken()
             task.turn, task.error = None, None
+        task.current_input = text
         task.runner = asyncio.create_task(
-            self._run(task, text, received_at or datetime.now(UTC), source)
+            self._run(task, text, received_at or datetime.now(UTC), source, routing)
         )
 
         def cancelled_before_start(future):
             if future.cancelled():
-                self._observe(task)
-                self.events.put_nowait(TaskEvent(task.task_id, "cancelled", source=source))
+                event = TaskEvent(task.task_id, "cancelled", source=source, turn_id=uuid4().hex)
+                self._record_round(task, text, received_at or datetime.now(UTC), event)
 
         task.runner.add_done_callback(cancelled_before_start)
         self._observe(task)
@@ -106,18 +119,23 @@ class TaskManager:
                 "state": task.state,
                 "request_id": task.session.request_id,
                 "error_code": task.error,
+                "closed": task.closed,
+                "turn_count": len(task.turns),
             },
         )
 
-    async def _run(self, task, text, received_at, source):
+    async def _run(self, task, text, received_at, source, routing):
+        turn_id = uuid4().hex
         try:
             async with self._slots:
                 task.state = "running"
                 self._observe(task)
-                with self.observer.span("task.turn", task_id=task.task_id):
+                with self.observer.span("task.turn", task_id=task.task_id, turn_id=turn_id):
                     turn = await self.agent.advance(
                         task.session, text, received_at=received_at, cancellation_token=task.token,
-                        continue_task=bool(task.session.questions),
+                        continue_task=bool(task.session.messages or task.session.questions),
+                        task_id=task.task_id, turn_id=turn_id,
+                        **({"routing": routing} if routing is not None else {}),
                     )
                 task.session, task.turn = turn.session, turn
                 if task.token.cancelled:
@@ -139,14 +157,32 @@ class TaskManager:
             task.state = "failed"
             task.error = getattr(exc, "code", type(exc).__name__)
         finally:
-            self._observe(task)
-            self.events.put_nowait(
-                TaskEvent(task.task_id, task.state, task.turn, task.error, source)
-            )
+            event = TaskEvent(task.task_id, task.state, task.turn, task.error, source, turn_id)
+            self._record_round(task, text, received_at, event)
+
+    def _record_round(self, task, text, received_at, event):
+        task.turns.append(TaskRound(event.turn_id, text, received_at, event))
+        answer = format_task_event(event)
+        if task.turn is not None:
+            if task.turn.result is not None and task.turn.result.artifacts:
+                answer += "\n" + json.dumps({"artifacts": task.turn.result.artifacts}, ensure_ascii=False)
+            history = task.session.messages
+            if not history or history[-1].role != "assistant" or history[-1].content != answer:
+                task.session = task.session.model_copy(update={
+                    "messages": (*history, Message(role="assistant", content=answer)),
+                })
+        else:
+            task.session = task.session.model_copy(update={
+                "messages": (*task.session.messages, Message(role="user", content=text),
+                             Message(role="assistant", content=answer)),
+                "reply": answer,
+            })
+        self._observe(task)
+        self.events.put_nowait(event)
 
     def cancel(self, task_id):
         task = self.tasks[task_id]
-        if task.state in {"completed", "failed", "cancelled"}:
+        if task.closed or task.state in {"completed", "failed", "cancelled"}:
             return
         task.token.cancel()
         if task.state == "waiting":
@@ -163,6 +199,13 @@ class TaskManager:
             task.runner.cancel()
         else:
             self._observe(task)
+
+    def finish(self, task_id):
+        task = self.tasks[task_id]
+        if task.state in {"queued", "running"}:
+            raise ValueError("TASK_NOT_WAITING")
+        task.closed = True
+        self._observe(task)
 
     async def drain(self):
         await asyncio.gather(

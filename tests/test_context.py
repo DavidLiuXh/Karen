@@ -576,7 +576,9 @@ async def test_failed_rerank_preserves_facts_but_does_not_authorize_old_task_con
     assert "RERANK_FAILED_FUSION_ORDER" in recalled.degradations
     assert recalled.history.status == "unavailable"
     assert recalled.coverage["requires_history"] is requires_task_selection
-    model = FakeModelClient([routing("respond", types=["question"]), reply("你之前说住在北京。")])
+    model = FakeModelClient([routing("assess" if requires_task_selection else "respond",
+                                     types=["task_request"] if requires_task_selection else ["question"]),
+                             reply("你之前说住在北京。")])
     result = await IntentRecognizer(model).advance(
         IntentSession(), text, memory_context=recalled.context(),
     )
@@ -1806,6 +1808,24 @@ async def test_invalid_model_json_is_supplied_to_bounded_memory_repair(tmp_path,
         await service.close()
 
 
+@pytest.mark.parametrize("body", ["中文记录" * 3000, 'quote: "\\\\"\n' * 3000])
+def test_history_budget_retains_both_roles_and_source_locators(body):
+    from karen.context.retrieval import fit_history_messages
+
+    original = [
+        {"event_id": "user", "role": "user", "content": body,
+         "truncated": False, "source": {"event_id": "user"}},
+        {"event_id": "assistant", "role": "assistant", "content": body,
+         "truncated": False, "source": {"event_id": "assistant"}},
+    ]
+    packed = fit_history_messages(original, 2048)
+    assert len(encode(packed).encode()) <= 2048
+    assert len(packed) == 2
+    assert all(message["content"] and message["truncated"] for message in packed)
+    assert [message["source"] for message in packed] == [message["source"] for message in original]
+    assert all(message["content"] == body and not message["truncated"] for message in original)
+
+
 async def test_history_identity_survives_raw_message_budget_limit(memory):
     service, model = memory
     async with service.foreground():
@@ -1816,7 +1836,11 @@ async def test_history_identity_survives_raw_message_budget_limit(memory):
         model.dependency, model.history_status = "needed", "selected"
         result = await service.recall(query("继续上次的方案"))
         assert result.history.status == "selected"
-        assert not result.history.complete and result.history.messages == []
+        assert not result.history.complete
+        assert len(result.history.messages) == 2
+        assert {m["role"] for m in result.history.messages} == {"user", "assistant"}
+        assert all(m["content"] and m["truncated"] for m in result.history.messages)
+        assert len(encode(result.context()).encode()) <= 12 * 1024
         assert result.related_request_ids == ["identified-task"]
         assert "HISTORY_BUDGET_LIMIT" in result.degradations
         assert not result.coverage["complete"]
@@ -2309,14 +2333,14 @@ async def test_recall_truncation_respects_role_budget_without_changing_profiles_
         result = await service.recall(query("我住在哪里？"))
         model = base if role == "memory_query" else ranker
         if role == "memory_rerank":
-            assert [r.max_output_tokens for r in model.truncations] == [8192]
+            assert [r.max_output_tokens for r in model.truncations] == [32768]
         else:
             assert [r.max_output_tokens for r in model.truncations] == [4096, 8192]
             first, retry = model.truncations
             assert first.input_data == retry.input_data and first.output_schema == retry.output_schema
             assert 0 < retry.timeout_seconds <= first.timeout_seconds
         assert 14 < base.requests[-1].timeout_seconds <= 15
-        assert 89 < ranker.requests[0].timeout_seconds <= 90
+        assert 479 < ranker.requests[0].timeout_seconds <= 480
         assert result.m1 and result.m1[0].memory.value == "北京"
         if not recovers:
             code = "QUERY_ANALYSIS_FAILED" if role == "memory_query" else "RERANK_FAILED_FUSION_ORDER"
@@ -2532,3 +2556,65 @@ async def test_ranking_projection_preserves_source_roles_and_truncation(memory):
     assert assistant_evidence["storage_state"] == "failed"
     assert sources[by_id["long"]["sources"][0]]["quote_truncated"] is True
     assert "text" in by_id["long"]  # Truncated evidence does not replace a summary.
+
+
+@pytest.mark.parametrize('remaining,expected_limit', [(600, 480), (20, 18.5)])
+async def test_rerank_uses_full_output_budget_but_respects_outer_deadline(tmp_path, remaining, expected_limit):
+    from karen.context.contracts import Ranking
+    from karen.context.retrieval import Retriever
+
+    model = MemoryModel()
+    service = ContextMemory(root_dir=tmp_path, model=model, embeddings=LocalEmbeddings())
+    response = await Retriever(service).call(
+        {'deadline': time.monotonic() + remaining}, 'memory_rerank', 'Rank the inputs',
+        {'history_candidates': [], 'primary_ids': []}, Ranking,
+    )
+    request = model.requests[-1]
+    assert response.ranking == []
+    assert request.max_output_tokens == 32768
+    assert expected_limit - 0.5 < request.timeout_seconds <= expected_limit
+
+
+@pytest.mark.parametrize('recovers', [True, False])
+async def test_history_selection_repairs_invalid_ids_once_and_never_accepts_them(memory, recovers):
+    service, model = memory
+    await service.flush(service.submit(event('需要回顾的原始方案。', request='original-task')))
+    model.dependency, model.history_status = 'needed', 'selected'
+    original = model.generate
+    calls = []
+
+    async def generate(request):
+        response = await original(request)
+        if request.role == 'memory_rerank':
+            calls.append(request)
+            if len(calls) == 1 or not recovers:
+                response.payload['selected_event_ids'] = ['unprovided-event']
+        return response
+
+    model.generate = generate
+    result = await service.recall(query('继续之前的方案'))
+    assert len(calls) == 2
+    assert calls[0].input_data == calls[1].input_data
+    assert calls[1].timeout_seconds <= calls[0].timeout_seconds
+    assert all(m['event_id'] != 'unprovided-event' for m in result.history.messages)
+    assert (result.history.status == 'selected') is recovers
+    assert ('RERANK_FAILED_FUSION_ORDER' in result.degradations) is not recovers
+
+
+async def test_retrieved_old_sources_precede_a_full_recent_history_window(memory, monkeypatch):
+    service, model = memory
+    receipt = service.submit(event('原始方案的完整结果。', request='old-task'))
+    await service.flush(receipt)
+    recent = [event(f'无关消息 {i}', request=f'recent-{i}') for i in range(24)]
+
+    async def full_recent(*args):
+        return recent
+
+    monkeypatch.setattr(service, 'recent', full_recent)
+    model.dependency, model.history_status = 'needed', 'selected'
+    result = await service.recall(query('继续原始方案'))
+    request = next(r for r in model.requests if r.role == 'memory_rerank')
+    anchors = request.input_data['history_candidates']
+    assert anchors[0]['event_id'] == receipt.event_id
+    assert len(anchors) == 24
+    assert any(m['event_id'] == receipt.event_id for m in result.history.messages)

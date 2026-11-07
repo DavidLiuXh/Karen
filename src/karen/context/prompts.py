@@ -184,7 +184,10 @@ relevant 的 reason 按共用相关性规则说明具体贡献。
 如果 analysis.dialogue_dependency 为 none 或 current_task，history_status 必须 none，
 related_request_ids 和 selected_event_ids 必须为空；当前澄清链直接由 current_task_messages 提供，
 不能通过 history_candidates 再次确认，也不能混入同主题旧任务来补全它。history_candidates 不包含当前任务。
-否则用 history_candidates 的定位线索确认是否真的相关。任务 ID/事件 ID 必须实际存在。
+否则用 history_candidates 的定位线索确认是否真的相关。
+selected_event_ids 只能从本次 history_candidates[].event_id 中选择；来源表中的 event_id 仅供核对证据，
+即使真实存在，也不能选入未提供在 history_candidates 中的 ID。related_request_ids 必须恰好等于所选候选的 request_id 集合。
+候选不足以唯一关联时返回 ambiguous/unavailable，不补造或借用来源表的 ID。
 selected 必须指代明确且对象与当前要求一致；selected_event_ids 只选当前任务需要的原请求、约定、关键回复或结果。
 同主题但独立的新问题无需历史；两个对象都符合时 ambiguous，不擅自选最近的。
 无法取得必要记录时 unavailable。返回 history_reason 解释关联依据或不确定原因。
@@ -260,3 +263,5 @@ TIMEZONE_OFFSET_REQUIRED = "at 缺少时区偏移。"
 
 QUERY_RECALL_NEEDED_DESCRIPTION = "是否需要从存储记忆补充本轮缺失的信息；当前上下文已足够、仅需常识/外部资料/工具时为 false，不确定为 true。"
 QUERY_RECALL_REASON_DESCRIPTION = "一句话说明召回要补充哪方面信息，或为什么当前输入及当前任务上下文已经足够。"
+
+HISTORY_SELECTION_REPAIR = "上次历史选择包含候选表之外的事件 ID。请重新核对原始输入，只从 allowed_event_ids 对应的 history_candidates 选择；无法确认时返回 ambiguous/unavailable。重新返回完整 Ranking，不延续任何无效选择。"

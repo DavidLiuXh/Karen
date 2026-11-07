@@ -29,8 +29,24 @@ from .contracts import (
 from .prompts import MEMORY_SYSTEM, QUERY, RERANK, TRUNCATION_REPAIR
 from .storage import digest, encode, terms
 
-RECALL_TIMEOUT_SECONDS = 180
+RECALL_TIMEOUT_SECONDS = 600
+RERANK_TIMEOUT_SECONDS = 480
+RERANK_MAX_OUTPUT_TOKENS = 32768
 RERANK_INPUT_MAX_BYTES = 48 * 1024
+
+
+def fit_history_messages(messages, budget):
+    """Keep selected event identities and share space by shortening long bodies."""
+    messages = [dict(message) for message in messages]
+    while len(encode(messages).encode()) > budget:
+        longest = max(messages, key=lambda message: len(message["content"].encode()), default=None)
+        if longest is None or not longest["content"]:
+            return []  # Even provenance alone cannot fit this boundary.
+        content = longest["content"]
+        longest["content"] = content[:len(content) // 2]
+        longest["truncated"] = True
+    return messages
+
 
 FALLBACK_STOP_WORDS = frozenset(
     {
@@ -351,7 +367,7 @@ class Retriever:
     async def call(self, state, role, instruction, inputs, schema):
         model = self.service.rerank_model if role == "memory_rerank" else self.service.model
         remaining = min(state["deadline"] - time.monotonic() - 1.5,
-                        90 if role == "memory_rerank" else 15)
+                        RERANK_TIMEOUT_SECONDS if role == "memory_rerank" else 15)
         if remaining <= 0:
             raise TimeoutError("RECALL_DEADLINE")
         deadline = time.monotonic() + remaining
@@ -361,7 +377,7 @@ class Retriever:
             task_instruction=instruction,
             input_data=inputs,
             output_schema=schema.model_json_schema(),
-            max_output_tokens=8192 if role == "memory_rerank" else 4096,
+            max_output_tokens=RERANK_MAX_OUTPUT_TOKENS if role == "memory_rerank" else 4096,
             timeout_seconds=remaining,
         )
         async with asyncio.timeout(remaining):
@@ -480,24 +496,29 @@ class Retriever:
             unique.update(extra)
         anchors = []
         if analysis.uses_external_history:
-            anchors = await self.service.recent(query, analysis)
-            # Retrieved older tasks can be located even outside the recent window.
-            known_ids = {e.event_id for e in anchors}
+            recent = await self.service.recent(query, analysis)
+            # Retrieved evidence may predate the recent window. Give its actual
+            # sources admission priority, then fill unused slots with recent clues.
+            known_ids = set()
             for mid in primary:
                 for source in eligible[mid].sources:
                     if len(anchors) >= 24:
                         break
-                    if (
-                        source.event_id not in known_ids
-                        and source.event_id not in query.exclude_event_ids
-                    ):
-                        try:
-                            event = await self.service.load_event(source.event_id)
-                            known_ids.add(source.event_id)
-                            if event.request_id != query.request_id:
-                                anchors.append(event)
-                        except Exception:
-                            degraded.append("HISTORY_SOURCE_UNAVAILABLE")
+                    if source.event_id in known_ids or source.event_id in query.exclude_event_ids:
+                        continue
+                    try:
+                        event = await self.service.load_event(source.event_id)
+                        known_ids.add(source.event_id)
+                        if event.request_id != query.request_id:
+                            anchors.append(event)
+                    except Exception:
+                        degraded.append("HISTORY_SOURCE_UNAVAILABLE")
+            for event in recent:
+                if len(anchors) >= 24:
+                    break
+                if event.event_id not in known_ids:
+                    anchors.append(event)
+                    known_ids.add(event.event_id)
         return {
             "revision": revision,
             "memories": eligible,
@@ -562,13 +583,20 @@ class Retriever:
         try:
             if len(encode(inputs).encode()) > RERANK_INPUT_MAX_BYTES:
                 raise ValueError("RERANK_INPUT_TOO_LARGE")
-            ranking = await self.call(
-                state,
-                "memory_rerank",
-                RERANK,
-                inputs,
-                Ranking,
-            )
+            rank_state = {**state, "deadline": min(
+                state["deadline"], time.monotonic() + RERANK_TIMEOUT_SECONDS + 1.5,
+            )}
+            ranking = await self.call(rank_state, "memory_rerank", RERANK, inputs, Ranking)
+            if not set(ranking.selected_event_ids) <= allowed_event_ids:
+                self.service.observer.emit("memory.rerank.selection_repair", data={
+                    "invalid_event_count": len(set(ranking.selected_event_ids) - allowed_event_ids),
+                })
+                # Source-table IDs are evidence locators, not additional choices.
+                # Ask for a bounded correction; never silently accept unseen IDs.
+                ranking = await self.call(
+                    rank_state, "memory_rerank", RERANK + "\n" + prompt_text.HISTORY_SELECTION_REPAIR,
+                    inputs, Ranking,
+                )
             if sorted(r.memory_id for r in ranking.ranking) != sorted(primary):
                 raise ValueError("INVALID_RERANK_IDS")
             events = {e.event_id: e for e in state["anchors"] if e.event_id in allowed_event_ids}
@@ -674,7 +702,6 @@ class Retriever:
             m1.sort(key=lambda hit: hit.fusion_rank)
             m2.sort(key=lambda hit: hit.fusion_rank)
         history_messages = []
-        before_history = used
         if ranking.history_status == "selected":
             events = {e.event_id: e for e in state["anchors"]}
             selected = sorted(
@@ -700,20 +727,17 @@ class Retriever:
                 )
                 message["role"] = source.source_role
                 message["source"] = source.model_dump(mode="json")
-                size = len(encode(message).encode())
-                if used + size > 11 * 1024:
-                    degraded.append("HISTORY_BUDGET_LIMIT")
-                    break
+                # The body already carries this excerpt; retain its locator only.
+                if source.quote in message["content"]:
+                    message["source"].pop("quote", None)
                 history_messages.append(message)
-                used += size
+            history_messages = fit_history_messages(history_messages, 11 * 1024)
+            used += len(encode(history_messages).encode())
         history_status = ranking.history_status
         all_history_events = len(history_messages) == len(ranking.selected_event_ids)
         history_complete = all_history_events and not any(
             message["truncated"] for message in history_messages
         )
-        if history_status == "selected" and not all_history_events:
-            history_messages = []
-            used = before_history
         if history_status == "selected" and not history_complete:
             degraded.append("HISTORY_BUDGET_LIMIT")
         history = History(
@@ -993,15 +1017,21 @@ class Retriever:
                 }
             )
         if len(encode(result.context()).encode()) > 12 * 1024 and result.history.messages:
-            result = result.model_copy(
-                update={
-                    "history": result.history.model_copy(
-                        update={"messages": [], "complete": False}
+            result = result.model_copy(update={
+                "history": result.history.model_copy(update={"complete": False}),
+                "status": "degraded",
+                "coverage": {**result.coverage, "complete": False},
+                "degradations": list(dict.fromkeys([*result.degradations, "HISTORY_BUDGET_LIMIT"])),
+            })
+            overflow = len(encode(result.context()).encode()) - 12 * 1024
+            result = result.model_copy(update={
+                "history": result.history.model_copy(update={
+                    "messages": fit_history_messages(
+                        result.history.messages,
+                        len(encode(result.history.messages).encode()) - overflow,
                     ),
-                    "status": "degraded",
-                    "degradations": [*result.degradations, "HISTORY_BUDGET_LIMIT"],
-                }
-            )
+                }),
+            })
         if result.collection:
             while len(encode(result.context()).encode()) > 12 * 1024 and result.collection["items"]:
                 result.collection["items"].pop()

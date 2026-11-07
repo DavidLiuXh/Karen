@@ -524,3 +524,53 @@ def test_trace_timing_does_not_invent_end_for_unanswered_clarification():
     assert timing["clarification_waits"][0]["end_utc"] is None
     assert timing["clarification_waits"][0]["duration_ms"] is None
     assert timing["reranking"] == []
+
+
+def test_task_trace_links_rounds_and_runs_but_not_other_processes(tmp_path):
+    root = tmp_path / "observability"
+    (root / "traces").mkdir(parents=True)
+    selected = None
+    for index, (task, process) in enumerate([("shared", "p1"), ("shared", "p1"), ("shared", "p2"), ("other", "p1")]):
+        trace = uuid4().hex
+        selected = selected or trace
+        event = {"trace_id": trace, "task_id": task, "process_session_id": process,
+                 "request_id": f"request{index}", "span_id": "s", "stage": "turn",
+                 "event_type": "span.started", "timestamp_utc": "2026-11-06T00:00:00+00:00"}
+        (root / "traces" / f"{trace}.jsonl").write_text(json.dumps(event) + "\n")
+        run = tmp_path / "runs" / uuid4().hex
+        run.mkdir(parents=True)
+        (run / "goal.json").write_text(json.dumps({"request_id": f"request{index}"}))
+    detail = TraceStore(root).trace(selected)
+    assert detail["task_id"] == "shared"
+    assert {e["request_id"] for e in detail["events"]} == {"request0", "request1"}
+    assert {r["goal"]["request_id"] for r in detail["runs"]} == {"request0", "request1"}
+
+
+async def test_managed_round_ids_reach_karen_trace_and_link_followups(tmp_path):
+    from types import SimpleNamespace
+
+    from intent_helpers import ClarityAwareModel
+    from test_input_routing import reply, routing
+
+    from karen import IntentRecognizer, IntentSession, Karen
+    from karen.task import TaskManager
+
+    observer = Observer(tmp_path)
+    await observer.start()
+    model = ClarityAwareModel([
+        routing("respond", types=["question"]), reply("第一轮回答"),
+        routing("respond", types=["question"], relation="continue"), reply("第二轮回答"),
+    ])
+    manager = TaskManager(Karen(intent=IntentRecognizer(model, observer=observer),
+                                engine=SimpleNamespace(), observer=observer), observer=observer)
+    task = manager.submit("初始问题", IntentSession())
+    await manager.drain()
+    manager.submit("继续追问", IntentSession(), task_id=task.task_id)
+    await manager.drain()
+    await manager.close()
+    await observer.close()
+    detail = TraceStore(tmp_path).trace(task.turns[0].event.turn.trace_id)
+    inputs = [e for e in detail["events"] if e["event_type"] == "turn.input"]
+    assert {e["task_id"] for e in inputs} == {task.task_id}
+    assert {e["turn_id"] for e in inputs} == {r.turn_id for r in task.turns}
+    assert len({e["request_id"] for e in inputs}) == 2

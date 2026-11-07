@@ -206,6 +206,7 @@ class TraceStore:
             tasks.append(
                 {
                     "trace_id": path.stem,
+                    "task_id": started.get("task_id"),
                     "request_id": started.get("request_id"),
                     "conversation_id": started.get("conversation_id"),
                     "turn_id": started.get("turn_id"),
@@ -331,6 +332,8 @@ class TraceStore:
                 other_root = initial[0]
             if other_root and (
                 other_root.get("request_id") == request_id
+                or (root.get("task_id") and other_root.get("task_id") == root["task_id"]
+                    and other_root.get("process_session_id") == root.get("process_session_id"))
                 or other_root.get("source_trace_id") == trace_id
             ):
                 extra, state = self._events(other, 512 * 1024)
@@ -355,7 +358,9 @@ class TraceStore:
         coverage["write_failures"] = max(
             (e.get("coverage", {}).get("write_failures", 0) for e in events), default=0
         )
-        runs, engine_coverage = self._runs(request_id)
+        request_ids = {e.get("request_id") for e in events if e.get("stage") == "turn"}
+        request_ids.discard(None)
+        runs, engine_coverage = self._runs(request_ids)
         coverage["engine"] = engine_coverage
         for run in runs:
             for event in run.pop("events", []):
@@ -375,6 +380,7 @@ class TraceStore:
         return {
             "trace_id": trace_id,
             "request_id": request_id,
+            "task_id": root.get("task_id"),
             "events": events,
             "coverage": coverage,
             "runs": runs,
@@ -382,7 +388,7 @@ class TraceStore:
             "timing": trace_timing(events),
         }
 
-    def _runs(self, request_id):
+    def _runs(self, request_ids):
         directory = self.runs_dir
         if not directory.exists() or directory.is_symlink():
             return [], {"available": False, "reason": "observation_runs_directory_unavailable"}
@@ -402,7 +408,7 @@ class TraceStore:
             except OSError:
                 pass
             goal = self._json(path / "goal.json")
-            if goal.get("request_id") != request_id:
+            if goal.get("request_id") not in request_ids:
                 continue
             manifest = self._json(path / "manifest.json")
             events, coverage = self._events(path / "events.jsonl")

@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from intent_helpers import NewTaskRouter
 
 from karen import IntentSession, TaskTurn
 from karen.intent.recognizer import ClarificationItem, Message
@@ -12,6 +13,7 @@ from karen.task import TaskInteraction, TaskManager
 
 
 class Agent:
+    intent = NewTaskRouter()
     def __init__(self):
         self.release = asyncio.Event()
         self.active = 0
@@ -98,6 +100,9 @@ async def test_cancel_queued_and_running_does_not_launch_queued_work():
     assert [text for _, text, _ in agent.inputs] == ["running"]
     assert first.state == queued.state == "cancelled"
     assert first.token.cancelled and queued.token.cancelled
+    assert len(first.turns) == len(queued.turns) == 1
+    assert queued.turns[0].text == "queued"
+    assert any(m.role == "user" and m.content == "queued" for m in queued.session.messages)
     await manager.close()
 
 
@@ -153,7 +158,7 @@ async def test_restored_single_channel_question_can_continue_and_be_cancelled():
     await manager.close()
 
 
-async def test_explicit_completed_followup_creates_new_task_without_mutating_previous():
+async def test_completed_followup_preserves_task_and_previous_round():
     agent = Agent()
     manager = TaskManager(agent)
     agent.release.set()
@@ -161,7 +166,7 @@ async def test_explicit_completed_followup_creates_new_task_without_mutating_pre
     await manager.drain()
     second = manager.submit("feedback", IntentSession(), task_id=first.task_id)
     await manager.drain()
-    assert second.task_id != first.task_id and first.turn.response == "one"
+    assert second.task_id == first.task_id and first.turns[0].event.turn.response == "one"
     assert agent.inputs[-1][0].reply == "one"
     await manager.close()
 
@@ -247,7 +252,7 @@ async def test_console_reads_a_second_request_before_first_task_finishes():
         code = await run_console(manager, IntentSession(), read_input=read_input,
                                  display=lambda text, **kwargs: displayed.append(text))
     assert code == 0 and agent.peak == 2
-    assert sum("已完成" in text for text in displayed) == 2
+    assert sum("本轮完成" in text for text in displayed) == 2
 
 
 async def test_blank_input_does_not_poison_pending_task_selection():
@@ -280,15 +285,17 @@ async def test_unassigned_input_can_become_a_new_task_without_retyping():
 class ConversationAgent:
     """A three-turn conversation that needs its original request and both answers."""
 
+    intent = NewTaskRouter()
+
     def __init__(self):
         self.inputs = []
 
     async def advance(self, session, text, **kwargs):
         self.inputs.append((session, text, kwargs))
         if session.completed:
-            session = session.new_request()
+            session = session.next_turn()
         history = (*session.messages, Message(role="user", content=text))
-        if text == "completed" or len(history) == 3:
+        if text in {"completed", "second detail"}:
             return TaskTurn(session.model_copy(update={"messages": history, "reply": "done"}))
         return TaskTurn(session.model_copy(update={
             "messages": history,
@@ -301,191 +308,74 @@ class ConversationAgent:
         return ()
 
 
-@pytest.mark.parametrize("addressing", ["select", "reply", "retained"])
-async def test_completed_followup_focus_tracks_successor_through_multiple_clarifications(addressing):
-    agent = ConversationAgent()
-    manager = TaskManager(agent)
-    ui = TaskInteraction(manager, IntentSession())
-    original = manager.submit("completed", IntentSession())
-    await manager.drain()
-    try:
-        if addressing == "select":
-            ui.accept(f"/use {original.task_id}")
-            ui.accept("new request")
-        elif addressing == "reply":
-            ui.accept(f"/reply {original.task_id} new request")
-        else:
-            manager.submit("other request", IntentSession())
-            await manager.drain()
-            assert ui.accept("new request") == messages.TASK_SELECT_OWNER
-            ui.accept(f"/use {original.task_id}")
-        successor = manager.tasks[ui.focus]
-        assert successor.task_id != original.task_id
-        await manager.drain()
-        request_id = successor.session.request_id
-        count = len(manager.tasks)
-        for answer in ["first detail", "second detail"]:
-            assert successor.task_id in ui.accept(answer)
-            await manager.drain()
-            assert ui.focus == successor.task_id
-            assert successor.session.request_id == request_id
-            assert len(manager.tasks) == count
-        assert successor.state == "completed"
-        assert [m.content for m in successor.session.messages] == [
-            "new request", "first detail", "second detail",
-        ]
-        assert original.session.messages[0].content == "completed"
-    finally:
-        await manager.close()
-
-
-@pytest.mark.parametrize("terminal_state", ["completed", "failed", "cancelled"])
-async def test_terminal_focus_cannot_bypass_another_tasks_pending_question(terminal_state):
+@pytest.mark.parametrize("addressing", ["select", "reply"])
+async def test_followup_preserves_task_history_and_round_records(addressing):
     manager = TaskManager(ConversationAgent())
     ui = TaskInteraction(manager, IntentSession())
     ui.accept("/new completed")
-    await manager.drain()
-    old = manager.tasks[ui.focus]
-    old.state = terminal_state
-    waiting = manager.submit("other request", IntentSession())
-    await manager.drain()
-    try:
-        assert ui.accept("first detail") == messages.TASK_SELECT_OWNER
-        assert len(manager.tasks) == 2 and ui.focus is None
-        assert ui.pending[0] == "first detail"
-        ui.accept(f"/use {waiting.task_id}")
-        await manager.drain()
-        assert ui.focus == waiting.task_id and ui.pending is None
-        assert waiting.session.messages[-1].content == "first detail"
-    finally:
-        await manager.close()
-
-
-async def test_new_task_replaces_focus_and_completed_focus_does_not_leak_into_plain_new_input():
-    manager = TaskManager(ConversationAgent())
-    ui = TaskInteraction(manager, IntentSession())
-    ui.accept("/new completed")
-    await manager.drain()
-    old = manager.tasks[ui.focus]
-    ui.accept("/new new request")
     await manager.drain()
     task = manager.tasks[ui.focus]
-    try:
-        assert task.task_id != old.task_id
-        for answer in ["first detail", "second detail"]:
-            ui.accept(answer)
-            await manager.drain()
-        assert len(manager.tasks) == 2 and task.state == "completed"
-        ui.accept("independent request")
+    old_request = task.session.request_id
+    old_round = task.turns[0]
+    if addressing == "select":
+        ui.accept(f"/use {task.task_id}")
+        await ui.accept_input("new request")
+    else:
+        ui.accept(f"/reply {task.task_id} new request")
+    await manager.drain()
+    for text in ["first detail", "second detail"]:
+        await ui.accept_input(text)
         await manager.drain()
-        assert len(manager.tasks) == 3 and ui.focus is None
-        assert manager.tasks[next(reversed(manager.tasks))].session.messages[0].content == "independent request"
-    finally:
-        await manager.close()
+    assert len(manager.tasks) == 1 and task.state == "completed"
+    assert not task.closed and len(task.turns) == 4
+    assert len({r.turn_id for r in task.turns}) == 4
+    assert task.session.request_id != old_request
+    assert task.turns[0] is old_round and old_round.event.turn.response == "done"
+    assert [m.content for m in task.session.messages if m.role == "user"] == [
+        "completed", "new request", "first detail", "second detail"]
+    assert any(m.role == "assistant" and m.content == "done" for m in task.session.messages)
+    await manager.close()
 
 
-async def test_failed_pending_selection_keeps_focus_message_and_original_source():
-    from datetime import UTC, datetime
-
+async def test_new_topic_is_routed_to_isolated_task():
     manager = TaskManager(ConversationAgent())
     ui = TaskInteraction(manager, IntentSession())
-    failed = manager.submit("completed", IntentSession())
-    waiting = manager.submit("new request", IntentSession())
+    ui.accept("/new completed")
     await manager.drain()
-    failed.state = "failed"
-    source, received_at = {"message_id": "original"}, datetime.now(UTC)
-    try:
-        ui.accept("first detail", source=source, received_at=received_at)
-        assert ui.accept(f"/use {failed.task_id}") == messages.TASK_NOT_WAITING
-        assert ui.focus is None and ui.pending == ("first detail", received_at, source)
-        ui.accept(f"/use {waiting.task_id}", source={"message_id": "selection"})
-        assert ui.submitted_source is source
-        await manager.drain()
-        assert manager.agent.inputs[-1][2]["received_at"] == received_at
-        assert ui.focus == waiting.task_id and ui.pending is None
-    finally:
-        await manager.close()
+    first = ui.focus
+    await ui.accept_input("independent request")
+    await manager.drain()
+    assert ui.focus != first and len(manager.tasks) == 2
+    assert [m.content for m in manager.tasks[ui.focus].session.messages if m.role == "user"] == ["independent request"]
+    await manager.close()
+
+
+async def test_finished_task_rejects_followups_and_failed_round_can_continue():
+    manager = TaskManager(ConversationAgent())
+    ui = TaskInteraction(manager, IntentSession())
+    ui.accept("/new completed")
+    await manager.drain()
+    task = manager.tasks[ui.focus]
+    task.state = "failed"
+    ui.accept(f"/reply {task.task_id} new request")
+    await manager.drain()
+    assert len(manager.tasks) == 1 and task.state == "waiting"
+    ui.accept(f"/finish {task.task_id}")
+    assert task.closed and ui.focus is None
+    assert ui.accept(f"/reply {task.task_id} another") == messages.TASK_NOT_WAITING
+    assert ui.accept(f"/use {task.task_id}") == messages.TASK_NOT_WAITING
+    await manager.close()
 
 
 async def test_busy_selected_task_rejects_input_without_changing_owner():
-    agent = Agent()
-    manager = TaskManager(agent)
+    manager = TaskManager(Agent())
     ui = TaskInteraction(manager, IntentSession())
     ui.accept("/new work")
     task_id = ui.focus
-    try:
-        assert ui.accept("premature answer") == messages.TASK_NOT_WAITING
-        assert ui.focus == task_id and len(manager.tasks) == 1
-        await asyncio.sleep(0)
-        assert ui.accept("another premature answer") == messages.TASK_NOT_WAITING
-        assert len(manager.tasks) == 1
-    finally:
-        await manager.close()
-
-
-async def test_console_preserves_successor_task_across_clarification_replies():
-    from karen.task.console import run_console
-
-    agent = ConversationAgent()
-    manager = TaskManager(agent)
-    old = manager.submit("completed", IntentSession())
-    await manager.drain()
-    commands = iter([f"/use {old.task_id}", "new request", "first detail", "second detail"])
-    displayed = []
-
-    async def read_input():
-        await manager.drain()
-        try:
-            return next(commands)
-        except StopIteration:
-            raise EOFError from None
-
-    code = await run_console(manager, IntentSession(), read_input=read_input,
-                             display=lambda text, **kwargs: displayed.append(text))
-    assert code == 0 and len(manager.tasks) == 2
-    successor = manager.tasks[next(reversed(manager.tasks))]
-    assert successor.state == "completed"
-    assert sum(successor.task_id in text and "等待回复" in text for text in displayed) == 2
-    assert any(successor.task_id in text and "已完成" in text for text in displayed)
-
-
-async def test_explicit_completed_selection_can_start_followup_while_other_task_waits():
-    manager = TaskManager(ConversationAgent())
-    original = manager.submit("completed", IntentSession())
-    other = manager.submit("other request", IntentSession())
-    await manager.drain()
-    ui = TaskInteraction(manager, IntentSession())
-    try:
-        ui.accept(f"/use {original.task_id}")
-        ui.accept("new request")
-        await manager.drain()
-        successor = manager.tasks[ui.focus]
-        ui.accept("first detail")
-        await manager.drain()
-        assert len(manager.tasks) == 3 and other.state == "waiting"
-        assert [m.content for m in successor.session.messages] == ["new request", "first detail"]
-    finally:
-        await manager.close()
-
-
-async def test_selecting_running_task_does_not_authorize_followup_after_it_completes():
-    agent = Agent()
-    manager = TaskManager(agent)
-    running = manager.submit("work", IntentSession())
-    waiting = manager.submit("clarify", IntentSession())
-    await next_state(manager, "waiting")
-    ui = TaskInteraction(manager, IntentSession())
-    ui.accept(f"/use {running.task_id}")
-    agent.release.set()
-    await manager.drain()
-    try:
-        assert ui.accept("answer") == messages.TASK_SELECT_OWNER
-        assert waiting.state == "waiting" and len(manager.tasks) == 2
-        ui.accept(f"/use {waiting.task_id}")
-        await manager.drain()
-        assert waiting.state == "completed"
-    finally:
-        await manager.close()
+    assert ui.accept("premature answer") == messages.TASK_NOT_WAITING
+    assert ui.accept(f"/finish {task_id}") == messages.TASK_NOT_WAITING
+    assert ui.focus == task_id and len(manager.tasks) == 1
+    await manager.close()
 
 
 async def test_explicit_clarification_assignment_cannot_be_reset_by_model_routing():
@@ -535,7 +425,7 @@ async def test_explicit_clarification_assignment_cannot_be_reset_by_model_routin
 def test_task_list_command_never_submits_or_calls_agent(command):
     class ReadOnlyManager:
         tasks = {
-            "existing": SimpleNamespace(task_id="existing", state="waiting", title="Existing task"),
+            "existing": SimpleNamespace(task_id="existing", state="waiting", title="Existing task", closed=False),
         }
 
         def submit(self, *args, **kwargs):
@@ -561,3 +451,97 @@ def test_task_list_reports_empty_without_submitting(command):
 def test_invalid_task_list_arguments_show_usage_instead_of_submitting(command):
     ui = TaskInteraction(SimpleNamespace(tasks={}), IntentSession())
     assert ui.accept(command) == messages.TASK_LIST_USAGE
+
+
+async def test_closed_pending_selection_keeps_focus_message_and_original_source():
+    from datetime import UTC, datetime
+
+    manager = TaskManager(ConversationAgent())
+    ui = TaskInteraction(manager, IntentSession())
+    failed = manager.submit("completed", IntentSession())
+    waiting = manager.submit("new request", IntentSession())
+    await manager.drain()
+    failed.closed = True
+    source, received_at = {"message_id": "original"}, datetime.now(UTC)
+    try:
+        ui.accept("first detail", source=source, received_at=received_at)
+        assert ui.accept(f"/use {failed.task_id}") == messages.TASK_NOT_WAITING
+        assert ui.focus is None and ui.pending == ("first detail", received_at, source)
+        ui.accept(f"/use {waiting.task_id}", source={"message_id": "selection"})
+        assert ui.submitted_source is source
+        await manager.drain()
+        assert manager.agent.inputs[-1][2]["received_at"] == received_at
+        assert ui.focus == waiting.task_id and ui.pending is None
+    finally:
+        await manager.close()
+
+
+
+
+async def test_automatic_followup_uses_previous_reply_without_memory_and_routes_once():
+    from intent_helpers import ClarityAwareModel
+    from test_input_routing import reply, routing
+
+    from karen import IntentRecognizer, Karen
+
+    model = ClarityAwareModel([
+        routing("respond", types=["question"]), reply("方案甲成本 12 元，方案乙成本 19 元。"),
+        routing("respond", types=["question"], relation="continue"), reply("方案乙贵 7 元。"),
+        routing("respond", types=["question"]), reply("新的独立回答。"),
+    ])
+    manager = TaskManager(Karen(intent=IntentRecognizer(model), engine=SimpleNamespace()))
+    ui = TaskInteraction(manager, IntentSession())
+    await ui.accept_input("两个方案分别多少钱？")
+    await manager.drain()
+    first = manager.tasks[ui.focus]
+    first_request = first.session.request_id
+    await ui.accept_input("那乙比甲贵多少？")
+    await manager.drain()
+    assert ui.focus == first.task_id and first.turn.response == "方案乙贵 7 元。"
+    assert first.session.request_id != first_request and len(first.turns) == 2
+    classifiers = [r for r in model.requests if r.role == "intent_router"]
+    assert len(classifiers) == 2
+    assert any(m["content"] == "方案甲成本 12 元，方案乙成本 19 元。"
+               for m in classifiers[-1].input_data["pending_task"]["messages"])
+    await ui.accept_input("另一个问题")
+    await manager.drain()
+    assert len(manager.tasks) == 2 and ui.focus != first.task_id
+    latest = manager.tasks[ui.focus]
+    assert all("方案" not in m.content for m in latest.session.messages)
+    await manager.close()
+
+
+async def test_routing_failure_does_not_submit_or_reuse_previous_message_source():
+    from dynamic_graph.models.client import ModelCallError
+
+    class BrokenRouter:
+        async def classify(self, session, text):
+            raise ModelCallError("MODEL_TIMEOUT", "timeout")
+
+    agent = ConversationAgent()
+    agent.intent = BrokenRouter()
+    manager = TaskManager(agent)
+    ui = TaskInteraction(manager, IntentSession())
+    ui.accept("/new completed", source={"id": 1})
+    await manager.drain()
+    task = manager.tasks[ui.focus]
+    assert await ui.accept_input("继续", source={"id": 2}) == messages.TASK_ROUTING_FAILED
+    assert ui.submitted_source is None and len(task.turns) == 1
+    assert task.state == "completed"
+    await manager.close()
+
+
+async def test_cancelled_round_can_continue_with_fresh_token_and_saved_failure():
+    agent = Agent()
+    manager = TaskManager(agent)
+    task = manager.submit("work", IntentSession())
+    await asyncio.sleep(0)
+    manager.cancel(task.task_id)
+    await manager.drain()
+    assert task.state == "cancelled" and len(task.turns) == 1
+    agent.release.set()
+    manager.submit("retry", IntentSession(), task_id=task.task_id)
+    await manager.drain()
+    assert task.state == "completed" and not task.token.cancelled
+    assert len(task.turns) == 2 and task.turns[0].event.state == "cancelled"
+    await manager.close()

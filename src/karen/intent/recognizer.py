@@ -129,8 +129,10 @@ class InputRouting(IntentContract):
         return self
 
     def check_session(self, session: IntentSession) -> None:
-        if self.task_relation == "continue" and (session.completed or not session.questions):
-            raise ValueError("No pending task is available to continue or cancel")
+        if self.task_relation == "continue" and not (session.questions or session.messages):
+            raise ValueError("No task context is available to continue")
+        if self.handling == "cancel" and not session.questions:
+            raise ValueError("No pending task is available to cancel")
 
 
 class Reply(IntentContract):
@@ -346,6 +348,10 @@ class IntentSession(IntentContract):
             timezone=self.timezone,
             conversation_id=self.conversation_id,
         )
+
+    def next_turn(self) -> IntentSession:
+        """Start a fresh request within the same conversation, retaining its evidence."""
+        return self.new_request().model_copy(update={"messages": self.messages})
 
     def anchor_time(self) -> IntentSession:
         """Anchor relative dates at the first input, retaining them during clarification."""
@@ -728,7 +734,7 @@ class IntentRecognizer:
         self, session: IntentSession, user_input: str, *, memory_context: dict | None = None
     ) -> InputRouting:
         message = Message(role="user", content=user_input)
-        pending = bool(session.questions) and not session.completed
+        pending = bool(session.messages or session.questions)
         with self.observer.span("intent.classify"):
             request = ModelRequest(
                 role="intent_router",
@@ -1132,6 +1138,7 @@ class IntentRecognizer:
         memory = state.get("memory_context")
         if (
             memory
+            and state["session"].routing.handling == "assess"
             and (memory.get("coverage", {}).get("requires_history"))
             and memory.get("history", {}).get("status") != "selected"
         ):

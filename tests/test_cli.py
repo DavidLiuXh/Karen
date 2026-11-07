@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfoNotFoundError
 
 import pytest
 from dynamic_graph import FakeModelClient, RunResult
+from intent_helpers import NewTaskRouter
 
 from karen import IntentSession, TaskTurn, cli
 from karen.model.response import format_result
@@ -40,7 +41,10 @@ def local_memory_only(monkeypatch):
     monkeypatch.setattr(cli, "create_observer", lambda: cli.Observer())
 
 
+
+
 class DisplayAgent:
+    intent = NewTaskRouter()
     def record_response(self, session, text, **kwargs):
         return ()
 
@@ -332,6 +336,7 @@ async def test_cli_registers_and_authorizes_all_available_tools(monkeypatch, cap
         "browser.open_local_page@1.0.0",
         "web.fetch@1.0.0",
         "web.read_page@1.0.0",
+        "runs.read_artifacts@1.0.0",
     }
     if api_key:
         expected_tools.add("tavily.search@1.0.0")
@@ -368,7 +373,7 @@ def test_readable_result_does_not_append_internal_evidence_and_limitations():
     "status,complete,expected",
     [
         ("FAILED", False, "任务执行失败"),
-        ("CANCELLED", False, "任务已取消"),
+        ("CANCELLED", False, "本轮已取消"),
         ("COMPLETED", False, "执行已结束，但结果不完整"),
     ],
 )
@@ -428,7 +433,7 @@ async def test_conversation_displays_readable_answer_or_full_json(monkeypatch, c
         assert next(json.loads(line)["result"] for line in output.splitlines()
                     if json.loads(line).get("type") == "task") == result.model_dump(mode="json")
     else:
-        assert "中文邮件草稿" in output and "已完成" in output
+        assert "中文邮件草稿" in output and "本轮完成" in output
 
 
 async def test_invalid_cli_timezone_stops_before_model_initialization(capsys):
@@ -830,7 +835,7 @@ async def test_cli_displays_direct_reply_without_execution_result(monkeypatch, c
         assert data["state"] == "completed" and data["answer"] == "好的，了解了，你住在北京。"
         assert "execution_status" not in data and "run_id" not in data
     else:
-        assert "好的，了解了，你住在北京。" in output and "已完成" in output
+        assert "好的，了解了，你住在北京。" in output and "本轮完成" in output
     assert len(displayed) == 1 and "好的，了解了" in displayed[0]
 
 

@@ -475,7 +475,8 @@
       "failed": "Failed",
       "interrupted_unknown": "Interrupted / unknown",
       "任务 ": "Task ",
-      " · 多轮澄清与后台工作按同一任务关联": " · Clarification rounds and background work are grouped by task",
+      " · 多轮问答、执行与后台工作按任务关联": " · Conversation rounds, executions and background work are grouped by task",
+      " · 当前请求 ": " · Current request ",
       "响应": "Response",
       "记录已裁剪": "Record truncated",
       "召回降级（": "Retrieval degraded (",
@@ -673,6 +674,7 @@
           ),
           el("span", stamp(task.timestamp_utc)),
         );
+        if (task.task_id) meta.append(el("span", t("任务 ") + task.task_id));
         if (task.degraded) meta.append(pill(t("有降级"), "degraded"));
         button.append(meta);
         button.onclick = () => {
@@ -790,7 +792,7 @@
         el("h2", input ? string(input.data.text) : t("任务详情")),
         el(
           "div",
-          t("任务 ") + data.request_id + t(" · 多轮澄清与后台工作按同一任务关联"),
+          t("任务 ") + (data.task_id || data.request_id) + t(" · 当前请求 ") + data.request_id + t(" · 多轮问答、执行与后台工作按任务关联"),
           "meta",
         ),
       );

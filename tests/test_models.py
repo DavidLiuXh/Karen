@@ -178,7 +178,7 @@ async def test_truncation_recovery_changes_actual_http_budget_once(monkeypatch, 
     assert client.metadata["effective_reasoning_effort"] == effective
 
 
-async def test_rerank_sends_8192_and_does_not_retry_truncation(monkeypatch):
+async def test_rerank_sends_32768_and_does_not_retry_truncation(monkeypatch):
     import time
     from types import SimpleNamespace
 
@@ -215,6 +215,6 @@ async def test_rerank_sends_8192_and_does_not_retry_truncation(monkeypatch):
         result = await retriever.call({"deadline": time.monotonic() + 180}, "memory_rerank",
                                       "Rank the synthetic candidates", {}, Ranking)
         assert result.ranking == []
-    assert [call["max_tokens"] for call in calls] == [8192, 8192]
+    assert [call["max_tokens"] for call in calls] == [32768, 32768]
     assert all(call["thinking"] == {"type": "enabled"} for call in calls)
     assert all(call["reasoning_effort"] == "low" for call in calls)

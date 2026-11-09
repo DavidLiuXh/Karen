@@ -815,3 +815,85 @@ async def test_unknown_storage_version_is_not_downgraded(tmp_path):
     assert path.read_bytes() == raw
     with sqlite3.connect(tmp_path / "workflows/index.sqlite") as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 999
+
+
+@pytest.mark.parametrize(
+    "probe_parameters, reason",
+    [
+        ({"date": DAY}, "probe_parameter_unchanged"),
+        ({}, "probe_parameter_mismatch"),
+        ({"date": 123}, "schema"),
+    ],
+)
+async def test_supported_source_cannot_enable_invalid_counterfactual(
+    tmp_path, probe_parameters, reason
+):
+    engine, run, calls = await recorded_source(tmp_path)
+    model = WorkflowModel()
+    original = model.generate
+
+    async def generate(request):
+        if request.role == "workflow_probe":
+            model.requests.append(request)
+            return ModelResponse(
+                {"request": "Fetch another daily value", "parameters": probe_parameters}
+            )
+        return await original(request)
+
+    model.generate = generate
+    workflows = await service(tmp_path, engine, model)
+    try:
+        workflows.submit(run)
+        await workflows._queue.join()
+        assert workflows.storage.status_counts() == {"candidate": 1}
+        assert len(calls) == 1  # Static probing never replays the source tools.
+        verification = next(r for r in model.requests if r.role == "workflow_verify")
+        assert verification.input_data["counterfactual"] is None
+        assert verification.input_data["structural_error"]
+        if reason != "schema":
+            assert reason in verification.input_data["structural_error"]
+    finally:
+        await workflows.close()
+
+
+async def test_counterfactual_exposes_frozen_downstream_despite_supported_source(tmp_path):
+    spec = graph().document()
+    spec["nodes"][1]["input_bindings"]["value"] = {"source": "input", "pointer": "/expected"}
+    goal = GoalSpec(
+        request_id="origin",
+        objective="Fetch and return the requested daily value",
+        inputs={"date": DAY, "expected": DAY},
+        output_schema=ANSWER,
+        success_criteria=[{"id": "date", "description": "Return requested value"}],
+    )
+    engine, run, calls = await recorded_source(
+        tmp_path, spec=type(graph()).model_validate(spec), goal=goal
+    )
+    model = WorkflowModel()
+    model.proposal["fixed_inputs"] = [{"field": "expected", "value": DAY}]
+    original = model.generate
+
+    async def generate(request):
+        if request.role == "workflow_verify":
+            model.requests.append(request)
+            probe = request.input_data["counterfactual"]
+            assert probe["inputs"]["workflow_parameters"]["date"] != DAY
+            assert probe["inputs"]["expected"] == DAY
+            assert probe["graph"]["nodes"][1]["input_bindings"]["value"]["pointer"] == "/expected"
+            result = deepcopy(model.verification)
+            result.update(
+                generalizable=False, reason="Delivery still reads the fixed expected value"
+            )
+            return ModelResponse(result)
+        return await original(request)
+
+    model.generate = generate
+    workflows = await service(tmp_path, engine, model)
+    try:
+        workflows.submit(run)
+        await workflows._queue.join()
+        assert workflows.storage.status_counts() == {"candidate": 1}
+        assert len(calls) == 1
+        assert not workflows.storage.candidates("daily value")
+    finally:
+        await workflows.close()

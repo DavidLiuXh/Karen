@@ -240,16 +240,17 @@ class Proposal(Contract):
 class CriterionEvidence(Contract):
     criterion_id: str
     verdict: Literal["supported", "failed", "unknown"]
-    evidence: list[str] = Field(
-        description=prompt_text.CRITERION_EVIDENCE_EVIDENCE_DESCRIPTION
-    )
+    evidence: list[str] = Field(description=prompt_text.CRITERION_EVIDENCE_EVIDENCE_DESCRIPTION)
     reason: str
 
 
+class ReuseProbe(Contract):
+    request: str
+    parameters: dict[str, JsonValue]
+
+
 class Verification(Contract):
-    generalizable: bool = Field(
-        description=prompt_text.VERIFICATION_GENERALIZABLE_DESCRIPTION
-    )
+    generalizable: bool = Field(description=prompt_text.VERIFICATION_GENERALIZABLE_DESCRIPTION)
     reason: str
     criteria: list[CriterionEvidence] = Field(
         description=prompt_text.VERIFICATION_CRITERIA_DESCRIPTION

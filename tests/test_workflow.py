@@ -139,6 +139,16 @@ class WorkflowModel:
             await self.gate.wait()
         if request.role == "workflow_extract":
             return ModelResponse(deepcopy(self.proposal))
+        if request.role == "workflow_probe":
+            return ModelResponse(
+                {
+                    "request": "Fetch a different daily value",
+                    "parameters": {
+                        p["name"]: "2026-10-27"
+                        for p in request.input_data["proposal"]["parameters"]
+                    },
+                }
+            )
         if request.role == "workflow_verify":
             return ModelResponse(deepcopy(self.verification))
         if request.role == "workflow_match":
@@ -815,6 +825,13 @@ async def test_verification_receives_the_prepared_graph_and_matching_input_schem
         )
         assert inputs == {"workflow_parameters": {"date": DAY}}
         assert verification.input_data["structural_error"] == ""
+        probe = verification.input_data["counterfactual"]
+        assert probe["inputs"]["workflow_parameters"]["date"] != DAY
+        assert (
+            probe["graph"]["nodes"][0]["input_bindings"]["value"]["pointer"]
+            == "/workflow_parameters/date"
+        )
+
         resolution = await workflows.resolve(request(engine))
         assert (
             resolution.goal.input_schema.document()

@@ -25,6 +25,7 @@ from .contracts import (
     Feedback,
     Match,
     Proposal,
+    ReuseProbe,
     Verification,
     WorkflowResolution,
 )
@@ -505,10 +506,7 @@ class ReusableWorkflows:
                             "errors": exc.errors(include_input=False, include_url=False)[:5]
                         },
                     }
-                instruction = (
-                    instruction
-                    + prompts.CONTRACT_REPAIR_INSTRUCTION
-                )
+                instruction = instruction + prompts.CONTRACT_REPAIR_INSTRUCTION
                 self.observer.emit(
                     "workflow.model_retry", data={"reason": code, "max_output_tokens": budget}
                 )
@@ -666,6 +664,7 @@ class ReusableWorkflows:
                 ],
             )
             for repair in range(3):
+                counterfactual = None
                 try:
                     prepared_graph = parameterized_graph(run.goal, graph, proposal)
                     prepared_goal = GoalSpec.model_validate(
@@ -681,6 +680,33 @@ class ReusableWorkflows:
                             "input_schema": parameter_input_schema(proposal),
                         }
                     )
+                    probe = await self._ask(
+                        "workflow_probe",
+                        prompts.PROBE,
+                        {
+                            "request": run.text,
+                            "proposal": proposal.model_dump(mode="json", by_alias=True),
+                        },
+                        ReuseProbe,
+                    )
+                    if set(probe.parameters) != {p.name for p in proposal.parameters}:
+                        raise ValueError("probe_parameter_mismatch")
+                    if any(
+                        encode(probe.parameters[p.name]) == encode(p.source_value)
+                        for p in proposal.parameters
+                    ):
+                        raise ValueError("probe_parameter_unchanged")
+                    probe_graph = parameterized_graph(run.goal, graph, proposal, probe.parameters)
+                    counterfactual = {
+                        "request": probe.request,
+                        "parameters": probe.parameters,
+                        "inputs": {
+                            **proposal.fixed_inputs,
+                            "workflow_parameters": probe.parameters,
+                        },
+                        "graph": probe_graph.document(),
+                    }
+                    self.observer.emit("workflow.generalization_probe", data=counterfactual)
                     structural, reason = True, ""
                 except (ValueError, KeyError, TypeError) as exc:
                     structural, reason = False, str(exc)
@@ -704,6 +730,7 @@ class ReusableWorkflows:
                             if prepared_goal is not None
                             else None,
                             "structural_error": reason,
+                            "counterfactual": counterfactual,
                         },
                         Verification,
                     )

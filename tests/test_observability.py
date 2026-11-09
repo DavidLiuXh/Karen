@@ -394,7 +394,7 @@ def test_readonly_http_server_and_host_validation(tmp_path):
             assert error.value.code == expected
         with pytest.raises(urllib.error.HTTPError) as error:
             opener.open(urllib.request.Request(base + "/api/tasks", data=b"{}"))
-        assert error.value.code == 501
+        assert error.value.code == 403
     finally:
         server.shutdown()
         server.server_close()

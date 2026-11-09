@@ -839,3 +839,64 @@ async def test_verification_receives_the_prepared_graph_and_matching_input_schem
         )
     finally:
         await workflows.close()
+
+
+async def test_manual_workflow_control_and_http_origin_boundary(tmp_path):
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from karen.observability.viewer import create_server
+
+    workflows, engine, _, _, _ = await discover(tmp_path)
+    server = create_server(tmp_path / "observability", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        definition = workflows.storage.candidates("daily value")[0]
+        path = tmp_path / "workflows" / "definitions" / definition.workflow_id / "1.json"
+        original = path.read_bytes()
+        data = {"workflow_id": definition.workflow_id, "version": 1, "enabled": False}
+
+        def post(payload, origin=base):
+            return opener.open(
+                urllib.request.Request(
+                    base + "/api/workflows/status",
+                    data=json.dumps(payload).encode(),
+                    headers={"Content-Type": "application/json", "Origin": origin},
+                ),
+                timeout=3,
+            )
+
+        for origin in ["http://malicious.example", "null", ""]:
+            with pytest.raises(urllib.error.HTTPError) as error:
+                post(data, origin)
+            assert error.value.code == 403
+        assert workflows.storage.load(definition.workflow_id)
+        with post(data) as response:
+            assert json.load(response)["status"] == "paused"
+        assert workflows.storage.candidates("daily value") == []
+        data["enabled"] = True
+        with post(data) as response:
+            assert json.load(response)["status"] == "enabled"
+        assert workflows.storage.candidates("daily value")[0].workflow_id == definition.workflow_id
+        assert path.read_bytes() == original
+        for invalid in [
+            {**data, "version": True},
+            {**data, "enabled": "false"},
+            {**data, "workflow_id": "missing"},
+        ]:
+            with pytest.raises(urllib.error.HTTPError) as error:
+                post(invalid)
+            assert error.value.code == 400
+        path.write_bytes(b"{}")
+        with pytest.raises(urllib.error.HTTPError) as error:
+            post(data)
+        assert error.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        await workflows.close()

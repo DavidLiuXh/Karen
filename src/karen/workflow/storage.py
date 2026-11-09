@@ -288,6 +288,38 @@ class Storage:
                 (workflow_id, version),
             )
 
+    def set_enabled(self, workflow_id, version, enabled):
+        """Explicit user control; preserve immutable definitions and review evidence."""
+        if (
+            not isinstance(workflow_id, str)
+            or not workflow_id
+            or type(version) is not int
+            or version < 1
+            or type(enabled) is not bool
+        ):
+            raise ValueError("invalid_workflow_control")
+        if self.root.is_symlink() or (self.root / "index.sqlite").is_symlink():
+            raise ValueError("symlink_workflow_index")
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM workflows WHERE workflow_id=? AND version=?", (workflow_id, version)
+            ).fetchone()
+            if row is None or row["status"] not in {"candidate", "enabled", "paused"}:
+                raise ValueError("workflow_unavailable")
+            if enabled:
+                self._read_definition(row)
+                db.execute(
+                    "UPDATE workflows SET status='paused' WHERE workflow_id=? AND status='enabled' AND version<>?",
+                    (workflow_id, version),
+                )
+            status = "enabled" if enabled else "paused"
+            db.execute(
+                "UPDATE workflows SET status=? WHERE workflow_id=? AND version=?",
+                (status, workflow_id, version),
+            )
+        return {"workflow_id": workflow_id, "version": version, "status": status}
+
     def status_counts(self):
         with self.connection() as db:
             return {

@@ -394,6 +394,8 @@
       "微信请求处理失败": "WeChat processing failed",
       "微信输入无法处理": "WeChat input could not be processed",
       "微信响应记忆写入异常": "WeChat response memory write failed",
+      "删除此版本": "Delete this version",
+      "确认删除此流程版本？删除后不再参与匹配，历史运行记录仍保留。": "Delete this workflow version? It will no longer be matched. Historical run records are retained.",
       "启用流程": "Enable workflow",
       "禁用流程": "Disable workflow",
       "操作失败，请重试": "Operation failed. Please retry.",
@@ -741,6 +743,25 @@
           };
           row.append(button, feedback);
         }
+        const row = holder.lastElementChild;
+        const remove = el("button", t("删除此版本"));
+        const deleteFeedback = el("span", "", "meta");
+        remove.onclick = async () => {
+          if (!window.confirm(definition.name + " · v" + definition.version + "\n" + t("确认删除此流程版本？删除后不再参与匹配，历史运行记录仍保留。"))) return;
+          remove.disabled = true;
+          deleteFeedback.textContent = "";
+          try {
+            const response = await fetch("/api/workflows/delete", {
+              method: "POST", headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({workflow_id: definition.workflow_id, version: definition.version}),
+            });
+            if (!response.ok) throw Error("HTTP " + response.status);
+            snapshot = null;
+            await refresh();
+          } catch (error) { deleteFeedback.textContent = t("操作失败，请重试"); }
+          finally { remove.disabled = false; }
+        };
+        row.append(remove, deleteFeedback);
       }
       for (const job of data.jobs || []) {
         if (query && !JSON.stringify(job).toLowerCase().includes(query)) continue;

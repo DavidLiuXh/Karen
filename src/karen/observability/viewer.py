@@ -289,7 +289,7 @@ class TraceStore:
                         dict(row)
                         for row in db.execute(
                             "SELECT workflow_id,version,status,name,created_at,uses,last_used,source_run_id "
-                            "FROM workflows ORDER BY created_at DESC LIMIT 101"
+                            "FROM workflows WHERE status<>'deleted' ORDER BY created_at DESC LIMIT 101"
                         )
                     ]
                 coverage["partial"] = len(definitions) > 100
@@ -465,7 +465,7 @@ def create_server(root_dir, *, port=DEFAULT_PORT):
             if host not in allowed or self.headers.get("Origin") != "http://" + host:
                 self.send_error(403)
                 return
-            if self.path != "/api/workflows/status":
+            if self.path not in {"/api/workflows/status", "/api/workflows/delete"}:
                 self.send_error(404)
                 return
             try:
@@ -473,12 +473,16 @@ def create_server(root_dir, *, port=DEFAULT_PORT):
                 if not 0 < length <= 4096 or self.headers.get("Content-Type") != "application/json":
                     raise ValueError("invalid_request")
                 data = json.loads(self.rfile.read(length))
-                if not isinstance(data, dict) or set(data) != {"workflow_id", "version", "enabled"}:
+                expected = {"workflow_id", "version"}
+                if self.path == "/api/workflows/status":
+                    expected.add("enabled")
+                if not isinstance(data, dict) or set(data) != expected:
                     raise ValueError("invalid_request")
                 root = store.root_dir.parent / "workflows"
                 if not (root / "index.sqlite").is_file():
                     raise ValueError("workflow_unavailable")
-                result = Storage(root).set_enabled(**data)
+                storage = Storage(root)
+                result = storage.delete(**data) if self.path == "/api/workflows/delete" else storage.set_enabled(**data)
             except (ValueError, TypeError):
                 self.send_error(400)
                 return

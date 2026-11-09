@@ -130,3 +130,5 @@ uv run ruff format --check src tests scripts
 ```
 
 2026-10-03 验证：109 项测试通过，Ruff 检查与格式检查通过；本地浏览器验证目标上下文展开、时间线筛选及多轮任务关联。真实 DeepSeek 合成意图请求返回 ready 和非空 reason，记录实际 input_tokens=2156、output_tokens=127，共 12 个事件、零缺口。安装包构建通过，页面资源和查看命令包含在 wheel 中。
+
+流程发现的 `workflow.generalization_probe` 记录换输入核验请求、参数、输入与编译后的图；它不表示工具执行过或新输入业务成功，仍受观测脱敏和裁剪限制。

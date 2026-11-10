@@ -839,3 +839,147 @@ async def test_verification_receives_the_prepared_graph_and_matching_input_schem
         )
     finally:
         await workflows.close()
+
+
+async def test_manual_workflow_control_and_http_origin_boundary(tmp_path):
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from karen.observability.viewer import create_server
+
+    workflows, engine, _, _, _ = await discover(tmp_path)
+    server = create_server(tmp_path / "observability", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        definition = workflows.storage.candidates("daily value")[0]
+        path = tmp_path / "workflows" / "definitions" / definition.workflow_id / "1.json"
+        original = path.read_bytes()
+        data = {"workflow_id": definition.workflow_id, "version": 1, "enabled": False}
+
+        def post(payload, origin=base):
+            return opener.open(
+                urllib.request.Request(
+                    base + "/api/workflows/status",
+                    data=json.dumps(payload).encode(),
+                    headers={"Content-Type": "application/json", "Origin": origin},
+                ),
+                timeout=3,
+            )
+
+        for origin in ["http://malicious.example", "null", ""]:
+            with pytest.raises(urllib.error.HTTPError) as error:
+                post(data, origin)
+            assert error.value.code == 403
+        assert workflows.storage.load(definition.workflow_id)
+        with post(data) as response:
+            assert json.load(response)["status"] == "paused"
+        assert workflows.storage.candidates("daily value") == []
+        data["enabled"] = True
+        with post(data) as response:
+            assert json.load(response)["status"] == "enabled"
+        assert workflows.storage.candidates("daily value")[0].workflow_id == definition.workflow_id
+        assert path.read_bytes() == original
+        for invalid in [
+            {**data, "version": True},
+            {**data, "enabled": "false"},
+            {**data, "workflow_id": "missing"},
+        ]:
+            with pytest.raises(urllib.error.HTTPError) as error:
+                post(invalid)
+            assert error.value.code == 400
+        path.write_bytes(b"{}")
+        with pytest.raises(urllib.error.HTTPError) as error:
+            post(data)
+        assert error.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        await workflows.close()
+
+
+async def test_delete_workflow_version_preserves_history_and_blocks_reactivation(tmp_path):
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from karen.observability.viewer import create_server
+
+    workflows, engine, _, _, _ = await discover(tmp_path)
+    storage = workflows.storage
+    definition = storage.candidates("daily value")[0]
+    second = definition.model_copy(
+        deep=True, update={"version": 2, "source": {**definition.source, "review_key": "second"}}
+    )
+    storage.save(second, "enabled")
+    server = create_server(tmp_path / "observability", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def post(path, payload, origin=base):
+        return opener.open(
+            urllib.request.Request(
+                base + path,
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json", "Origin": origin},
+            ),
+            timeout=3,
+        )
+
+    data = {"workflow_id": definition.workflow_id, "version": 1}
+    path = tmp_path / "workflows" / "definitions" / definition.workflow_id / "1.json"
+    original = path.read_bytes()
+    try:
+        for payload, origin, expected in [
+            (data, "http://malicious.example", 403),
+            ({**data, "version": True}, base, 400),
+            ({**data, "workflow_id": "missing"}, base, 400),
+        ]:
+            with pytest.raises(urllib.error.HTTPError) as error:
+                post("/api/workflows/delete", payload, origin)
+            assert error.value.code == expected
+        with post("/api/workflows/delete", data) as response:
+            assert json.load(response)["status"] == "deleted"
+        assert storage.load(definition.workflow_id).version == 2
+        assert path.read_bytes() == original
+        with pytest.raises(ValueError):
+            storage.set_enabled(definition.workflow_id, 1, True)
+        with post("/api/workflows/delete", {**data, "version": 2}):
+            pass
+        assert storage.candidates("daily value") == []
+        assert TraceStore(tmp_path / "observability").workflows([])["definitions"] == []
+        with pytest.raises(urllib.error.HTTPError) as error:
+            post("/api/workflows/status", {**data, "version": 2, "enabled": True})
+        assert error.value.code == 400
+        storage.pause(definition.workflow_id, 2)
+        storage.outcome(
+            {
+                "workflow_id": definition.workflow_id,
+                "version": 2,
+                "request_id": "late",
+                "run_id": "late",
+                "result": "failed",
+                "recorded_at": "2026-11-09",
+                "pause": True,
+            }
+        )
+        assert storage.latest_source(definition.source["run_id"])["status"] == "deleted"
+        third = second.model_copy(
+            deep=True,
+            update={"version": 3, "source": {**second.source, "review_key": "late-review"}},
+        )
+        with pytest.raises(ValueError, match="deleted_source"):
+            storage.save(third, "enabled")
+        with post("/api/workflows/delete", {**data, "version": 2}) as response:
+            assert json.load(response)["status"] == "deleted"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        await workflows.close()

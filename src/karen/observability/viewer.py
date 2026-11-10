@@ -1,4 +1,4 @@
-"""Read-only loopback inspector for Karen traces and existing engine records."""
+"""Loopback inspector with explicit reusable workflow controls."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from ..message import messages
+from ..workflow.storage import Storage
 from .checks import check_trace
 from .recorder import sanitize
 
@@ -288,7 +289,7 @@ class TraceStore:
                         dict(row)
                         for row in db.execute(
                             "SELECT workflow_id,version,status,name,created_at,uses,last_used,source_run_id "
-                            "FROM workflows ORDER BY created_at DESC LIMIT 101"
+                            "FROM workflows WHERE status<>'deleted' ORDER BY created_at DESC LIMIT 101"
                         )
                     ]
                 coverage["partial"] = len(definitions) > 100
@@ -454,6 +455,47 @@ def create_server(root_dir, *, port=DEFAULT_PORT):
                 # Browsers can cancel polling requests during refresh or navigation.
                 # Cover headers and error responses as well as successful bodies.
                 self.close_connection = True
+
+        def do_POST(self):
+            host = self.headers.get("Host", "")
+            allowed = {
+                f"127.0.0.1:{self.server.server_port}",
+                f"localhost:{self.server.server_port}",
+            }
+            if host not in allowed or self.headers.get("Origin") != "http://" + host:
+                self.send_error(403)
+                return
+            if self.path not in {"/api/workflows/status", "/api/workflows/delete"}:
+                self.send_error(404)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 4096 or self.headers.get("Content-Type") != "application/json":
+                    raise ValueError("invalid_request")
+                data = json.loads(self.rfile.read(length))
+                expected = {"workflow_id", "version"}
+                if self.path == "/api/workflows/status":
+                    expected.add("enabled")
+                if not isinstance(data, dict) or set(data) != expected:
+                    raise ValueError("invalid_request")
+                root = store.root_dir.parent / "workflows"
+                if not (root / "index.sqlite").is_file():
+                    raise ValueError("workflow_unavailable")
+                storage = Storage(root)
+                result = storage.delete(**data) if self.path == "/api/workflows/delete" else storage.set_enabled(**data)
+            except (ValueError, TypeError):
+                self.send_error(400)
+                return
+            except (OSError, sqlite3.Error):
+                self.send_error(503)
+                return
+            body = json.dumps(result).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
 
         def do_GET(self):
             host = self.headers.get("Host", "")

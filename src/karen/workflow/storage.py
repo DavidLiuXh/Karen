@@ -173,6 +173,13 @@ class Storage:
                 os.close(parent_fd)
             relative = str(path.relative_to(self.root))
             with self.connection() as db:
+                db.execute("BEGIN IMMEDIATE")
+                latest = db.execute(
+                    "SELECT status FROM workflows WHERE source_run_id=? AND source_graph_hash=? ORDER BY version DESC LIMIT 1",
+                    (definition.source["run_id"], definition.source["graph_hash"]),
+                ).fetchone()
+                if latest and latest["status"] == "deleted":
+                    raise ValueError("deleted_source")
                 db.execute(
                     "INSERT INTO workflows(workflow_id,version,status,path,digest,source_run_id,source_graph_hash,name,created_at,review_key,source_request_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (
@@ -277,16 +284,72 @@ class Storage:
                 )
             if outcome.get("pause"):
                 db.execute(
-                    'UPDATE workflows SET status="paused" WHERE workflow_id=? AND version=?',
+                    'UPDATE workflows SET status="paused" WHERE workflow_id=? AND version=? AND status<>"deleted"',
                     (outcome["workflow_id"], outcome["version"]),
                 )
 
     def pause(self, workflow_id, version):
         with self.connection() as db:
             db.execute(
-                'UPDATE workflows SET status="paused" WHERE workflow_id=? AND version=?',
+                'UPDATE workflows SET status="paused" WHERE workflow_id=? AND version=? AND status<>"deleted"',
                 (workflow_id, version),
             )
+
+    def set_enabled(self, workflow_id, version, enabled):
+        """Explicit user control; preserve immutable definitions and review evidence."""
+        if (
+            not isinstance(workflow_id, str)
+            or not workflow_id
+            or type(version) is not int
+            or version < 1
+            or type(enabled) is not bool
+        ):
+            raise ValueError("invalid_workflow_control")
+        if self.root.is_symlink() or (self.root / "index.sqlite").is_symlink():
+            raise ValueError("symlink_workflow_index")
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM workflows WHERE workflow_id=? AND version=?", (workflow_id, version)
+            ).fetchone()
+            if row is None or row["status"] not in {"candidate", "enabled", "paused"}:
+                raise ValueError("workflow_unavailable")
+            if enabled:
+                self._read_definition(row)
+                db.execute(
+                    "UPDATE workflows SET status='paused' WHERE workflow_id=? AND status='enabled' AND version<>?",
+                    (workflow_id, version),
+                )
+            status = "enabled" if enabled else "paused"
+            db.execute(
+                "UPDATE workflows SET status=? WHERE workflow_id=? AND version=?",
+                (status, workflow_id, version),
+            )
+        return {"workflow_id": workflow_id, "version": version, "status": status}
+
+    def delete(self, workflow_id, version):
+        """Remove a version from reuse while retaining provenance as a tombstone."""
+        if (
+            not isinstance(workflow_id, str)
+            or not workflow_id
+            or type(version) is not int
+            or version < 1
+        ):
+            raise ValueError("invalid_workflow_control")
+        if self.root.is_symlink() or (self.root / "index.sqlite").is_symlink():
+            raise ValueError("symlink_workflow_index")
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            cursor = db.execute(
+                "UPDATE workflows SET status='deleted' WHERE workflow_id=? AND version=?",
+                (workflow_id, version),
+            )
+            if not cursor.rowcount:
+                raise ValueError("workflow_unavailable")
+            db.execute(
+                "DELETE FROM search WHERE workflow_id=? AND version=?", (workflow_id, version)
+            )
+        return {"workflow_id": workflow_id, "version": version, "status": "deleted"}
 
     def status_counts(self):
         with self.connection() as db:

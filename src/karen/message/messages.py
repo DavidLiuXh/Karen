@@ -118,7 +118,7 @@ NAMED_OUTPUT = "{name}：\n{text}"
 DIAGNOSTIC_ITEM = "{label}（{code}）：{message}"
 
 # Observation entry points and checks
-OBSERVATION_CLI_DESCRIPTION = "Karen 本地运行观测页面（只读）"
+OBSERVATION_CLI_DESCRIPTION = "Karen 本地运行观测页面"
 
 OBSERVATION_OPEN_HELP = "用本机浏览器打开页面"
 

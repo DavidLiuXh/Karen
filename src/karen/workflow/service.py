@@ -605,8 +605,8 @@ class ReusableWorkflows:
             if previous
             else None
         )
-        if previous and previous["status"] == "paused":
-            self.observer.emit("workflow.review", data={"reason": "paused_requires_new_source"})
+        if previous and previous["status"] in {"paused", "deleted"}:
+            self.observer.emit("workflow.review", data={"reason": previous["status"] + "_requires_new_source"})
             return
         graph, evidence, snapshot = await self._io(self._load_run, run)
         user_evidence = list(prior.acceptance_evidence) if prior else []

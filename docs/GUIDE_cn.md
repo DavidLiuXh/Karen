@@ -300,6 +300,8 @@ CLI 默认注册并授权当前可用能力；Tavily 未配置时仅搜索工具
 | --- | --- |
 | `tavily.search` | 搜索公开网络资料，需要 `TAVILY_API_KEY` |
 | `web.fetch` | 读取当前 HTTP/HTTPS 网页文本，不提供任意历史日期快照 |
+| `git.clone` | 使用本机 Git 将公开 HTTPS 仓库浅克隆到 `/tmp` 下的新目录，父目录须已存在 |
+| `file.create_directory` | 在 `/tmp` 下创建目录及缺失的父目录，后续文件写入须依赖建目录节点 |
 | `file.read_text` / `file.write_text` | 读写 `/tmp` 下的 UTF-8 文本，默认大小限制 1 MiB；覆盖须显式指定 |
 | `browser.open_local_page` | 请求默认浏览器打开 `/tmp` 下已有的 HTML；打开请求成功不等于渲染成功 |
 

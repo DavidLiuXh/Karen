@@ -302,6 +302,8 @@ The CLI registers and authorizes the capabilities currently available to it. Wit
 | --- | --- |
 | `tavily.search` | Searches public web sources; requires `TAVILY_API_KEY` |
 | `web.fetch` | Reads current HTTP/HTTPS page text; does not provide snapshots for arbitrary historical dates |
+| `git.clone` | Shallow-clones a public HTTPS repository into a new directory under `/tmp`. The parent must exist. Requires local Git. |
+| `file.create_directory` | Creates missing directories under `/tmp`. Make dependent file writes wait for directory creation. |
 | `file.read_text` / `file.write_text` | Reads or writes UTF-8 text under `/tmp`, with a default 1 MiB size limit; overwriting must be explicitly requested |
 | `browser.open_local_page` | Requests that the default browser open an existing HTML file under `/tmp`; a successful launch request does not establish successful rendering |
 

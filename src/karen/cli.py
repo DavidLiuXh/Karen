@@ -38,8 +38,10 @@ from .schedule import ScheduledTasks
 from .task import DEFAULT_MAX_CONCURRENT_TASKS, TaskManager
 from .task.console import run_console
 from .task.resources import ExecutionResources
+from .tools.git import git_clone_tool
 from .tools.gmail import GmailClient, GmailCredentials
 from .tools.gmail_tools import gmail_tools
+from .tools.local import file_create_directory_tool
 from .tools.run_artifacts import run_artifacts_tool
 from .tools.web import web_read_page_tool
 from .workflow import ReusableWorkflows
@@ -215,6 +217,7 @@ async def converse(
         for tool_factory in (
             file_read_text_tool,
             file_write_text_tool,
+            file_create_directory_tool,
             browser_open_local_page_tool,
             web_fetch_tool,
             web_read_page_tool,
@@ -222,11 +225,12 @@ async def converse(
             definition = tool_factory()
             if tool_factory not in {web_fetch_tool, web_read_page_tool}:
                 definition = resources_guard.file_tool(
-                    definition, write=tool_factory is file_write_text_tool,
+                    definition, write=tool_factory in {file_write_text_tool, file_create_directory_tool},
                 )
             else:
                 definition = resources_guard.independent_read(definition)
             engine.register_tool(definition)
+        engine.register_tool(resources_guard.file_tool(git_clone_tool(), write=True))
         Path(engine.config.runs_dir).mkdir(parents=True, exist_ok=True)
         engine.register_tool(resources_guard.file_tool(
             run_artifacts_tool(engine.config.runs_dir), root=engine.config.runs_dir,

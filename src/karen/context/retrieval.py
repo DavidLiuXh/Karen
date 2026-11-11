@@ -262,20 +262,30 @@ class Retriever:
             },
             "rank": lambda r: r,
             "assemble": lambda r: r,
+            "collect": lambda r: r,
             "skip": lambda r: r,
         }
-        for name in ("analyze", "retrieve", "rank", "assemble", "skip"):
+        for name in ("analyze", "retrieve", "rank", "assemble", "collect", "skip"):
             graph.add_node(
                 name,
                 service.observer.node(
                     "memory.recall." + name, getattr(self, name), summaries[name]
                 ),
             )
+        def recall_path(state):
+            analysis = state["analysis"]
+            if not analysis.recall_needed:
+                return "skip"
+            if analysis.kind == "collection":
+                return "collect"
+            return "retrieve"
+
         graph.add_edge(START, "analyze")
         graph.add_conditional_edges(
-            "analyze", lambda state: "retrieve" if state["analysis"].recall_needed else "skip",
-            {"retrieve": "retrieve", "skip": "skip"},
+            "analyze", recall_path,
+            {"retrieve": "retrieve", "collect": "collect", "skip": "skip"},
         )
+        graph.add_edge("collect", END)
         graph.add_edge("skip", END)
         graph.add_edge("retrieve", "rank")
         graph.add_edge("rank", "assemble")
@@ -363,6 +373,51 @@ class Retriever:
             "query_kind": analysis.kind, "dialogue_dependency": analysis.dialogue_dependency,
             "requires_history": False,
         })}
+
+    async def collect(self, state):
+        query, analysis = state["query"], state["analysis"]
+        collection = await self.service._io(
+            self.storage.collection, analysis.time_range, analysis.task_status,
+            target=analysis.collection_target, exclude_request_id=query.request_id,
+        )
+        degraded = list(state["degraded"])
+        if analysis.time_range is not None and not collection["display_complete"]:
+            degraded.append("COLLECTION_PREVIEW_LIMIT")
+        if not collection["complete"]:
+            degraded.append("COLLECTION_INCOMPLETE")
+        if any(
+            event.request_id != query.request_id
+            and event.event_type in {"user_message", "assistant_message", "task_result"}
+            and analysis.time_range is not None
+            and analysis.time_range.start <= event.occurred_at < analysis.time_range.end
+            and (analysis.collection_target != "tasks" or event.event_type == "task_result")
+            for event, *_ in self.service._pending.values()
+        ):
+            collection["complete"] = False
+            collection["reason"] = "raw_writes_pending"
+            degraded.append("COLLECTION_RAW_WRITES_PENDING")
+        return {"result": RecallResult(
+            status="degraded" if degraded else "ok",
+            collection=collection,
+            degradations=degraded,
+            query_time_basis={
+                "mode": analysis.time_mode,
+                "at": analysis.at.isoformat() if analysis.at else None,
+                "timezone": query.timezone,
+                "current_time_utc": query.current_time_utc.isoformat(),
+            },
+            coverage={
+                "complete": not degraded,
+                "recall_needed": True,
+                "recall_reason": analysis.recall_reason,
+                "search_text": analysis.search_text,
+                "query_kind": analysis.kind,
+                "dialogue_dependency": analysis.dialogue_dependency,
+                "requires_history": False,
+                "pending_events": len(self.service._pending),
+                "visibility": "committed_snapshot",
+            },
+        )}
 
     async def call(self, state, role, instruction, inputs, schema):
         model = self.service.rerank_model if role == "memory_rerank" else self.service.model
@@ -682,7 +737,7 @@ class Retriever:
                 ).encode()
             )
             # Enumeration needs room for raw interaction previews, not just top-k summaries.
-            memory_budget = {"detail": 6, "collection": 4}.get(analysis.kind, 10) * 1024
+            memory_budget = (6 if analysis.kind == "detail" else 10) * 1024
             if used + size > memory_budget:
                 degraded.append("CONTEXT_BUDGET_LIMIT")
                 continue
@@ -917,31 +972,6 @@ class Retriever:
             details.sort(key=lambda hit: (hit.source.occurred_at, hit.source.sequence or 0))
             if detail_status != "complete":
                 degraded.append("DETAIL_SEARCH_" + detail_status.upper())
-        collection = None
-        if analysis.kind == "collection":
-            collection = await self.service._io(
-                self.storage.collection, analysis.time_range, analysis.task_status,
-                target=analysis.collection_target, exclude_request_id=query.request_id,
-            )
-            while collection["items"] and used + len(encode(collection).encode()) > 11 * 1024:
-                collection["items"].pop()
-                collection["returned_count"] = len(collection["items"])
-                collection["display_complete"] = False
-            if analysis.time_range is not None and not collection["display_complete"]:
-                degraded.append("COLLECTION_DISPLAY_BUDGET_LIMIT")
-            if not collection["complete"]:
-                degraded.append("COLLECTION_INCOMPLETE")
-            if any(
-                event.request_id != query.request_id
-                and event.event_type in {"user_message", "assistant_message", "task_result"}
-                and analysis.time_range is not None
-                and analysis.time_range.start <= event.occurred_at < analysis.time_range.end
-                and (analysis.collection_target != "tasks" or event.event_type == "task_result")
-                for event, *_ in self.service._pending.values()
-            ):
-                collection["complete"] = False
-                collection["reason"] = "raw_writes_pending"
-                degraded.append("COLLECTION_RAW_WRITES_PENDING")
         coverage = {
             "complete": not degraded,
             "recall_needed": analysis.recall_needed,
@@ -965,7 +995,7 @@ class Retriever:
         result = RecallResult(
             status="degraded"
             if degraded
-            else ("ok" if m1 or m2 or details or history_messages or collection else "empty"),
+            else ("ok" if m1 or m2 or details or history_messages else "empty"),
             m1=m1,
             m2=m2,
             details=details,
@@ -980,7 +1010,6 @@ class Retriever:
             },
             degradations=list(dict.fromkeys(degraded)),
             coverage=coverage,
-            collection=collection,
         )
         # Account for the actual envelope. A small overflow must not erase every
         # recalled fact and source. Keep the highest-priority raw details; memory
@@ -1032,14 +1061,6 @@ class Retriever:
                     ),
                 }),
             })
-        if result.collection:
-            while len(encode(result.context()).encode()) > 12 * 1024 and result.collection["items"]:
-                result.collection["items"].pop()
-                result.collection["returned_count"] = len(result.collection["items"])
-                result.collection["display_complete"] = False
-                result.status = "degraded"
-                if "COLLECTION_DISPLAY_BUDGET_LIMIT" not in result.degradations:
-                    result.degradations.append("COLLECTION_DISPLAY_BUDGET_LIMIT")
         if result.degradations and result.coverage["complete"]:
             result = result.model_copy(update={"coverage": {**result.coverage, "complete": False}})
         retained = {hit.memory.memory_id for hit in (*result.m1, *result.m2)}

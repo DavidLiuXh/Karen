@@ -2477,22 +2477,25 @@ async def test_rerank_accepts_larger_inputs_but_still_enforces_capacity(memory, 
         assert "RERANK_INPUT_BUDGET_LIMIT" in result.degradations
 
 
-async def test_time_collection_display_budget_does_not_reduce_total(memory):
+@pytest.mark.parametrize("count", [28, 51])
+async def test_time_collection_preserves_previews_without_semantic_reranking(memory, count):
     service, model = memory
     now = datetime.now(UTC)
     async with service.foreground():
-        for index in range(24):
+        for index in range(count):
             service.submit(event("交流内容" * 100, request=f"chat-{index}", occurred_at=now))
         await service._queue.join()
         model.kind = "collection"
         model.time_range = TimeRange(start=now - timedelta(hours=1), end=now + timedelta(hours=1))
+        model.requests.clear()
         result = await service.recall(query("今天交流过什么"))
-        assert result.collection["total_matched"] == 24
-        assert 0 < result.collection["returned_count"] < 24
-        assert result.collection["complete"] and not result.collection["display_complete"]
-        assert result.status == "degraded" and not result.coverage["complete"]
-        assert "COLLECTION_DISPLAY_BUDGET_LIMIT" in result.degradations
-        assert len(encode(result.context()).encode()) <= 12 * 1024
+        assert [request.role for request in model.requests] == ["memory_query"]
+        assert result.collection["total_matched"] == count
+        assert result.collection["returned_count"] == min(count, 50)
+        assert result.collection["complete"]
+        assert result.collection["display_complete"] is (count <= 50)
+        assert len(encode(result.context()).encode()) > 12 * 1024
+        assert ("COLLECTION_PREVIEW_LIMIT" in result.degradations) is (count > 50)
 
 
 async def test_ranking_projection_shares_evidence_without_merging_facts(memory):

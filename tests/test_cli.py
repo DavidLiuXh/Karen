@@ -333,6 +333,7 @@ async def test_cli_registers_and_authorizes_all_available_tools(monkeypatch, cap
     expected_tools = {
         "file.read_text@1.0.0",
         "file.write_text@1.0.0",
+        "file.create_directory@1.0.0",
         "browser.open_local_page@1.0.0",
         "web.fetch@1.0.0",
         "web.read_page@1.0.0",
@@ -343,6 +344,7 @@ async def test_cli_registers_and_authorizes_all_available_tools(monkeypatch, cap
     assert set(policy.allowed_tools) == expected_tools
     assert set(policy.allowed_side_effect_tools) == {
         "file.write_text@1.0.0",
+        "file.create_directory@1.0.0",
         "browser.open_local_page@1.0.0",
     }
     assert len(policy.allowed_reducers) == 3

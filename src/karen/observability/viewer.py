@@ -155,6 +155,48 @@ class TraceStore:
         paths.sort(key=lambda p: p.stat().st_mtime if not p.is_symlink() else 0, reverse=True)
         return paths[:300], len(paths) > 300
 
+    def task_execution(self, task_id):
+        """Resolve a displayed task ID to its latest recorded execution."""
+        if not re.fullmatch(r"[a-f0-9]{8}", task_id):
+            return None
+        paths, _ = self._files()
+        latest = None
+        for path in paths:
+            head, coverage = self._events(path, 8 * 1024)
+            if not any(e.get("task_id") == task_id for e in head):
+                continue
+            events = head
+            if coverage["partial"]:
+                tail, _ = self._events(path, 128 * 1024, tail=True)
+                events = [*head, *tail]
+            for event in events:
+                run_id = event.get("data", {}).get("run_id")
+                if (
+                    event["event_type"] == "execution.result"
+                    and event.get("task_id") == task_id
+                    and event.get("request_id")
+                    and isinstance(run_id, str)
+                    and IDENTIFIER.fullmatch(run_id)
+                    and (latest is None or event["timestamp_utc"] > latest["timestamp_utc"])
+                ):
+                    latest = event
+        if latest is None:
+            return None
+        run_id = latest["data"]["run_id"]
+        goal = self._json(self.runs_dir / run_id / "goal.json", 256 * 1024)
+        if goal.get("request_id") != latest["request_id"] or not goal.get("objective"):
+            return None
+        context = goal.get("context")
+        conversation = context.get("conversation", []) if isinstance(context, dict) else []
+        return {
+            "task_id": task_id,
+            "request_id": latest["request_id"],
+            "run_id": run_id,
+            "occurred_at": latest["timestamp_utc"],
+            "goal": {key: goal[key] for key in ("objective", "inputs", "success_criteria") if key in goal},
+            "conversation": conversation if isinstance(conversation, list) else [],
+        }
+
     def tasks(self):
         paths, limited = self._files()
         tasks, gaps, channel_events, workflow_events, total_bytes = [], [], [], [], 0

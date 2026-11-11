@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import threading
+import unicodedata
 import webbrowser
 from contextlib import contextmanager
 from datetime import datetime
@@ -154,6 +155,79 @@ class TraceStore:
         ]
         paths.sort(key=lambda p: p.stat().st_mtime if not p.is_symlink() else 0, reverse=True)
         return paths[:300], len(paths) > 300
+
+    def task_execution(self, task_id=None, *, excerpts=()):
+        """Resolve a displayed ID or uniquely quoted executed task."""
+        if task_id is not None and not re.fullmatch(r"[a-f0-9]{8}", task_id):
+            return None
+
+        def normalize(text):
+            return "".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+        quoted = {normalize(text).strip(".,!?，。！？") for text in excerpts}
+        quoted = {text for text in quoted if len(text) >= 12}
+        if task_id is None and not quoted:
+            return None
+        paths, _ = self._files()
+        matches = {}
+        for path in paths:
+            head, coverage = self._events(path, 8 * 1024)
+            matching_excerpts = set()
+            if task_id is not None:
+                if not any(e.get("task_id") == task_id for e in head):
+                    continue
+            else:
+                original = next(
+                    (e.get("data", {}).get("text") for e in head if e["event_type"] == "input.received"),
+                    None,
+                )
+                if not isinstance(original, str):
+                    continue
+                original = normalize(original)
+                matching_excerpts = {text for text in quoted if text in original}
+                if not matching_excerpts:
+                    continue
+            events = head
+            if coverage["partial"]:
+                tail, _ = self._events(path, 128 * 1024, tail=True)
+                events = [*head, *tail]
+            for event in events:
+                run_id = event.get("data", {}).get("run_id")
+                recorded_task = event.get("task_id")
+                if (
+                    event["event_type"] == "execution.result"
+                    and isinstance(recorded_task, str)
+                    and re.fullmatch(r"[a-f0-9]{8}", recorded_task)
+                    and (task_id is None or recorded_task == task_id)
+                    and event.get("request_id")
+                    and isinstance(run_id, str)
+                    and IDENTIFIER.fullmatch(run_id)
+                ):
+                    latest, found = matches.get(recorded_task, (None, set()))
+                    if latest is None or event["timestamp_utc"] > latest["timestamp_utc"]:
+                        latest = event
+                    matches[recorded_task] = (latest, found | matching_excerpts)
+        if task_id is None and len(matches) > 1:
+            # A second quoted instruction can disambiguate a shared topic.
+            supported = set().union(*(found for _, found in matches.values()))
+            matches = {key: value for key, value in matches.items() if value[1] == supported}
+        if len(matches) != 1:
+            return None
+        task_id, (latest, _) = next(iter(matches.items()))
+        run_id = latest["data"]["run_id"]
+        goal = self._json(self.runs_dir / run_id / "goal.json", 256 * 1024)
+        if goal.get("request_id") != latest["request_id"] or not goal.get("objective"):
+            return None
+        context = goal.get("context")
+        conversation = context.get("conversation", []) if isinstance(context, dict) else []
+        return {
+            "task_id": task_id,
+            "request_id": latest["request_id"],
+            "run_id": run_id,
+            "occurred_at": latest["timestamp_utc"],
+            "goal": {key: goal[key] for key in ("objective", "inputs", "success_criteria") if key in goal},
+            "conversation": conversation if isinstance(conversation, list) else [],
+        }
 
     def tasks(self):
         paths, limited = self._files()

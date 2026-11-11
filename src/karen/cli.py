@@ -31,7 +31,7 @@ from .context import ContextMemory
 from .context.contracts import PersistenceError
 from .intent import IntentRecognizer, IntentSession
 from .message import messages
-from .model.models import deepseek_client, memory_embeddings
+from .model.models import configure_execution_output_limits, deepseek_client, memory_embeddings
 from .observability import ObservedModel, Observer
 from .observability.viewer import DEFAULT_PORT, background_server
 from .schedule import ScheduledTasks
@@ -202,14 +202,17 @@ async def converse(
                 messages.OBSERVATION_STARTED.format(port=server.server_port),
                 file=sys.stderr, flush=True,
             )
+        planner = deepseek_client(reasoning_effort="medium")
+        output_limit = await configure_execution_output_limits(planner, backend)
         model = ObservedModel(backend, observer)
         engine = DynamicGraphEngine(
             config=EngineConfig(
                 runs_dir=Path.home() / ".Karne" / "runs" if observer.root_dir else Path("runs"),
+                max_output_tokens=output_limit,
                 sensitive_values=observer.sensitive_values,
             ),
             models=ModelBindings(
-                planner=ObservedModel(deepseek_client(reasoning_effort="medium"), observer),
+                planner=ObservedModel(planner, observer),
                 worker=model,
             ),
         )

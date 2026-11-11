@@ -1,5 +1,8 @@
 """Connect intent reception, selective context recall and task execution."""
 
+import asyncio
+import json
+import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -9,9 +12,11 @@ from dynamic_graph import CancellationToken, DynamicGraphEngine, ExecutionPolicy
 
 from .capabilities import all_capabilities_policy
 from .context import ContextEvent, ContextMemory, RecallQuery, RecallResult
-from .context.contracts import MemoryError
+from .context.contracts import History, MemoryError
+from .context.retrieval import fit_history_messages
 from .intent import IntentRecognizer, IntentSession
 from .observability import Observer
+from .observability.viewer import TraceStore
 from .task.resources import ExecutionResources
 from .workflow import CompletedWorkflowRun, ReusableWorkflows, WorkflowRequest
 
@@ -88,6 +93,43 @@ class Karen:
             self.observer.emit("response", data={"text": text})
             self._capture(session, "assistant_message", {"content": text}, warnings)
         return tuple(warnings)
+
+    async def _recorded_task_history(self, session, user_input, *, search_quotes=False):
+        if self.observer.root_dir is None:
+            return None
+        user_messages = [
+            user_input, *(m.content for m in reversed(session.messages) if m.role == "user")
+        ]
+        for text in user_messages:
+            ids = set(re.findall(
+                r"(?:task\s*id|任务\s*(?:id|编号))\s*(?:为|是|is\b|[:：=])?\s*`?([a-f0-9]{8})(?![a-z0-9_])",
+                text.lower(),
+            ))
+            if ids:
+                break
+        excerpts = []
+        if len(ids) > 1:
+            return None
+        if not ids and search_quotes:
+            for text in user_messages:
+                excerpts = [
+                    next(part for part in match if part)
+                    for match in re.findall(r'“([^”]+)”|「([^」]+)」|"([^"]+)"', text)
+                ]
+                if excerpts:
+                    break
+        if not ids and not excerpts:
+            return None
+        try:
+            archived = await asyncio.to_thread(
+                TraceStore(self.observer.root_dir).task_execution,
+                next(iter(ids), None), excerpts=excerpts,
+            )
+            if archived is not None:
+                archived["match_reason"] = "task_id" if ids else "quoted_request"
+            return archived
+        except OSError:
+            return None
 
     async def advance(
         self,
@@ -235,6 +277,46 @@ class Karen:
                     project_id=session.user_context.get("project_id"),
                 )
             )
+        if session.routing.handling == "assess":
+            archived = await self._recorded_task_history(
+                session, user_input,
+                search_quotes=bool(recalled and recalled.coverage.get("requires_history")),
+            )
+            if archived is not None:
+                source = {
+                    key: archived[key] for key in ("request_id", "task_id", "run_id", "occurred_at")
+                }
+                messages = [{
+                    **source,
+                    "role": "assistant",
+                    "content": json.dumps(archived["goal"], ensure_ascii=False),
+                    "truncated": False,
+                }]
+                for message in archived["conversation"]:
+                    if (
+                        isinstance(message, dict)
+                        and message.get("role") in {"user", "assistant"}
+                        and isinstance(message.get("content"), str)
+                    ):
+                        messages.append({
+                            **source,
+                            "role": message["role"],
+                            "content": message["content"],
+                            "truncated": False,
+                        })
+                bounded = fit_history_messages(messages, 48 * 1024)
+                history = History(
+                    status="selected",
+                    reason="execution_record_" + archived["match_reason"],
+                    complete=len(bounded) == len(messages) and not any(m["truncated"] for m in bounded),
+                    messages=bounded,
+                )
+                recalled = (recalled or RecallResult(status="ok")).model_copy(
+                    update={"history": history, "related_request_ids": [archived["request_id"]]}
+                )
+                self.observer.emit("memory.history." + archived["match_reason"], data={
+                    key: archived[key] for key in ("task_id", "request_id", "run_id")
+                })
         kwargs = {"memory_context": recalled.context()} if recalled else {}
         workflow = None
         if (

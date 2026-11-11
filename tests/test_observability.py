@@ -574,3 +574,36 @@ async def test_managed_round_ids_reach_karen_trace_and_link_followups(tmp_path):
     assert {e["task_id"] for e in inputs} == {task.task_id}
     assert {e["turn_id"] for e in inputs} == {r.turn_id for r in task.turns}
     assert len({e["request_id"] for e in inputs}) == 2
+
+
+async def test_quoted_task_history_requires_unique_executed_match(tmp_path):
+    from dynamic_graph import GoalSpec
+
+    observer = Observer(tmp_path / "observability")
+    await observer.start()
+    shared = "为测试项目生成可阅读的代码和使用说明"
+    distinguishing = "在临时目录下创建工程并写入 README 文档"
+    try:
+        for task_id, text in [
+            ("ca11ab1e", shared),
+            ("ca11ab1f", f"{shared}，{distinguishing}"),
+        ]:
+            request_id, run_id = uuid4().hex, uuid4().hex
+            run = tmp_path / "runs" / run_id
+            run.mkdir(parents=True)
+            (run / "goal.json").write_text(GoalSpec(
+                request_id=request_id, objective=text,
+            ).model_dump_json())
+            with observer.span("turn", trace_id=uuid4().hex, task_id=task_id, request_id=request_id):
+                observer.emit("input.received", data={"text": text})
+                observer.emit("execution.result", data={"run_id": run_id})
+        with observer.span("turn", trace_id=uuid4().hex, task_id="ca11ab10", request_id=uuid4().hex):
+            observer.emit("input.received", data={"text": distinguishing})
+    finally:
+        await observer.close()
+
+    store = TraceStore(observer.root_dir)
+    assert store.task_execution(excerpts=[shared]) is None
+    selected = store.task_execution(excerpts=[shared, distinguishing])
+    assert selected["task_id"] == "ca11ab1f"
+    assert distinguishing in selected["goal"]["objective"]

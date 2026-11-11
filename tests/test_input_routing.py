@@ -1674,3 +1674,79 @@ async def test_ambiguous_material_can_be_an_answer_but_not_an_operation_target(o
     result = await IntentRecognizer(model).advance(IntentSession(), text)
     assert bool(result.questions) is operation
     assert bool(result.reply) is not operation
+
+
+@pytest.mark.parametrize("followup", [False, True])
+@pytest.mark.parametrize("reference", ["id", "quote"])
+async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path, followup, reference):
+    from uuid import uuid4
+
+    from dynamic_graph import GoalSpec
+
+    task_id = "abc12345"
+    request_id, run_id = uuid4().hex, uuid4().hex
+    root = tmp_path / "observability"
+    old_observer = Observer(root)
+    await old_observer.start()
+    original = "请在临时目录创建示例工程，然后保存代码和使用说明"
+    with old_observer.span("turn", task_id=task_id, request_id=request_id):
+        old_observer.emit("input.received", data={"text": original})
+        old_observer.emit("execution.result", data={"run_id": run_id, "execution_status": "FAILED"})
+    await old_observer.close()
+    run = tmp_path / "runs" / run_id
+    run.mkdir(parents=True)
+    (run / "goal.json").write_text(GoalSpec(
+        request_id=request_id,
+        objective="保存示例工程",
+        inputs={"target_dir": "/tmp/sample"},
+        context={
+            "conversation": [
+                {"role": "assistant", "content": "旧方案的代码正文。" * 700},
+            ],
+            "unrelated": "not part of the archived goal projection",
+        },
+    ).model_dump_json())
+
+    backend = MemoryModel()
+    backend.requires_task_selection = True
+    backend.dependency = "needed"
+    backend.history_status = "unavailable"
+    memory = ContextMemory(root_dir=tmp_path / "context", model=backend, embeddings=LocalEmbeddings())
+    await memory.start()
+    observer = Observer(root)
+    await observer.start()
+    first_input = (
+        f"请重试 task id 为 {task_id} 的任务" if reference == "id"
+        else f"之前我请你“{original}”执行失败了，请再试一次"
+    )
+    session = IntentSession(timezone="UTC")
+    if followup:
+        session = session.model_copy(update={
+            "messages": (
+                Message(role="user", content=first_input),
+                Message(role="assistant", content="请补充之前的任务内容。"),
+            ),
+            "clarification_items": (
+                ClarificationItem(question_id="old_task", text="请补充之前的任务内容。", asked_after=0),
+            ),
+            "displayed_question_ids": ("old_task",),
+        })
+    executor = FakeModelClient([graph_response(), {"draft": "已处理"}])
+    agent, model, _ = agent_for(
+        tmp_path, [routing(relation="continue" if followup else "new"), ready()],
+        observer=observer, memory=memory, executor=executor,
+    )
+    try:
+        turn = await agent.advance(session, "就是保存示例工程" if followup else first_input)
+        assert not turn.session.questions
+        history = turn.memory_result.history
+        assert history.status == "selected"
+        assert turn.memory_result.related_request_ids == [request_id]
+        assert history.messages[0]["run_id"] == run_id
+        assert "/tmp/sample" in history.messages[0]["content"]
+        assert history.messages[1]["content"] == "旧方案的代码正文。" * 700
+        assert "unrelated" not in str(history.messages)
+        assert any(r.role == "intent_clarity" for r in model.requests)
+    finally:
+        await observer.close()
+        await memory.close()

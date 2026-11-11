@@ -218,3 +218,53 @@ async def test_rerank_sends_32768_and_does_not_retry_truncation(monkeypatch):
     assert [call["max_tokens"] for call in calls] == [32768, 32768]
     assert all(call["thinking"] == {"type": "enabled"} for call in calls)
     assert all(call["reasoning_effort"] == "low" for call in calls)
+
+
+@pytest.mark.parametrize("catalog_status", [200, 503])
+async def test_execution_output_limits_follow_selected_provider_models(monkeypatch, catalog_status):
+    from karen.model.models import configure_execution_output_limits
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    requests = []
+    catalog = {
+        "object": "list",
+        "data": [
+            {"id": "deepseek-flash", "object": "model", "created": 1,
+             "owned_by": "deepseek", "max_output_tokens": 393216},
+            {"id": "deepseek-v4-pro", "object": "model", "created": 1,
+             "owned_by": "deepseek", "max_output_tokens": 65536},
+        ],
+    }
+
+    async def send(request):
+        if request.url.path.endswith("/models"):
+            requests.append("catalog")
+            return httpx.Response(catalog_status, json=catalog)
+        body = json.loads(request.content)
+        requests.append((body["model"], body["max_tokens"]))
+        return httpx.Response(200, json={
+            "id": "completion", "object": "chat.completion", "created": 1,
+            "model": body["model"], "choices": [{"index": 0, "finish_reason": "stop",
+                "message": {"role": "assistant", "content": '{"answer":"ok"}'}}],
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(send)) as http_client:
+        monkeypatch.setattr(
+            karen.model.models, "ChatDeepSeek", partial(ChatDeepSeek, http_async_client=http_client)
+        )
+        planner = deepseek_client(model="deepseek-v4-pro")
+        worker = deepseek_client(model="deepseek-flash")
+        limit = await configure_execution_output_limits(planner, worker)
+        for role, client in [("planner", planner), ("worker", worker)]:
+            await client.generate(ModelRequest(
+                role=role, system_instruction="Return JSON", task_instruction="Return an answer",
+                input_data={}, output_schema={"type": "object", "properties": {
+                    "answer": {"type": "string"}}, "required": ["answer"]},
+                max_output_tokens=limit,
+            ))
+
+    planner_limit, worker_limit = (65536, 393216) if catalog_status == 200 else (32768, 32768)
+    assert requests == ["catalog", ("deepseek-v4-pro", planner_limit), ("deepseek-flash", worker_limit)]
+    assert worker.metadata["output_token_limit_source"] == (
+        "provider" if catalog_status == 200 else "default"
+    )

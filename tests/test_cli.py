@@ -299,6 +299,7 @@ async def test_cli_uses_thinking_for_decisions_and_nonthinking_for_memory(monkey
     assert agents[0].intent.model.client is clients[0]
     assert agents[0].intent.model.metadata["thinking"] is True
     assert memory_models[0].client is clients[2]
+    assert agents[0].engine.config.max_output_tokens == 32768
     assert agents[0].engine.models.planner.client is clients[1]
     assert clients[1].metadata["reasoning_effort"] == "medium"
     assert rerank_models[0] is agents[0].intent.model

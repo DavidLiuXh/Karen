@@ -1677,7 +1677,8 @@ async def test_ambiguous_material_can_be_an_answer_but_not_an_operation_target(o
 
 
 @pytest.mark.parametrize("followup", [False, True])
-async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path, followup):
+@pytest.mark.parametrize("reference", ["id", "quote"])
+async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path, followup, reference):
     from uuid import uuid4
 
     from dynamic_graph import GoalSpec
@@ -1687,7 +1688,9 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
     root = tmp_path / "observability"
     old_observer = Observer(root)
     await old_observer.start()
+    original = "请在临时目录创建示例工程，然后保存代码和使用说明"
     with old_observer.span("turn", task_id=task_id, request_id=request_id):
+        old_observer.emit("input.received", data={"text": original})
         old_observer.emit("execution.result", data={"run_id": run_id, "execution_status": "FAILED"})
     await old_observer.close()
     run = tmp_path / "runs" / run_id
@@ -1712,7 +1715,10 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
     await memory.start()
     observer = Observer(root)
     await observer.start()
-    first_input = f"请重试 task id 为 {task_id} 的任务"
+    first_input = (
+        f"请重试 task id 为 {task_id} 的任务" if reference == "id"
+        else f"之前我请你“{original}”执行失败了，请再试一次"
+    )
     session = IntentSession(timezone="UTC")
     if followup:
         session = session.model_copy(update={

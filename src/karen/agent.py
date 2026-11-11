@@ -94,7 +94,7 @@ class Karen:
             self._capture(session, "assistant_message", {"content": text}, warnings)
         return tuple(warnings)
 
-    async def _recorded_task_history(self, session, user_input):
+    async def _recorded_task_history(self, session, user_input, *, search_quotes=False):
         if self.observer.root_dir is None:
             return None
         user_messages = [
@@ -107,12 +107,27 @@ class Karen:
             ))
             if ids:
                 break
-        if len(ids) != 1:
+        excerpts = []
+        if len(ids) > 1:
+            return None
+        if not ids and search_quotes:
+            for text in user_messages:
+                excerpts = [
+                    next(part for part in match if part)
+                    for match in re.findall(r'“([^”]+)”|「([^」]+)」|"([^"]+)"', text)
+                ]
+                if excerpts:
+                    break
+        if not ids and not excerpts:
             return None
         try:
-            return await asyncio.to_thread(
-                TraceStore(self.observer.root_dir).task_execution, next(iter(ids)).lower()
+            archived = await asyncio.to_thread(
+                TraceStore(self.observer.root_dir).task_execution,
+                next(iter(ids), None), excerpts=excerpts,
             )
+            if archived is not None:
+                archived["match_reason"] = "task_id" if ids else "quoted_request"
+            return archived
         except OSError:
             return None
 
@@ -263,7 +278,10 @@ class Karen:
                 )
             )
         if session.routing.handling == "assess":
-            archived = await self._recorded_task_history(session, user_input)
+            archived = await self._recorded_task_history(
+                session, user_input,
+                search_quotes=bool(recalled and recalled.coverage.get("requires_history")),
+            )
             if archived is not None:
                 source = {
                     key: archived[key] for key in ("request_id", "task_id", "run_id", "occurred_at")
@@ -289,14 +307,14 @@ class Karen:
                 bounded = fit_history_messages(messages, 48 * 1024)
                 history = History(
                     status="selected",
-                    reason="exact_task_id_in_execution_records",
+                    reason="execution_record_" + archived["match_reason"],
                     complete=len(bounded) == len(messages) and not any(m["truncated"] for m in bounded),
                     messages=bounded,
                 )
                 recalled = (recalled or RecallResult(status="ok")).model_copy(
                     update={"history": history, "related_request_ids": [archived["request_id"]]}
                 )
-                self.observer.emit("memory.history.task_id", data={
+                self.observer.emit("memory.history." + archived["match_reason"], data={
                     key: archived[key] for key in ("task_id", "request_id", "run_id")
                 })
         kwargs = {"memory_context": recalled.context()} if recalled else {}

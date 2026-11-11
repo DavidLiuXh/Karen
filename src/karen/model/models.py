@@ -4,6 +4,8 @@ from dynamic_graph.models.adapters import LangChainModelClient
 from langchain_deepseek import ChatDeepSeek
 from langchain_ollama import OllamaEmbeddings
 
+DEEPSEEK_MAX_OUTPUT_TOKENS = 32768
+
 
 class DeepSeekModelClient(LangChainModelClient):
     def __init__(
@@ -17,7 +19,8 @@ class DeepSeekModelClient(LangChainModelClient):
         )
         chat = ChatDeepSeek(model=model, max_retries=0, **settings)
         super().__init__(
-            chat_model=chat, model=model, mode=mode, allow_json_mode=mode == "json_mode"
+            chat_model=chat, model=model, mode=mode, allow_json_mode=mode == "json_mode",
+            max_output_tokens=DEEPSEEK_MAX_OUTPUT_TOKENS,
         )
         self.thinking = thinking
         self.reasoning_effort = reasoning_effort if thinking else None

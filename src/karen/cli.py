@@ -31,7 +31,7 @@ from .context import ContextMemory
 from .context.contracts import PersistenceError
 from .intent import IntentRecognizer, IntentSession
 from .message import messages
-from .model.models import deepseek_client, memory_embeddings
+from .model.models import DEEPSEEK_MAX_OUTPUT_TOKENS, deepseek_client, memory_embeddings
 from .observability import ObservedModel, Observer
 from .observability.viewer import DEFAULT_PORT, background_server
 from .schedule import ScheduledTasks
@@ -204,6 +204,7 @@ async def converse(
         engine = DynamicGraphEngine(
             config=EngineConfig(
                 runs_dir=Path.home() / ".Karne" / "runs" if observer.root_dir else Path("runs"),
+                max_output_tokens=DEEPSEEK_MAX_OUTPUT_TOKENS,
                 sensitive_values=observer.sensitive_values,
             ),
             models=ModelBindings(

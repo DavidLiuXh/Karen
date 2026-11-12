@@ -12,7 +12,7 @@ from dynamic_graph import CancellationToken, DynamicGraphEngine, ExecutionPolicy
 
 from .capabilities import all_capabilities_policy
 from .context import ContextEvent, ContextMemory, RecallQuery, RecallResult
-from .context.contracts import History, MemoryError
+from .context.contracts import History, MemoryError, recall_decision_context
 from .context.retrieval import fit_history_messages
 from .intent import IntentRecognizer, IntentSession
 from .observability import Observer
@@ -335,7 +335,8 @@ class Karen:
                 self.observer.emit("memory.history." + archived["match_reason"], data={
                     key: archived[key] for key in ("task_id", "request_id", "run_id")
                 })
-        kwargs = {"memory_context": recalled.context()} if recalled else {}
+        memory_context = recalled.context() if recalled is not None else None
+        kwargs = {"memory_context": memory_context} if memory_context is not None else {}
         workflow = None
         if (
             self.workflows is not None
@@ -360,7 +361,7 @@ class Karen:
                     timezone=session.timezone,
                     policy=policy or all_capabilities_policy(self.engine),
                     capabilities=[f"{c.name}@{c.version}" for c in self.engine.list_capabilities()],
-                    memory_context=recalled.context() if recalled else {},
+                    memory_context=recall_decision_context(memory_context) if memory_context is not None else {},
                     pending=session.workflow_pending,
                 )
             )
@@ -417,7 +418,9 @@ class Karen:
             and set(session.routing.input_types) <= {"question", "task_request"}
             and (recalled.m2 or recalled.details)
         ):
-            refined = await self.intent.classify(session, user_input, **kwargs)
+            refined = await self.intent.classify(
+                session, user_input, memory_context=recall_decision_context(memory_context),
+            )
             session = session.model_copy(
                 update={
                     "routing": session.routing.model_copy(

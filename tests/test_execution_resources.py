@@ -433,3 +433,36 @@ async def test_file_scope_and_independent_read_declaration_do_not_expand_permiss
     assert wrapped.input_schema == definition.input_schema
     assert wrapped.output_schema == definition.output_schema
     assert wrapped.read_only == definition.read_only
+
+
+async def test_file_ranges_preserve_unicode_and_do_not_return_whole_file(tmp_path):
+    import time
+    from types import SimpleNamespace
+
+    import pytest
+    from dynamic_graph import CancellationToken, DynamicGraphEngine, FakeModelClient, ModelBindings
+    from dynamic_graph.execution.errors import ToolCallError
+    from jsonschema import validate
+
+    from karen.tools.file_range import READ_RANGE_BYTES, file_read_text_range_tool
+
+    tool = file_read_text_range_tool(tmp_path)
+    engine = DynamicGraphEngine(models=ModelBindings(FakeModelClient(), FakeModelClient()))
+    engine.register_tool(tool)
+    file = tmp_path / "text.txt"
+    content = "x" * (READ_RANGE_BYTES - 1) + "资料" + "z" * READ_RANGE_BYTES
+    file.write_text(content, encoding="utf-8")
+    context = SimpleNamespace(cancellation_token=CancellationToken(), deadline=time.monotonic() + 2)
+    args = {"path": str(file)}
+    chunks = []
+    while True:
+        chunk = await tool.handler(args, context)
+        validate(chunk, tool.output_schema)
+        assert len(chunk["content"].encode()) <= READ_RANGE_BYTES
+        chunks.append(chunk["content"])
+        if chunk["next_offset_bytes"] is None:
+            break
+        args["offset_bytes"] = chunk["next_offset_bytes"]
+    assert len(chunks) == 3 and "".join(chunks) == content
+    with pytest.raises(ToolCallError):
+        await tool.handler({"path": str(file), "offset_bytes": READ_RANGE_BYTES}, context)

@@ -333,11 +333,11 @@ async def test_cli_registers_and_authorizes_all_available_tools(monkeypatch, cap
     policy = all_capabilities_policy(agents[0].engine)
     expected_tools = {
         "file.read_text@1.0.0",
+        "file.read_text_range@1.0.0",
         "file.write_text@1.0.0",
         "file.create_directory@1.0.0",
         "git.clone@1.0.0",
         "browser.open_local_page@1.0.0",
-        "web.fetch@1.0.0",
         "web.read_page@1.0.0",
         "runs.read_artifacts@1.0.0",
     }

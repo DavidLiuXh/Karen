@@ -344,11 +344,18 @@ class ObservedModel:
             try:
                 response = await self.client.generate(request)
             except Exception as exc:
+                structure = {}
+                if getattr(exc, "code", None) == "MODEL_INPUT_TOO_LARGE":
+                    structure = {
+                        key: exc.details[key] for key in ("input_bytes", "limit_bytes")
+                        if type(exc.details.get(key)) is int
+                    }
                 self.observer.emit(
                     "model.error",
                     status="failed",
                     data={
                         **error_details(exc),
+                        **structure,
                         "usage": getattr(exc, "usage", None),
                         "retryable": getattr(exc, "retryable", None),
                     },

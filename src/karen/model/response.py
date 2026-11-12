@@ -8,6 +8,8 @@ from ..message import messages
 
 
 def _diagnostic_message(diagnostic) -> str:
+    if diagnostic.code == "MODEL_INPUT_TOO_LARGE":
+        return messages.MODEL_INPUT_TOO_LARGE
     if diagnostic.code != "TOOL_FAILED":
         return diagnostic.message
     reason = diagnostic.details.get("reason_code")

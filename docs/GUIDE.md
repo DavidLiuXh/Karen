@@ -301,10 +301,11 @@ The CLI registers and authorizes the capabilities currently available to it. Wit
 | Tool | Purpose and boundaries |
 | --- | --- |
 | `tavily.search` | Searches public web sources; requires `TAVILY_API_KEY` |
-| `web.fetch` | Reads current HTTP/HTTPS page text; does not provide snapshots for arbitrary historical dates |
+| `web.read_page` | Reads compact text from current HTTP/HTTPS pages, with source links and a truncation flag |
 | `git.clone` | Shallow-clones a public HTTPS repository into a new directory under `/tmp`. The parent must exist. Requires local Git. |
 | `file.create_directory` | Creates missing directories under `/tmp`. Make dependent file writes wait for directory creation. |
 | `file.read_text` / `file.write_text` | Reads or writes UTF-8 text under `/tmp`, with a default 1 MiB size limit; overwriting must be explicitly requested |
+| `file.read_text_range` | Reads a UTF-8 segment of up to 24,000 bytes under `/tmp`, with a continuation offset |
 | `browser.open_local_page` | Requests that the default browser open an existing HTML file under `/tmp`; a successful launch request does not establish successful rendering |
 
 Custom integrations can pass an `ExecutionPolicy` to restrict the capability allowlist. The model cannot expand its own permissions. Pausing execution to wait for user confirmation is not currently supported.
@@ -367,4 +368,6 @@ not implemented yet. See [Gmail access](GMAIL.md) for the API and privacy bounda
 
 ### Readable webpages
 
-The registered `web.read_page` tool extracts compact webpage text with links and explicit truncation metadata. See [webpage extraction](WEB.md). Existing workflows using raw `web.fetch` are not automatically migrated.
+Karen uses `web.read_page` for compact webpage text. Saved workflows that require raw `web.fetch` are skipped and the request follows normal planning. See [webpage extraction](WEB.md).
+
+The DeepSeek client rejects individual text values over 48 KiB and worker requests over 64 KiB before provider dispatch. Large local files can be read through `file.read_text_range` and processed one segment at a time. The model client reports a size error when a request exceeds the limit.

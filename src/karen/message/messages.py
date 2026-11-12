@@ -43,6 +43,7 @@ WEIXIN_LOGIN_SUCCESS = "Karen：微信绑定成功。凭据已保存在 ~/.Karne
 
 CLI_DESCRIPTION = "Karen 任务与意图澄清"
 
+CLI_NO_GLOW_HELP = "使用 Rich 渲染终端回答（默认优先使用已安装的 Glow）。"
 CLI_JSON_HELP = "展示完整执行结果 JSON"
 
 CLI_TIMEZONE_HELP = "用户的 IANA 时区，默认读取本机时区"

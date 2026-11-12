@@ -936,3 +936,28 @@ def test_inline_numbered_answer_is_split_into_readable_paragraphs():
     )
     assert format_task_event(direct) == expected
     assert format_task_event(direct, json_output=True) == text
+
+
+@pytest.mark.parametrize("mode", ["glow", "disabled", "failed"])
+def test_terminal_numbered_list_uses_optional_glow(monkeypatch, mode):
+    output = io.StringIO()
+    monkeypatch.setattr(output, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/test/glow")
+    calls = []
+
+    def render(command, **kwargs):
+        calls.append(command)
+        assert "1. 第一条" in kwargs["input"] and "2. 第二条" in kwargs["input"]
+        assert command[-1] == "-" and "--pager=false" in command
+        if mode == "failed":
+            raise cli.subprocess.TimeoutExpired(command, 2)
+        return cli.subprocess.CompletedProcess(command, 0, stdout="Glow output\n")
+
+    monkeypatch.setattr(cli.subprocess, "run", render)
+    cli.display_response("依据：1）第一条；2）第二条。", use_glow=mode != "disabled")
+    assert bool(calls) == (mode != "disabled")
+    assert ("Glow output" in output.getvalue()) == (mode == "glow")
+    if mode != "glow":
+        assert "第一条" in output.getvalue() and "第二条" in output.getvalue()

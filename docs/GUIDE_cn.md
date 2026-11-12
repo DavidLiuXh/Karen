@@ -266,6 +266,8 @@ uv run --env-file .env karen --observe
 
 交互式终端会将回答和澄清问题渲染为 Markdown，支持列表、表格和代码高亮，并按终端宽度换行。重定向和管道保留原始文本；`--json` 保留原始 JSON。渲染不改变已保存的回答或微信消息。基础终端（`TERM=dumb`）使用纯文本；不渲染图片和 HTML。
 
+交互终端默认优先使用 PATH 中的可选工具 `glow`。用 `--no-glow` 可切换到 Rich。未安装 Glow 或渲染失败时也会回退到 Rich。两种渲染器都以 Markdown 列表样式显示列表。
+
 ### 通过个人微信使用
 
 ```bash

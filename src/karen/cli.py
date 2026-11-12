@@ -4,11 +4,14 @@ import argparse
 import asyncio
 import os
 import re
+import shutil
+import subprocess
 import sqlite3
 import sys
 import threading
 from contextlib import AsyncExitStack, nullcontext
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from zoneinfo import ZoneInfoNotFoundError
 
@@ -32,6 +35,7 @@ from .context.contracts import PersistenceError
 from .intent import IntentRecognizer, IntentSession
 from .message import messages
 from .model.models import configure_execution_output_limits, deepseek_client, memory_embeddings
+from .model.response import terminal_markdown
 from .observability import ObservedModel, Observer
 from .observability.viewer import DEFAULT_PORT, background_server
 from .schedule import ScheduledTasks
@@ -52,7 +56,30 @@ from .workflow import ReusableWorkflows
 _input_history = InMemoryHistory()
 
 
-def display_response(text: str, *, json_output: bool = False) -> None:
+def _render_terminal_markdown(console, text, *, use_glow):
+    markdown = terminal_markdown(text)
+    glow = shutil.which("glow") if use_glow else None
+    if glow:
+        env = os.environ.copy()
+        if "NO_COLOR" not in env:
+            env["CLICOLOR_FORCE"] = "1"
+        background = env.get("COLORFGBG", "").rsplit(";", 1)[-1]
+        style = "light" if background in {"7", "15"} else "dark"
+        try:
+            rendered = subprocess.run(
+                [glow, "--pager=false", "--tui=false", "-s", style, "-w", str(console.width), "-"],
+                input=markdown, capture_output=True, text=True, encoding="utf-8",
+                env=env, timeout=2, check=True,
+            )
+            if rendered.stdout.strip():
+                print(rendered.stdout, end="" if rendered.stdout.endswith("\n") else "\n")
+                return
+        except (OSError, UnicodeError, subprocess.SubprocessError):
+            pass
+    console.print(Markdown(markdown))
+
+
+def display_response(text: str, *, json_output: bool = False, use_glow: bool = True) -> None:
     """Render terminal replies while keeping redirected and JSON output unchanged."""
     if json_output:
         print(text)
@@ -77,9 +104,9 @@ def display_response(text: str, *, json_output: bool = False) -> None:
             }
             if separator and match and match[1] in state_styles:
                 console.print(Text(header, style=state_styles[match[1]]))
-                console.print(Markdown(body))
+                _render_terminal_markdown(console, body, use_glow=use_glow)
             else:
-                console.print(Markdown(text))
+                _render_terminal_markdown(console, text, use_glow=use_glow)
         console.print()
     else:
         print(messages.KAREN_PREFIX + text)
@@ -172,7 +199,8 @@ async def register_gmail_tools(engine, resources, resources_guard):
 
 async def converse(
     *, json_output: bool = False, timezone: str | None = None, observe_port: int | None = None,
-    wechat: bool = False, max_concurrent_tasks: int = DEFAULT_MAX_CONCURRENT_TASKS,
+    wechat: bool = False, use_glow: bool = True,
+    max_concurrent_tasks: int = DEFAULT_MAX_CONCURRENT_TASKS,
 ) -> int:
     try:
         session = IntentSession(timezone=timezone) if timezone is not None else IntentSession()
@@ -301,7 +329,7 @@ async def converse(
                 resources.callback(schedules.close)
             with patch_stdout(raw=True) if sys.stdout.isatty() else nullcontext():
                 return await run_console(manager, session, read_input=read_input,
-                                         display=display_response, json_output=json_output,
+                                         display=partial(display_response, use_glow=use_glow), json_output=json_output,
                                          schedules=schedules)
         finally:
             try:
@@ -351,6 +379,7 @@ def main() -> None:
     )
     parser.add_argument("--max-concurrent-tasks", type=int, default=DEFAULT_MAX_CONCURRENT_TASKS,
                         help=messages.TASK_CONCURRENCY_HELP.format(count=DEFAULT_MAX_CONCURRENT_TASKS))
+    parser.add_argument("--no-glow", action="store_true", help=messages.CLI_NO_GLOW_HELP)
     args = parser.parse_args()
     if args.max_concurrent_tasks < 1:
         parser.error(messages.TASK_CONCURRENCY_INVALID)
@@ -365,6 +394,8 @@ def main() -> None:
             asyncio.run(bind_weixin(force=True))
             raise SystemExit(0)
         options = {"wechat": True} if args.wechat else {}
+        if args.no_glow:
+            options["use_glow"] = False
         if args.max_concurrent_tasks != DEFAULT_MAX_CONCURRENT_TASKS:
             options["max_concurrent_tasks"] = args.max_concurrent_tasks
         raise SystemExit(asyncio.run(converse(

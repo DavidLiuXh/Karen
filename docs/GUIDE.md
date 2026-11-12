@@ -266,6 +266,8 @@ When running remotely, explicitly provide the user's timezone. Normal output sho
 
 Interactive terminals render replies and clarification questions as Markdown, including lists, tables, and highlighted code blocks, wrapped to the terminal width. Redirected output and pipes retain the original text; `--json` retains raw JSON. Rendering does not change stored replies or Weixin messages. Basic terminals (`TERM=dumb`) use plain text; images and HTML are not rendered.
 
+The interactive terminal prefers the optional `glow` executable on PATH. Use `--no-glow` to select Rich. Missing or failed Glow rendering also falls back to Rich. Lists use Markdown list formatting in both renderers.
+
 ### Use personal Weixin
 
 ```bash

@@ -33,15 +33,26 @@ def _format_numbered_paragraph(text: str) -> str:
     return text
 
 
-def _format_inline_items(text: str) -> str:
+def terminal_markdown(text: str) -> str:
+    return _format_inline_items(text, markdown_lists=True)
+
+
+def _format_inline_items(text: str, *, markdown_lists=False) -> str:
     sections, paragraph = [], []
     fence = ""
+
+    def render_paragraph():
+        result = _format_numbered_paragraph("".join(paragraph))
+        if markdown_lists:
+            result = re.sub(r"(?m)^( {0,3})([1-9][0-9]*)）[ \t]*", r"\1\2. ", result)
+        return result
+
     for line in text.splitlines(keepends=True):
         marker = _FENCE.match(line)
         if not (fence or marker) and line.strip() and not line.startswith(("    ", "\t")):
             paragraph.append(line)
             continue
-        sections.append(_format_numbered_paragraph("".join(paragraph)))
+        sections.append(render_paragraph())
         paragraph.clear()
         if marker:
             token = marker[1]
@@ -50,7 +61,7 @@ def _format_inline_items(text: str) -> str:
             elif token.startswith(fence) and not line[marker.end():].strip():
                 fence = ""
         sections.append(line)
-    sections.append(_format_numbered_paragraph("".join(paragraph)))
+    sections.append(render_paragraph())
     return "".join(sections)
 
 

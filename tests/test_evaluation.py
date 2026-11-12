@@ -354,7 +354,10 @@ async def test_ingestion_waits_for_all_events_and_async_statuses():
             self.events = []
             self.flushed = False
 
-        def submit(self, event):
+        def finish_request(self, conversation_id, request_id):
+            pass
+
+        def submit(self, event, **kwargs):
             self.events.append(event)
             return SimpleNamespace(event_id=event.event_id)
 

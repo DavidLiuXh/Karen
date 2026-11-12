@@ -35,6 +35,12 @@ origin:inferred}, status:planned}，不更新实际住所，不猜搬家日或�
 决策：可记录 preference.response.language；单次要求翻译一段文本则不自动形成长期默认值。
 """
 
+BATCH_EXTRACT = """这是一个按时间顺序排列的事件批次。对 new_event_ids 中的每个 ID 分别应用下面的单事件提取规则。
+输出 {"events":[{"event_id":"事件ID","facts":[],"summaries":[]}]}，每个待提取 ID 恰有一项，即使没有新增内容。
+每项内部的 new_event_id 指该项 event_id。该项只能引用自身和更早的事件，不得引用未来事件。
+每个事实或摘要必须引用该项自己的原文；事件间可以共享前文以解释指代。不要把同一个执行结果重复归入多项。
+"""
+
 EXTRACT = """从本次事件提取可跨任务使用的长期事实和事件/行动摘要。
 facts 保存符合共用长期事实规则的候选；text 和 value 都保留否定、程度、时间和范围限定。
 有意义的新用户偏好或个人事实进入 facts；假设、虚构资料、第三人信息、引用、临时任务要求不能记为用户全局偏好。
@@ -74,6 +80,7 @@ outcome 是对象，结束它时使用右花括号；evidence 与 outcome 在同
 actions、facts、artifact_refs、evidence 才是数组。不能关闭 summary 后再拼接 evidence。
 """
 
+EXTRACT_BATCH = BATCH_EXTRACT + EXTRACT
 EXTRACT += EXTRACTION_FORMAT_EXAMPLE
 
 VERIFY = """核验每一个事实候选与原始来源，逐项返回一条 decisions。

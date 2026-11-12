@@ -16,9 +16,14 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
 from . import prompts as prompt_text
-from .contracts import Extraction, FactCandidate, Scope, StoredMemory, Verification, utcnow
+from .contracts import (
+    BatchExtraction, Extraction, FactCandidate, Scope, StoredMemory, Verification, utcnow,
+)
 from .prompts import EXTRACT, MEMORY_SYSTEM, PROMPT_VERSION, REPAIR, VERIFY
 from .storage import Storage, digest, encode, stable_id
+
+
+EXTRACTION_WINDOW = 12
 
 
 def direct_fact_evidence(event, sources):
@@ -186,66 +191,124 @@ class Extractor:
                     },
                 )
 
+    @staticmethod
+    def extraction_inputs(events):
+        # Old memory in a goal is never submitted to the extractor as new evidence.
+        inputs = []
+        for old in events:
+            data = old.model_dump(mode="json")
+            if old.event_type == "goal_created":
+                data["payload"] = {k: v for k, v in old.payload.items() if k != "context"}
+            data["payload"] = bounded_data(data["payload"])
+            inputs.append(data)
+        return inputs
+
+    async def check_extraction(self, extraction, event, allowed):
+        event_id = event.event_id
+        ids = [fact.candidate_id for fact in extraction.facts]
+        if len(ids) != len(set(ids)):
+            raise ValueError("DUPLICATE_CANDIDATE_ID")
+        eligible = []
+        summaries = []
+        for candidate in (*extraction.facts, *extraction.summaries):
+            # Old facts and summaries cannot be new evidence; discard them before
+            # validating quotes that will never be used for this event.
+            if not any(e.event_id == event_id for e in candidate.evidence):
+                continue
+            sources = []
+            for evidence in candidate.evidence:
+                try:
+                    source = await self.io(self.storage.source, evidence, allowed)
+                    sources.append(source)
+                    if source.quote != evidence.quote:
+                        self.observer.emit("memory.source_quote_restored", data={
+                            "source_event_id": evidence.event_id, "pointer": evidence.pointer,
+                            "method": "unique_markdown_bold_span",
+                        })
+                except ValueError as error:
+                    raise MemoryValidationError(
+                        str(error), invalid_evidence=evidence.model_dump(mode="json")
+                    ) from error
+            candidate = candidate.model_copy(update={
+                "evidence": [e.model_copy(update={"quote": s.quote})
+                             for e, s in zip(candidate.evidence, sources, strict=True)],
+            })
+            if isinstance(candidate, FactCandidate) and direct_fact_evidence(event, sources):
+                eligible.append(candidate)
+            elif not isinstance(candidate, FactCandidate):
+                summaries.append(candidate)
+        return Extraction(facts=eligible, summaries=summaries)
+
+    async def extract_batch(self, event):
+        event_ids = await self.io(self.storage.batch_events, event, EXTRACTION_WINDOW)
+        if len(event_ids) < 2:
+            return
+        rows = await self.io(
+            self.storage.event_rows,
+            request_id=event.request_id,
+            conversation_id=event.conversation_id,
+            through_event_id=event_ids[0],
+            limit=EXTRACTION_WINDOW + 1 - len(event_ids),
+        )
+        events = {}
+        history_ids = [row["event_id"] for row in reversed(rows) if row["event_id"] != event.event_id]
+        for event_id in history_ids + event_ids:
+            events[event_id] = await self.io(self.storage.load_event, event_id)
+        prefixes = {}
+        prefix = {}
+        for event_id, item in events.items():
+            prefix[event_id] = item
+            if event_id in event_ids:
+                prefixes[event_id] = prefix.copy()
+
+        async def validate(batch):
+            if sorted(entry.event_id for entry in batch.events) != sorted(event_ids):
+                raise ValueError("INVALID_EXTRACTION_BATCH_EVENTS")
+            return {
+                entry.event_id: await self.check_extraction(
+                    entry, events[entry.event_id], prefixes[entry.event_id]
+                )
+                for entry in batch.events
+            }
+
+        try:
+            extractions, name = await self.call(
+                "memory_extract", prompt_text.EXTRACT_BATCH,
+                {"new_event_ids": event_ids, "events": self.extraction_inputs(events.values())},
+                BatchExtraction, validate=validate,
+            )
+        except ModelCallError as error:
+            if error.code not in {"MODEL_RESPONSE_INVALID", "MODEL_RESPONSE_TRUNCATED"}:
+                raise
+            await self.io(self.storage.unbatch_events, event_ids)
+            self.observer.emit("memory.extract_batch_fallback", data={
+                "reason": error.code, "event_count": len(event_ids),
+            })
+            return
+        await self.io(self.storage.save_batch, extractions, encode({"extractor": name}))
+
     async def extract(self, state):
         event_id = state["event_id"]
         event = await self.io(self.storage.load_event, event_id)
         rows = await self.io(
             self.storage.event_rows,
             request_id=event.request_id,
+            conversation_id=event.conversation_id,
             through_event_id=event_id,
-            limit=12,
+            limit=EXTRACTION_WINDOW,
         )
         allowed = {}
         for row in rows:
             old = await self.io(self.storage.load_event, row["event_id"])
             allowed[old.event_id] = old
-        # Old memory in a goal is never submitted to the extractor as new evidence.
-        inputs = []
-        for old in allowed.values():
-            data = old.model_dump(mode="json")
-            if old.event_type == "goal_created":
-                data["payload"] = {k: v for k, v in old.payload.items() if k != "context"}
-            data["payload"] = bounded_data(data["payload"])
-            inputs.append(data)
+        inputs = self.extraction_inputs(allowed.values())
         job = await self.io(self.storage.job, event_id)
         import json
 
         info = json.loads(job["model_info"] or "{}")
 
         async def checked_extraction(extraction):
-            ids = [fact.candidate_id for fact in extraction.facts]
-            if len(ids) != len(set(ids)):
-                raise ValueError("DUPLICATE_CANDIDATE_ID")
-            eligible = []
-            summaries = []
-            for candidate in (*extraction.facts, *extraction.summaries):
-                # Old facts and summaries cannot be new evidence; discard them before
-                # validating quotes that will never be used for this event.
-                if not any(e.event_id == event_id for e in candidate.evidence):
-                    continue
-                sources = []
-                for evidence in candidate.evidence:
-                    try:
-                        source = await self.io(self.storage.source, evidence, allowed)
-                        sources.append(source)
-                        if source.quote != evidence.quote:
-                            self.observer.emit("memory.source_quote_restored", data={
-                                "source_event_id": evidence.event_id, "pointer": evidence.pointer,
-                                "method": "unique_markdown_bold_span",
-                            })
-                    except ValueError as error:
-                        raise MemoryValidationError(
-                            str(error), invalid_evidence=evidence.model_dump(mode="json")
-                        ) from error
-                candidate = candidate.model_copy(update={
-                    "evidence": [e.model_copy(update={"quote": s.quote})
-                                 for e, s in zip(candidate.evidence, sources, strict=True)],
-                })
-                if isinstance(candidate, FactCandidate) and direct_fact_evidence(event, sources):
-                    eligible.append(candidate)
-                elif not isinstance(candidate, FactCandidate):
-                    summaries.append(candidate)
-            return extraction.model_copy(update={"facts": eligible, "summaries": summaries})
+            return await self.check_extraction(extraction, event, allowed)
 
         extraction = None
         if job["extraction"]:

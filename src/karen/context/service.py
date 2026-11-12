@@ -48,12 +48,13 @@ class ContextMemory:
         self.embeddings = embeddings
         self.observer = observer or Observer()
         self.storage = Storage(self.root_dir)
-        self._queue = asyncio.Queue(maxsize=256)
+        self._queue = asyncio.Queue()
         self._pending = {}
         self._identities = {}
         self._sequence = 0
         self._pending_bytes = 0
         self._raw_failures = {}
+        self._release_failures = set()
         self._trace_links = {}
         self._io_tasks = set()
         self._foreground_count = 0
@@ -116,7 +117,7 @@ class ContextMemory:
         if not self._started or self._closing:
             raise RuntimeError("MEMORY_NOT_ACCEPTING_REQUESTS")
 
-    def submit(self, event: ContextEvent) -> WriteReceipt:
+    def submit(self, event: ContextEvent, *, deferred=False, raw_only=False) -> WriteReceipt:
         self._require_started()
         # Serialize/validate once to isolate all nested mutable application data.
         paths = []
@@ -130,14 +131,15 @@ class ContextMemory:
                 raise ValueError("DUPLICATE_EVENT_MISMATCH")
             return receipt
         size = len(encode(data).encode())
-        if self._queue.full() or self._pending_bytes + size > 8 * 1024 * 1024:
+        if len(self._pending) >= 256 or self._pending_bytes + size > 8 * 1024 * 1024:
             raise MemoryQueueFull("MEMORY_QUEUE_FULL")
         self._sequence += 1
         receipt = WriteReceipt(event_id=event.event_id, sequence=self._sequence)
         self._identities[event.event_id] = (checksum, receipt)
         self._pending[event.event_id] = (event, receipt, utcnow(), size)
         self._pending_bytes += size
-        self._queue.put_nowait(event.event_id)
+        derived = "skipped" if raw_only else "held" if deferred else "pending"
+        self._queue.put_nowait((event.event_id, derived))
         self._trace_links[event.event_id] = self.observer.context()
         self.observer.emit(
             "memory.submitted",
@@ -149,6 +151,11 @@ class ContextMemory:
             },
         )
         return receipt
+
+    def finish_request(self, conversation_id, request_id):
+        self._require_started()
+        # Use the raw writer's FIFO so all prior events are durable before release.
+        self._queue.put_nowait((None, (conversation_id, request_id)))
 
     @asynccontextmanager
     async def foreground(self):
@@ -165,8 +172,13 @@ class ContextMemory:
 
     async def _write_raw(self):
         while True:
-            event_id = await self._queue.get()
+            event_id, state = await self._queue.get()
             try:
+                if event_id is None:
+                    await self._io(self.storage.release_request, *state)
+                    self._release_failures.discard(state)
+                    self._wake.set()
+                    continue
                 event, receipt, submitted, _ = self._pending[event_id]
                 link = self._trace_links.get(event_id, {})
                 with self.observer.span(
@@ -178,14 +190,21 @@ class ContextMemory:
                     source_trace_id=link.get("trace_id"),
                     source_span_id=link.get("span_id"),
                 ):
-                    await self._io(self.storage.append, event, receipt.sequence, submitted)
+                    await self._io(self.storage.append, event, receipt.sequence, submitted, state)
                     self.observer.emit(
                         "memory.persisted", data={"sequence": receipt.sequence, "raw": "persisted"}
                     )
                 _, _, _, size = self._pending.pop(event_id)
                 self._pending_bytes -= size
+                if state == "skipped":
+                    self._trace_links.pop(event_id, None)
                 self._wake.set()
             except Exception:
+                if event_id is None:
+                    self._release_failures.add(state)
+                    self.observer.emit("memory.request_release_failed", status="failed",
+                                       data={"request_id": state[1]})
+                    continue
                 self._raw_failures[event_id] = "MEMORY_PERSISTENCE_FAILED"
                 self.observer.emit(
                     "memory.persistence_failed", status="failed", data={"event_id": event_id}
@@ -220,7 +239,7 @@ class ContextMemory:
                     source_span_id=link.get("span_id"),
                     attempt=job["attempts"] + 1,
                 ):
-                    await self._derive_job(job)
+                    await self._derive_job(job, event)
                 self._trace_links.pop(event_id, None)
             except asyncio.CancelledError:
                 raise
@@ -238,7 +257,9 @@ class ContextMemory:
                 if job["derived"] == "committed":
                     values["index_state"] = "failed" if terminal else "partial"
                 else:
-                    values["derived"] = "failed" if terminal else "pending"
+                    values["derived"] = (
+                        "failed" if terminal else "batched" if job["derived"] == "batched" else "pending"
+                    )
                 await self._io(self.storage.update_job, event_id, **values)
                 with self.observer.span(
                     "memory.retry",
@@ -262,9 +283,11 @@ class ContextMemory:
                 if terminal:
                     self._trace_links.pop(event_id, None)
 
-    async def _derive_job(self, job):
+    async def _derive_job(self, job, event):
         event_id = job["event_id"]
-        if job["derived"] in {"pending", "extracting"}:
+        if job["derived"] == "batched":
+            await self._extractor.extract_batch(event)
+        if job["derived"] in {"pending", "extracting", "batched"}:
             await self._extractor.graph.ainvoke({"event_id": event_id})
         job = await self._io(self.storage.job, event_id)
         if job["derived"] == "committed":
@@ -353,7 +376,7 @@ class ContextMemory:
         return WriteStatus(
             receipt=receipt,
             raw="persisted",
-            derived=job["derived"],
+            derived="pending" if job["derived"] == "batched" else job["derived"],
             index=job["index_state"],
             attempts=job["attempts"],
             error_code=job["error_code"],
@@ -367,11 +390,14 @@ class ContextMemory:
         receipts = [r for _, r in self._identities.values() if r.sequence <= watermark]
         if receipt is not None:
             receipts = [receipt]
+        await self._queue.join()
+        if self._release_failures:
+            raise PersistenceError("MEMORY_REQUEST_RELEASE_FAILED")
         while True:
             statuses = [await self.write_status(r) for r in receipts]
             if all(
                 s.raw == "failed"
-                or s.derived in {"failed", "skipped"}
+                or s.derived in {"failed", "skipped", "held"}
                 or (s.derived == "committed" and s.index in {"indexed", "failed"})
                 for s in statuses
             ):
@@ -573,6 +599,8 @@ class ContextMemory:
         self._release_lock()
         if failed:
             raise PersistenceError("MEMORY_PERSISTENCE_FAILED:" + ",".join(failed))
+        if self._release_failures:
+            raise PersistenceError("MEMORY_REQUEST_RELEASE_FAILED")
 
     def _release_lock(self):
         if self._lock_fd is not None:

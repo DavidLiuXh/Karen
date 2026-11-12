@@ -225,7 +225,7 @@ class Storage:
         finally:
             os.close(fd)
 
-    def append(self, event: ContextEvent, sequence: int, submitted_at: datetime):
+    def append(self, event: ContextEvent, sequence: int, submitted_at: datetime, derived="pending"):
         with self.lock:
             original = event.model_dump(mode="json")
             date = event.occurred_at.astimezone(ZoneInfo(event.timezone)).date().isoformat()
@@ -235,6 +235,7 @@ class Storage:
                 "sequence": sequence,
                 "submitted_at": submitted_at.isoformat(),
                 "hash": digest(original),
+                "derived": derived,
             }
             raw = (encode(frame) + "\n").encode()
             path = self.safe_path(relative)
@@ -281,7 +282,11 @@ class Storage:
                         result,
                     ),
                 )
-                conn.execute("INSERT INTO write_jobs(event_id) VALUES(?)", (event.event_id,))
+                derived = frame.get("derived", "pending")
+                conn.execute(
+                    "INSERT INTO write_jobs(event_id,derived,index_state) VALUES(?,?,?)",
+                    (event.event_id, derived, "indexed" if derived == "skipped" else "pending"),
+                )
             conn.execute(
                 "INSERT INTO files VALUES(?,?) ON CONFLICT(relative_file) DO UPDATE SET "
                 "watermark=max(watermark,excluded.watermark)",
@@ -431,12 +436,51 @@ class Storage:
                 (*values.values(), event_id),
             )
 
+    def release_request(self, conversation_id, request_id):
+        with self.connection() as conn:
+            conn.execute(
+                "UPDATE write_jobs SET derived='batched' WHERE derived='held' AND event_id IN "
+                "(SELECT event_id FROM events WHERE conversation_id=? AND request_id=?)",
+                (conversation_id, request_id),
+            )
+
+    def batch_events(self, event, limit):
+        with self.connection() as conn:
+            return [
+                row[0] for row in conn.execute(
+                    "SELECT e.event_id FROM events e JOIN write_jobs j USING(event_id) "
+                    "WHERE e.conversation_id=? AND e.request_id=? AND j.derived='batched' "
+                    "ORDER BY e.sequence LIMIT ?",
+                    (event.conversation_id, event.request_id, limit),
+                )
+            ]
+
+    def save_batch(self, extractions, model_info):
+        with self.connection() as conn:
+            conn.executemany(
+                "UPDATE write_jobs SET derived='extracting',extraction=?,model_info=? "
+                "WHERE event_id=? AND derived='batched'",
+                [(extraction.model_dump_json(), model_info, event_id)
+                 for event_id, extraction in extractions.items()],
+            )
+
+    def unbatch_events(self, event_ids):
+        with self.connection() as conn:
+            conn.executemany(
+                "UPDATE write_jobs SET derived='pending' WHERE event_id=? AND derived='batched'",
+                [(event_id,) for event_id in event_ids],
+            )
+
     def next_job(self):
         with self.connection() as conn:
             row = conn.execute(
                 "SELECT j.* FROM write_jobs j JOIN events e USING(event_id) "
-                "WHERE ((derived IN ('pending','extracting')) OR "
-                "(derived='committed' AND index_state IN ('pending','partial'))) "
+                "WHERE (j.derived IN ('pending','extracting') OR "
+                "(j.derived='committed' AND j.index_state IN ('pending','partial')) OR "
+                "(j.derived='batched' AND NOT EXISTS ("
+                "SELECT 1 FROM events earlier JOIN write_jobs k USING(event_id) "
+                "WHERE earlier.conversation_id=e.conversation_id AND earlier.request_id=e.request_id "
+                "AND earlier.sequence<e.sequence AND k.derived='batched'))) "
                 "AND next_attempt_at<=? ORDER BY e.sequence LIMIT 1",
                 (utcnow().timestamp(),),
             ).fetchone()
@@ -606,7 +650,8 @@ class Storage:
                 ).fetchall()
             coverage = {
                 "bm25_available": available,
-                "derived_pending": sum(r[2] for r in jobs if r[0] in {"pending", "extracting"}),
+                "derived_pending": sum(r[2] for r in jobs if r[0] in {"pending", "extracting", "batched"}),
+                "derived_held": sum(r[2] for r in jobs if r[0] == "held"),
                 "derived_failed": sum(r[2] for r in jobs if r[0] == "failed"),
                 "index_pending": sum(
                     r[2] for r in jobs if r[0] == "committed" and r[1] != "indexed"

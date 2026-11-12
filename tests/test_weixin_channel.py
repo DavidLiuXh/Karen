@@ -480,7 +480,10 @@ async def test_real_karen_clarification_survives_restart_and_executes_once(tmp_p
         async def foreground(self):
             yield
 
-        def submit(self, event):
+        def finish_request(self, conversation_id, request_id):
+            pass
+
+        def submit(self, event, **kwargs):
             captured.append(event)
             return SimpleNamespace(event_id=f"event-{len(captured)}")
 

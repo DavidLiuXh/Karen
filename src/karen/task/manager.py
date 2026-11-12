@@ -180,11 +180,13 @@ class TaskManager:
         self._observe(task)
         self.events.put_nowait(event)
 
-    def cancel(self, task_id):
+    def cancel(self, task_id, *, finish_memory=True):
         task = self.tasks[task_id]
         if task.closed or task.state in {"completed", "failed", "cancelled"}:
             return
         task.token.cancel()
+        if finish_memory and (task.state == "waiting" or (task.state == "queued" and task.session.questions)):
+            self._finish_memory_request(task)
         if task.state == "waiting":
             task.session = task.session.model_copy(
                 update={
@@ -204,8 +206,15 @@ class TaskManager:
         task = self.tasks[task_id]
         if task.state in {"queued", "running"}:
             raise ValueError("TASK_NOT_WAITING")
+        if task.state == "waiting":
+            self._finish_memory_request(task)
         task.closed = True
         self._observe(task)
+
+    def _finish_memory_request(self, task):
+        finish = getattr(self.agent, "finish_memory_request", None)
+        if finish is not None:
+            finish(task.session)
 
     async def drain(self):
         await asyncio.gather(
@@ -215,5 +224,5 @@ class TaskManager:
     async def close(self):
         self._closed = True
         for task_id in self.tasks:
-            self.cancel(task_id)
+            self.cancel(task_id, finish_memory=False)
         await self.drain()

@@ -56,6 +56,28 @@ class MemoryModel:
         self.time_range = None
         self.fact_key = "profile.residence.city"
 
+    def extract_event(self, event):
+        text = event["payload"].get("content", "")
+        if not text:
+            return {"facts": [], "summaries": []}
+        evidence = [
+            {"event_id": event["event_id"], "pointer": "/payload/content", "quote": text}
+        ]
+        city = "上海" if "上海" in text else "北京" if "北京" in text else None
+        facts = []
+        if city:
+            facts.append({
+                "candidate_id": "city",
+                "fact_key": self.fact_key,
+                "value": city,
+                "text": text,
+                "evidence": evidence,
+            })
+        return {
+            "facts": facts,
+            "summaries": [{"text": text, "event_kind": "statement", "evidence": evidence}],
+        }
+
     async def generate(self, request):
         self.requests.append(request)
         data = request.input_data
@@ -64,31 +86,13 @@ class MemoryModel:
                 await self.slow_extract.wait()
             if self.fail_extract:
                 raise ModelCallError("TEST_AUTH_FAILED", "secret", retryable=False)
-            event = next(e for e in data["events"] if e["event_id"] == data["new_event_id"])
-            text = event["payload"].get("content", "")
-            if not text:
-                return ModelResponse({"facts": [], "summaries": []})
-            evidence = [
-                {"event_id": event["event_id"], "pointer": "/payload/content", "quote": text}
-            ]
-            facts = []
-            city = "上海" if "上海" in text else "北京" if "北京" in text else None
-            if city:
-                facts.append(
-                    {
-                        "candidate_id": "city",
-                        "fact_key": self.fact_key,
-                        "value": city,
-                        "text": text,
-                        "evidence": evidence,
-                    }
-                )
-            return ModelResponse(
-                {
-                    "facts": facts,
-                    "summaries": [{"text": text, "event_kind": "statement", "evidence": evidence}],
-                }
-            )
+            if "new_event_ids" in data:
+                return ModelResponse({"events": [
+                    {"event_id": item["event_id"], **self.extract_event(item)}
+                    for item in data["events"] if item["event_id"] in data["new_event_ids"]
+                ]})
+            item = next(e for e in data["events"] if e["event_id"] == data["new_event_id"])
+            return ModelResponse(self.extract_event(item))
         if request.role == "memory_verify":
             decisions = []
             for fact in data["candidates"]:
@@ -271,6 +275,63 @@ async def test_submit_is_isolated_nonblocking_and_close_persists_without_model(m
     await asyncio.wait_for(recovered.flush(), 3)
     assert (await recovered.write_status(receipt)).index == "indexed"
     await recovered.close()
+
+
+async def test_request_batch_survives_restart_and_preserves_event_evidence(memory):
+    service, model = memory
+    first = service.submit(event("我长期住在北京"), deferred=True)
+    second = service.submit(event("你刚才提到了北京", kind="assistant_message"), deferred=True)
+    other = service.submit(event("另一项任务", request="other"), deferred=True)
+    await service.flush()
+    assert (await service.write_status(first)).derived == "held"
+    assert service.storage.load_event(first.event_id).payload["content"] == "我长期住在北京"
+    assert not model.requests
+    await service.close()
+
+    recovered = ContextMemory(
+        root_dir=service.root_dir, model=model, embeddings=LocalEmbeddings()
+    )
+    await recovered.start()
+    try:
+        assert (await recovered.write_status(second)).derived == "held"
+        recovered.finish_request("conversation", "task-1")
+        await recovered.flush()
+        extracts = [r.input_data for r in model.requests if r.role == "memory_extract"]
+        assert [r["new_event_ids"] for r in extracts] == [[first.event_id, second.event_id]]
+        assert (await recovered.write_status(other)).derived == "held"
+        _, memories, _ = recovered.storage.snapshot()
+        m1 = [m for m in memories.values() if m.layer == "m1"]
+        assert len(m1) == 1 and m1[0].value == "北京"
+        assert {source.event_id for source in m1[0].sources} == {first.event_id}
+        assert {m.sources[0].event_id for m in memories.values() if m.layer == "m2"} == {
+            first.event_id, second.event_id,
+        }
+    finally:
+        await recovered.close()
+
+
+async def test_invalid_batch_output_falls_back_to_event_extraction(memory, monkeypatch):
+    service, model = memory
+    original = model.generate
+    batch_calls = 0
+
+    async def generate(request):
+        nonlocal batch_calls
+        if request.role == "memory_extract" and "new_event_ids" in request.input_data:
+            batch_calls += 1
+            return ModelResponse({"events": []})
+        return await original(request)
+
+    monkeypatch.setattr(model, "generate", generate)
+    first = service.submit(event("我长期住在北京"), deferred=True)
+    second = service.submit(event("已经记录", kind="assistant_message"), deferred=True)
+    service.finish_request("conversation", "task-1")
+    await service.flush()
+    assert batch_calls == 2
+    extracts = [r.input_data["new_event_id"] for r in model.requests if r.role == "memory_extract"]
+    assert extracts == [first.event_id, second.event_id]
+    assert (await service.write_status(first)).index == "indexed"
+    assert (await service.write_status(second)).index == "indexed"
 
 
 async def test_full_fact_extraction_change_recall_and_exact_source_lookup(memory):
@@ -748,6 +809,10 @@ async def test_ambiguous_history_clarifies_then_reassesses_current_task(memory):
         )
         assert turn.result is None and "任务" in turn.session.questions[0]
         assert intent_model.assessments == [] and executor.requests == []
+        await service._queue.join()
+        waiting_rows = service.storage.event_rows(request_id=turn.session.request_id)
+        assert len(waiting_rows) == 2
+        assert all(service.storage.job(row["event_id"])["derived"] == "held" for row in waiting_rows)
         model.history_status = "selected"
         turn = await agent.advance(turn.session, "是给甲客户的那封")
         assert turn.result.execution_status == "COMPLETED"
@@ -769,6 +834,53 @@ async def test_ambiguous_history_clarifies_then_reassesses_current_task(memory):
         row["event_type"] for row in service.storage.event_rows(request_id=turn.session.request_id)
     }
     assert types == {"user_message", "assistant_message", "goal_created", "task_result"}
+    batches = [
+        r.input_data for r in model.requests
+        if r.role == "memory_extract" and "new_event_ids" in r.input_data
+    ]
+    assert len(batches) == 1 and len(batches[0]["new_event_ids"]) == 5
+    assert [item["event_type"] for item in batches[0]["events"]] == [
+        "user_message", "assistant_message", "user_message", "goal_created", "task_result",
+    ]
+
+
+@pytest.mark.parametrize("command", ["/cancel", "/finish"])
+async def test_explicitly_closing_waiting_request_releases_memory(memory, command):
+    from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings
+    from test_execution import ready
+
+    from karen import IntentRecognizer, IntentSession, Karen
+    from karen.task import TaskManager
+    from karen.task.interaction import TaskInteraction
+
+    service, model = memory
+    service.submit(event("给甲客户写中文邮件", request="old-task"))
+    await service.flush()
+    model.dependency, model.history_status = "needed", "ambiguous"
+    model.requires_task_selection = True
+    executor = FakeModelClient()
+    engine = DynamicGraphEngine(
+        config=EngineConfig(runs_dir=service.root_dir / "runs"),
+        models=ModelBindings(executor, executor),
+    )
+    agent = Karen(intent=IntentRecognizer(TaskIntentModel([ready()])), engine=engine, memory=service)
+    manager = TaskManager(agent)
+    interaction = TaskInteraction(manager, IntentSession(timezone="Asia/Shanghai"))
+    try:
+        await interaction.accept_input("/new 改一下刚才那封邮件")
+        await manager.drain()
+        task = next(iter(manager.tasks.values()))
+        assert task.state == "waiting"
+        await service.flush()
+        assert not any("new_event_ids" in r.input_data for r in model.requests)
+        await interaction.accept_input(f"{command} {task.task_id}")
+        await service.flush()
+        batches = [r.input_data["new_event_ids"] for r in model.requests
+                   if "new_event_ids" in r.input_data]
+        assert len(batches) == 1 and len(batches[0]) == 2
+        assert not executor.requests
+    finally:
+        await manager.close()
 
 
 async def test_independent_new_task_goal_does_not_inherit_previous_task_messages(memory):

@@ -68,7 +68,7 @@ class WriteReceipt(Contract):
 class WriteStatus(Contract):
     receipt: WriteReceipt
     raw: Literal["queued", "persisted", "failed"] = "queued"
-    derived: Literal["pending", "extracting", "committed", "skipped", "failed"] = "pending"
+    derived: Literal["pending", "held", "extracting", "committed", "skipped", "failed"] = "pending"
     index: Literal["pending", "indexed", "partial", "failed"] = "pending"
     attempts: int = 0
     error_code: str | None = None
@@ -209,6 +209,14 @@ class SummaryDraft(Contract):
 class Extraction(Contract):
     facts: list[FactCandidate] = Field(default_factory=list)
     summaries: list[SummaryDraft] = Field(default_factory=list)
+
+
+class EventExtraction(Extraction):
+    event_id: str
+
+
+class BatchExtraction(Contract):
+    events: list[EventExtraction]
 
 
 class FactDecision(Contract):

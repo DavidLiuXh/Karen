@@ -79,6 +79,7 @@ WEIXIN_MODEL_FAILED = "本轮未完成（{code}）。"
 WEIXIN_TURN_FAILED = "本轮未完成（{code}），请重新发送请求。"
 
 # Execution results
+MODEL_INPUT_TOO_LARGE = "资料超出模型输入上限。请缩小范围，或分段读取和处理后再汇总。"
 TOOL_TRANSPORT_FAILED = "工具服务连接或传输失败，请检查网络后重试。"
 
 TOOL_RESPONSE_INVALID = "工具服务返回了无法解析的数据。"

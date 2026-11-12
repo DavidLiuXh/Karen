@@ -8,6 +8,7 @@ import sqlite3
 import sys
 import threading
 from contextlib import AsyncExitStack, nullcontext
+from dataclasses import replace
 from pathlib import Path
 from zoneinfo import ZoneInfoNotFoundError
 
@@ -17,7 +18,6 @@ from dynamic_graph.tools import (
     file_read_text_tool,
     file_write_text_tool,
     tavily_search_tool,
-    web_fetch_tool,
 )
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
@@ -38,6 +38,7 @@ from .schedule import ScheduledTasks
 from .task import DEFAULT_MAX_CONCURRENT_TASKS, TaskManager
 from .task.console import run_console
 from .task.resources import ExecutionResources
+from .tools.file_range import file_read_text_range_tool
 from .tools.git import git_clone_tool
 from .tools.gmail import GmailClient, GmailCredentials
 from .tools.gmail_tools import gmail_tools
@@ -219,20 +220,22 @@ async def converse(
         resources_guard = ExecutionResources(observer)
         for tool_factory in (
             file_read_text_tool,
+            file_read_text_range_tool,
             file_write_text_tool,
             file_create_directory_tool,
             browser_open_local_page_tool,
-            web_fetch_tool,
-            web_read_page_tool,
         ):
             definition = tool_factory()
-            if tool_factory not in {web_fetch_tool, web_read_page_tool}:
-                definition = resources_guard.file_tool(
-                    definition, write=tool_factory in {file_write_text_tool, file_create_directory_tool},
+            if tool_factory is file_read_text_tool:
+                definition = replace(
+                    definition,
+                    description=definition.description + " For large files or unknown sizes, "
+                    "use file.read_text_range before sending content to a model.",
                 )
-            else:
-                definition = resources_guard.independent_read(definition)
-            engine.register_tool(definition)
+            engine.register_tool(resources_guard.file_tool(
+                definition, write=tool_factory in {file_write_text_tool, file_create_directory_tool},
+            ))
+        engine.register_tool(resources_guard.independent_read(web_read_page_tool()))
         engine.register_tool(resources_guard.file_tool(git_clone_tool(), write=True))
         Path(engine.config.runs_dir).mkdir(parents=True, exist_ok=True)
         engine.register_tool(resources_guard.file_tool(

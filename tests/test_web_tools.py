@@ -86,3 +86,23 @@ async def test_tool_registered_and_fetch_metadata_preserved(monkeypatch):
     from jsonschema import validate
 
     validate(result, tool.output_schema)
+
+
+def test_closed_details_do_not_displace_visible_results():
+    menu = '<a href="/filter">Hidden filter</a>' * 1500
+    result = extract_html(
+        f"""<main>
+        <details><summary>Language: Any</summary><details-menu>{menu}</details-menu></details>
+        <details open><summary>Open details</summary><p>Visible expanded text</p></details>
+        <dialog><p>Closed dialog</p></dialog>
+        <article><h2><a href="/team/repo">team/repo</a></h2><p>1,234 stars</p></article>
+        </main>""",
+        "https://example.test/trending",
+    )
+    assert not result["truncated"]
+    assert "Language: Any" in result["content"]
+    assert "Visible expanded text" in result["content"]
+    assert "Hidden filter" not in result["content"]
+    assert "Closed dialog" not in result["content"]
+    assert "https://example.test/team/repo" in result["content"]
+    assert "1,234 stars" in result["content"]

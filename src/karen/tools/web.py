@@ -17,10 +17,12 @@ class _PageText(HTMLParser):
         self.has_main = False
 
     def write(self, text):
-        if any(hidden for _, hidden, _ in self.stack):
+        if any(hidden for _, hidden, _, _ in self.stack):
+            return
+        if self.stack and self.stack[-1][3]:
             return
         self.body.append(text)
-        if any(tag == "main" or main for tag, _, main in self.stack):
+        if any(tag == "main" or main for tag, _, main, _ in self.stack):
             self.main.append(text)
 
     def handle_starttag(self, tag, attrs):
@@ -37,7 +39,7 @@ class _PageText(HTMLParser):
             "head",
         }
         hidden |= tag == "header" and not any(
-            t in {"main", "article"} or m for t, _, m in self.stack
+            t in {"main", "article"} or m for t, _, m, _ in self.stack
         )
         hidden |= attrs.get("role") in {"navigation", "banner", "contentinfo"}
         hidden |= "hidden" in attrs or attrs.get("aria-hidden", "").lower() == "true"
@@ -46,8 +48,11 @@ class _PageText(HTMLParser):
                 r"(?:display\s*:\s*none|visibility\s*:\s*hidden)", attrs.get("style", ""), re.I
             )
         )
+        hidden |= tag == "dialog" and "open" not in attrs
+        hidden |= bool(self.stack and self.stack[-1][3] and tag != "summary")
+        closed_details = tag == "details" and "open" not in attrs
         main = tag == "main" or attrs.get("role") == "main"
-        if main and not hidden and not any(h for _, h, _ in self.stack):
+        if main and not hidden and not any(h for _, h, _, _ in self.stack):
             self.has_main = True
         if tag not in {
             "area",
@@ -65,7 +70,7 @@ class _PageText(HTMLParser):
             "track",
             "wbr",
         }:
-            self.stack.append((tag, hidden, main))
+            self.stack.append((tag, hidden, main, closed_details))
         if tag in {"p", "div", "section", "article", "main", "tr", "br", "blockquote"}:
             self.write("\n")
         if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
@@ -104,7 +109,7 @@ class _PageText(HTMLParser):
                 break
 
     def handle_data(self, data):
-        if any(tag == "title" for tag, _, _ in self.stack):
+        if any(tag == "title" for tag, _, _, _ in self.stack):
             self.title.append(data)
         self.write(re.sub(r"\s+", " ", data))
 
@@ -164,7 +169,7 @@ def web_read_page_tool():
     return ToolDefinition(
         name="web.read_page",
         version="1.0.0",
-        description="Read a webpage as compact readable text, preferred for research over raw web.fetch HTML. "
+        description="Read a webpage as compact readable text for research or structured extraction. "
         "Preserves headings, links and table rows; removes scripts, SVG and navigation. "
         "Uses main content when available, otherwise cleaned document. Output limited to 24000 UTF-8 bytes; "
         "check truncated and extraction_scope. Does not execute JavaScript or guarantee complete extraction. "

@@ -241,6 +241,19 @@ async def test_question_handling_is_reconsidered_with_recalled_detail_evidence(
             memory=memory,
             executor=executor,
         )
+        from karen.workflow.contracts import WorkflowResolution
+
+        matched_inputs = []
+
+        class Workflows:
+            def submit(self, run):
+                pass
+
+            async def resolve(self, request):
+                matched_inputs.append(request.memory_context)
+                return WorkflowResolution(status="no_match", reason="fixture")
+
+        agent.workflows = Workflows()
         query = (
             "查证今天实际交通费用，然后比较差价。"
             if needs_external_data
@@ -251,6 +264,17 @@ async def test_question_handling_is_reconsidered_with_recalled_detail_evidence(
         requests = [r for r in model.requests if r.role == "intent_router"]
         assert len(requests) == 2 and "memory" not in requests[0].input_data
         evidence = requests[1].input_data["memory"]
+        full = turn.memory_result.context()
+        assert matched_inputs == [evidence]
+        assert "snapshot_revision" not in evidence and "snapshot_revision" in full
+        assert "index" not in evidence["coverage"] and "index" in full["coverage"]
+        for key in ("details", "history", "query_time_basis", "degradations"):
+            assert evidence[key] == full[key]
+        assert evidence["m2"][0]["memory"]["sources"] == full["m2"][0]["memory"]["sources"]
+        assert len(encode(evidence).encode()) < len(encode(full).encode())
+        downstream = next(r.input_data["memory"] for r in model.requests
+                          if r.role in {"intent_response", "intent"})
+        assert downstream == full
         assert any("74元" in h["memory"]["text"] for h in evidence["m2"])
         assert turn.session.routing.handling == final_handling
         assert turn.session.routing.input_types == ["question"]

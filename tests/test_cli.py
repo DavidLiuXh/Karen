@@ -909,3 +909,30 @@ def test_task_concurrency_option_rejects_zero(monkeypatch):
     with pytest.raises(SystemExit) as exit:
         cli.main()
     assert exit.value.code == 2
+
+
+def test_inline_numbered_answer_is_split_into_readable_paragraphs():
+    from types import SimpleNamespace
+
+    from karen.model.response import format_task_event
+
+    text = (
+        "依据：1）第一条跨行\n仍属于第一条；2）第二条；3）第三条。\n\n"
+        "```text\n例子：1）保留；2）保留。\n```\n\n"
+        "行内示例 `例子：1）保留；2）保留。` 和单独的条款：1）保留。"
+    )
+    expected = text.replace(
+        "依据：1）第一条跨行\n仍属于第一条；2）第二条；3）第三条。",
+        "依据：\n\n1）第一条跨行\n仍属于第一条；\n\n2）第二条；\n\n3）第三条。",
+    )
+    result = RunResult(
+        run_id="inline-list", execution_status="COMPLETED", output_complete=True,
+        outputs={"answer": text},
+    )
+    assert format_result(result) == expected
+    assert result.outputs["answer"] == text
+    direct = SimpleNamespace(
+        state="completed", error=None, turn=SimpleNamespace(result=None, response=text),
+    )
+    assert format_task_event(direct) == expected
+    assert format_task_event(direct, json_output=True) == text

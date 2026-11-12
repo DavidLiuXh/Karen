@@ -372,14 +372,6 @@ class Extractor:
                 existing.update({m.memory_id: m for m in similar})
             except Exception:
                 info["matching"] = "bm25_and_exact_keys"
-        inputs = {
-            "candidates": [c.model_dump(mode="json") for c in facts],
-            "events": [
-                bounded_data(e.model_dump(mode="json")) for e in state["allowed_events"].values()
-            ],
-            "existing": [m.context() for m in existing.values()],
-        }
-
         async def checked_verification(verification):
             if sorted(d.candidate_id for d in verification.decisions) != sorted(
                 f.candidate_id for f in facts
@@ -391,6 +383,16 @@ class Extractor:
             return verification
 
         if facts:
+            cited_event_ids = {source.event_id for fact in facts for source in fact.evidence}
+            inputs = {
+                "candidates": [fact.model_dump(mode="json") for fact in facts],
+                "events": [
+                    bounded_data(event.model_dump(mode="json"))
+                    for event in state["allowed_events"].values()
+                    if event.event_id in cited_event_ids
+                ],
+                "existing": [memory.context() for memory in existing.values()],
+            }
             verification, name = await self.call(
                 "memory_verify", VERIFY, inputs, Verification, validate=checked_verification
             )

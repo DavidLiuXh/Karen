@@ -2733,3 +2733,45 @@ async def test_retrieved_old_sources_precede_a_full_recent_history_window(memory
     assert anchors[0]['event_id'] == receipt.event_id
     assert len(anchors) == 24
     assert any(m['event_id'] == receipt.event_id for m in result.history.messages)
+
+
+async def test_verify_receives_only_cited_events_and_keeps_source_context(memory, monkeypatch):
+    service, model = memory
+    await service.flush(service.submit(event("我长期住在北京", request="original")))
+    unrelated = service.submit(event("无关任务参数。" * 300), raw_only=True)
+    context = event("你说的旧地址是北京吗？", kind="assistant_message")
+    cited = service.submit(context, raw_only=True)
+    original = model.generate
+
+    async def generate(request):
+        response = await original(request)
+        if request.role == "memory_extract":
+            for fact in response.payload["facts"]:
+                fact["evidence"][0]["quote"] = "我已经从北京搬到上海了"
+                fact["evidence"].append({
+                    "event_id": cited.event_id,
+                    "pointer": "/payload/content",
+                    "quote": context.payload["content"],
+                })
+        return response
+
+    monkeypatch.setattr(model, "generate", generate)
+    text = "不是计划，我已经从北京搬到上海了，旧地址不再使用。"
+    current = service.submit(event(text))
+    await service.flush(current)
+
+    extraction = [r.input_data for r in model.requests if r.role == "memory_extract"][-1]
+    verification = [r.input_data for r in model.requests if r.role == "memory_verify"][-1]
+    assert {e["event_id"] for e in extraction["events"]} == {
+        unrelated.event_id, cited.event_id, current.event_id,
+    }
+    assert {e["event_id"]: e["payload"]["content"] for e in verification["events"]} == {
+        current.event_id: text,
+        cited.event_id: context.payload["content"],
+    }
+    assert {e["timezone"] for e in verification["events"]} == {"Asia/Shanghai"}
+    assert [old["value"] for old in verification["existing"]] == ["北京"]
+    _, stored, _ = service.storage.snapshot()
+    active = next(m for m in stored.values() if m.layer == "m1" and m.state == "active")
+    assert active.value == "上海"
+    assert {source.event_id for source in active.sources} == {current.event_id, cited.event_id}

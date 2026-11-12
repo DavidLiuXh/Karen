@@ -21,29 +21,28 @@ class HobbyModel(MemoryModel):
         super().__init__()
         self.kind = "facts"
 
+    def extract_event(self, source):
+        result = super().extract_event(source)
+        text = source["payload"].get("content", "")
+        if source["event_type"] == "user_message" and text.startswith("我喜欢"):
+            result["facts"] = [
+                {
+                    "candidate_id": "hobby",
+                    "fact_key": "interest." + text[3:],
+                    "value": text[3:],
+                    "text": text,
+                    "evidence": [
+                        {
+                            "event_id": source["event_id"],
+                            "pointer": "/payload/content",
+                            "quote": text,
+                        }
+                    ],
+                }
+            ]
+        return result
+
     async def generate(self, request):
-        if request.role == "memory_extract":
-            response = await super().generate(request)
-            data = request.input_data
-            source = next(e for e in data["events"] if e["event_id"] == data["new_event_id"])
-            text = source["payload"].get("content", "")
-            if source["event_type"] == "user_message" and text.startswith("我喜欢"):
-                response.payload["facts"] = [
-                    {
-                        "candidate_id": "hobby",
-                        "fact_key": "interest." + text[3:],
-                        "value": text[3:],
-                        "text": text,
-                        "evidence": [
-                            {
-                                "event_id": source["event_id"],
-                                "pointer": "/payload/content",
-                                "quote": text,
-                            }
-                        ],
-                    }
-                ]
-            return response
         if request.role == "memory_verify":
             self.requests.append(request)
             return ModelResponse(

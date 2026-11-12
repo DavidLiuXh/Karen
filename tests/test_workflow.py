@@ -514,7 +514,10 @@ async def test_agent_fast_path_parameter_dialogue_and_raw_memory_capture(tmp_pat
         async def foreground(self):
             yield
 
-        def submit(self, event):
+        def finish_request(self, conversation_id, request_id):
+            pass
+
+        def submit(self, event, **kwargs):
             captured.append(event)
             return None
 

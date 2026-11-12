@@ -530,7 +530,10 @@ async def test_approval_of_a_normal_completed_task_links_raw_event_and_does_not_
         async def foreground(self):
             yield
 
-        def submit(self, event):
+        def finish_request(self, conversation_id, request_id):
+            pass
+
+        def submit(self, event, **kwargs):
             captured.append(event)
             return SimpleNamespace(event_id="raw-" + event.request_id)
 

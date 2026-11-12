@@ -60,7 +60,7 @@ class Karen:
             async with self.memory.foreground():
                 yield
 
-    def _capture(self, session, event_type, payload, warnings, *, occurred_at=None):
+    def _capture(self, session, event_type, payload, warnings, *, occurred_at=None, raw_only=False):
         if self.memory is None:
             return None
         try:
@@ -73,7 +73,9 @@ class Karen:
                     event_type=event_type,
                     payload=payload,
                     **({"occurred_at": occurred_at} if occurred_at else {}),
-                )
+                ),
+                deferred=not raw_only,
+                raw_only=raw_only
             )
         except MemoryError as exc:
             warnings.append(str(exc))
@@ -91,8 +93,15 @@ class Karen:
             request_id=session.request_id,
         ):
             self.observer.emit("response", data={"text": text})
-            self._capture(session, "assistant_message", {"content": text}, warnings)
+            # Direct replies were captured with the request. Retain the rendered
+            # execution response in m3 without extracting the same result again.
+            if session.reply is None:
+                self._capture(session, "assistant_message", {"content": text}, warnings, raw_only=True)
         return tuple(warnings)
+
+    def finish_memory_request(self, session):
+        if self.memory is not None:
+            self.memory.finish_request(session.conversation_id, session.request_id)
 
     async def _recorded_task_history(self, session, user_input, *, search_quotes=False):
         if self.observer.root_dir is None:
@@ -166,71 +175,80 @@ class Karen:
                 "input.received", data={"text": user_input, "timezone": session.timezone}
             )
             async with self._foreground():
+                keep_open = False
                 try:
-                    routing = routing or await self.intent.classify(session, user_input)
-                except BaseException:
-                    # Even a failed classifier must not discard the user's raw input.
-                    with self.observer.span("turn", request_id=session.request_id):
+                    try:
+                        routing = routing or await self.intent.classify(session, user_input)
+                    except BaseException:
+                        # Even a failed classifier must not discard the user's raw input.
+                        with self.observer.span("turn", request_id=session.request_id):
+                            self.observer.emit(
+                                "turn.input", data={"text": user_input, "timezone": session.timezone}
+                            )
+                            self._capture(
+                                session,
+                                "user_message",
+                                {"content": user_input},
+                                [],
+                                occurred_at=received_at,
+                            )
+                            raise
+                    if continue_task and routing.task_relation != "continue":
                         self.observer.emit(
-                            "turn.input", data={"text": user_input, "timezone": session.timezone}
+                            "task.routing_bound",
+                            data={
+                                "request_id": session.request_id,
+                                "model_relation": routing.task_relation,
+                                "effective_relation": "continue",
+                                "reason": "explicit_task_assignment",
+                            },
                         )
-                        self._capture(
+                        routing = routing.model_copy(update={"task_relation": "continue"})
+                    prepared = self.intent.prepare_session(session, routing, received_at=received_at)
+                    if prepared.request_id != session.request_id and session.questions:
+                        self.finish_memory_request(session)
+                    session = prepared
+                    with self.observer.span("turn", request_id=session.request_id) as outcome:
+                        self.observer.emit(
+                            "turn.input",
+                            data={
+                                "text": user_input,
+                                "timezone": session.timezone,
+                                "time_context": session.time_context(),
+                                "clarification_round": sum(
+                                    m.role == "assistant" for m in session.messages
+                                ),
+                            },
+                        )
+                        turn = await self._advance_turn(
                             session,
-                            "user_message",
-                            {"content": user_input},
-                            [],
-                            occurred_at=received_at,
+                            user_input,
+                            policy,
+                            cancellation_token,
+                            trace_id,
+                            received_at,
+                            previous_goal=previous_goal,
+                            previous_run_id=previous_run_id,
                         )
-                        raise
-                if continue_task and routing.task_relation != "continue":
-                    self.observer.emit(
-                        "task.routing_bound",
-                        data={
-                            "request_id": session.request_id,
-                            "model_relation": routing.task_relation,
-                            "effective_relation": "continue",
-                            "reason": "explicit_task_assignment",
-                        },
-                    )
-                    routing = routing.model_copy(update={"task_relation": "continue"})
-                session = self.intent.prepare_session(session, routing, received_at=received_at)
-                with self.observer.span("turn", request_id=session.request_id) as outcome:
-                    self.observer.emit(
-                        "turn.input",
-                        data={
-                            "text": user_input,
-                            "timezone": session.timezone,
-                            "time_context": session.time_context(),
-                            "clarification_round": sum(
-                                m.role == "assistant" for m in session.messages
-                            ),
-                        },
-                    )
-                    turn = await self._advance_turn(
-                        session,
-                        user_input,
-                        policy,
-                        cancellation_token,
-                        trace_id,
-                        received_at,
-                        previous_goal=previous_goal,
-                        previous_run_id=previous_run_id,
-                    )
-                    if turn.result is not None:
-                        outcome["outcome"] = turn.result.execution_status
-                        if (
-                            turn.result.execution_status == "COMPLETED"
-                            and not turn.result.output_complete
-                        ):
-                            outcome["outcome"] = "INCOMPLETE"
-                    elif routing.handling == "cancel":
-                        outcome["outcome"] = "CANCELLED"
-                    elif turn.response is not None:
-                        outcome["outcome"] = "replied"
-                    else:
-                        outcome["outcome"] = "needs_clarification"
-                    input_outcome.update(outcome)
-                    return turn
+                        if turn.result is not None:
+                            outcome["outcome"] = turn.result.execution_status
+                            if (
+                                turn.result.execution_status == "COMPLETED"
+                                and not turn.result.output_complete
+                            ):
+                                outcome["outcome"] = "INCOMPLETE"
+                        elif routing.handling == "cancel":
+                            outcome["outcome"] = "CANCELLED"
+                        elif turn.response is not None:
+                            outcome["outcome"] = "replied"
+                        else:
+                            outcome["outcome"] = "needs_clarification"
+                        keep_open = outcome["outcome"] == "needs_clarification"
+                        input_outcome.update(outcome)
+                        return turn
+                finally:
+                    if not keep_open:
+                        self.finish_memory_request(session)
 
     async def _advance_turn(
         self,
@@ -418,6 +436,7 @@ class Karen:
             )
         if session.goal is None:
             if session.reply is not None:
+                self._capture(session, "assistant_message", {"content": session.reply}, warnings)
                 if session.routing.handling == "cancel":
                     self.observer.emit("task.cancelled", data={"scope": "pending_clarification"})
                 return TaskTurn(

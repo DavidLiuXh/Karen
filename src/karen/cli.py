@@ -24,7 +24,7 @@ from dynamic_graph.tools import (
 )
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import get_app
-from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.formatted_text import FormattedText, to_formatted_text
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
@@ -90,11 +90,15 @@ class TerminalProgress:
         self.tasks = {}
         self.app = None
 
+    def accept(self, task_id):
+        if task_id not in self.tasks:
+            self.tasks[task_id] = messages.TASK_ACCEPTED.format(task_id=task_id)
+
     def update(self, stage, task_id):
         label = messages.TASK_PROGRESS_STAGES.get(stage)
         if label is not None:
             self.tasks.pop(task_id, None)
-            self.tasks[task_id] = label
+            self.tasks[task_id] = messages.TASK_PROGRESS.format(task_id=task_id, stage=label)
             if self.app is not None:
                 self.app.invalidate()
 
@@ -102,11 +106,11 @@ class TerminalProgress:
         if self.tasks.pop(task_id, None) is not None and self.app is not None:
             self.app.invalidate()
 
-    def toolbar(self):
+    def status_line(self):
         if not self.tasks:
             return ""
         task_id = next(reversed(self.tasks))
-        text = messages.TASK_PROGRESS.format(task_id=task_id, stage=self.tasks[task_id])
+        text = self.tasks[task_id]
         width = get_app().output.get_size().columns
         while text and get_cwidth(text) >= width:
             text = text[:-1]
@@ -185,12 +189,17 @@ async def read_input(*, progress=None) -> str:
         if os.environ.get("TERM") != "dumb":
             style = "" if "NO_COLOR" in os.environ else "bold ansicyan"
             prompt = FormattedText([(style, messages.CLI_INPUT_PROMPT)])
-        options = {"bottom_toolbar": progress.toolbar} if progress is not None else {}
-        session = PromptSession(history=_input_history, **options)
+
+        def prompt_with_progress():
+            status = progress.status_line()
+            prefix = [("", status + "\n")] if status else []
+            return FormattedText(prefix + list(to_formatted_text(prompt)))
+
+        session = PromptSession(history=_input_history)
         if progress is not None:
             progress.app = session.app
         try:
-            return await session.prompt_async(prompt)
+            return await session.prompt_async(prompt_with_progress if progress is not None else prompt)
         finally:
             if progress is not None:
                 progress.app = None
@@ -383,6 +392,7 @@ async def converse(
             ):
                 return await run_console(manager, session,
                                          read_input=partial(read_input, progress=progress) if progress is not None else read_input,
+                                         on_task_accepted=progress.accept if progress is not None else None,
                                          on_task_finished=progress.finish if progress is not None else None,
                                          display=partial(display_response, use_glow=use_glow), json_output=json_output,
                                          schedules=schedules)

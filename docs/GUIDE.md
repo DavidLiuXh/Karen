@@ -266,7 +266,7 @@ When running remotely, explicitly provide the user's timezone. Normal output sho
 
 Interactive terminals render replies and clarification questions as Markdown, including lists, tables, and highlighted code blocks, wrapped to the terminal width. Redirected output and pipes retain the original text; `--json` retains raw JSON. Rendering does not change stored replies or Weixin messages. Basic terminals (`TERM=dumb`) use plain text; images and HTML are not rendered.
 
-Interactive sessions show one live progress line. New stages replace the previous status, and the line clears when no task is running.
+Interactive sessions reuse the task acceptance notice as the live progress line above the input prompt. New stages replace the previous status, and the line clears when no task is running.
 
 The interactive terminal prefers the optional `glow` executable on PATH. Use `--no-glow` to select Rich. Missing or failed Glow rendering also falls back to Rich. Replies containing Markdown lists use Rich for colored markers and aligned continuation lines. With `NO_COLOR`, Rich preserves the alignment and omits marker colors. The terminal displays date and time together, for example `2026-11-13T10:09`.
 

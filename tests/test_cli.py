@@ -1031,20 +1031,22 @@ def test_terminal_progress_replaces_one_line_and_clears_completed_tasks(capsys):
 
     observer = Observer()
     progress = cli.TerminalProgress()
+    progress.accept("task-a")
+    assert progress.status_line() == "[task-a] 已接收，正在排队或处理。"
     with observer.listen_stages(progress.update):
         with observer.span("task.turn", task_id="task-a"):
-            assert "理解请求" in progress.toolbar()
+            assert "理解请求" in progress.status_line()
             with observer.span("memory.recall"):
-                assert progress.toolbar().endswith("查找相关记忆")
+                assert progress.status_line().endswith("查找相关记忆")
             with observer.span("model.call", model_role="private"):
                 pass
             with observer.span("memory.recall", trace_id="a" * 32):
                 pass
-            assert progress.toolbar().endswith("查找相关记忆")
+            assert progress.status_line().endswith("查找相关记忆")
         with observer.span("execution", task_id="task-b"):
-            assert progress.toolbar() == "[task-b · 处理中] 规划并执行"
+            assert progress.status_line() == "[task-b · 处理中] 规划并执行"
         progress.finish("task-b")
-        assert progress.toolbar() == "[task-a · 处理中] 查找相关记忆"
+        assert progress.status_line() == "[task-a · 处理中] 查找相关记忆"
         progress.finish("task-a")
-    assert progress.toolbar() == ""
+    assert progress.status_line() == ""
     assert capsys.readouterr().out == ""

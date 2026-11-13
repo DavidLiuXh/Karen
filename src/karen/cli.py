@@ -28,6 +28,7 @@ from prompt_toolkit.history import InMemoryHistory
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.text import Text
+from rich.theme import Theme
 
 from .agent import Karen
 from .context import ContextMemory
@@ -54,15 +55,20 @@ from .workflow import ReusableWorkflows
 # Keep one history for the lifetime of the CLI process so each prompt can
 # browse commands entered at earlier prompts.
 _input_history = InMemoryHistory()
+_TERMINAL_THEME = Theme({"markdown.item.number": "bold cyan", "markdown.item.bullet": "bold cyan"})
 
 
 def _render_terminal_markdown(console, text, *, use_glow):
     markdown = terminal_markdown(text)
-    glow = shutil.which("glow") if use_glow else None
+    rendered_markdown = Markdown(markdown)
+    # Rich aligns wrapped list text after the marker, including nested lists.
+    if any(token.type in {"ordered_list_open", "bullet_list_open"} for token in rendered_markdown.parsed):
+        console.print(rendered_markdown)
+        return
+    glow = shutil.which("glow") if use_glow and not console.no_color else None
     if glow:
         env = os.environ.copy()
-        if "NO_COLOR" not in env:
-            env["CLICOLOR_FORCE"] = "1"
+        env["CLICOLOR_FORCE"] = "1"
         background = env.get("COLORFGBG", "").rsplit(";", 1)[-1]
         style = "light" if background in {"7", "15"} else "dark"
         try:
@@ -76,7 +82,7 @@ def _render_terminal_markdown(console, text, *, use_glow):
                 return
         except (OSError, UnicodeError, subprocess.SubprocessError):
             pass
-    console.print(Markdown(markdown))
+    console.print(rendered_markdown)
 
 
 def display_response(text: str, *, json_output: bool = False, use_glow: bool = True) -> None:
@@ -84,7 +90,7 @@ def display_response(text: str, *, json_output: bool = False, use_glow: bool = T
     if json_output:
         print(text)
     elif sys.stdout.isatty() and os.environ.get("TERM") != "dumb":
-        console = Console(file=sys.stdout)
+        console = Console(file=sys.stdout, theme=_TERMINAL_THEME)
         console.print()
         if text == messages.TASK_HELP:
             console.print(Text(messages.CLI_TITLE, style="bold magenta"))

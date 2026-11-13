@@ -939,25 +939,49 @@ def test_inline_numbered_answer_is_split_into_readable_paragraphs():
 
 
 @pytest.mark.parametrize("mode", ["glow", "disabled", "failed"])
-def test_terminal_numbered_list_uses_optional_glow(monkeypatch, mode):
+def test_terminal_prose_uses_optional_glow(monkeypatch, mode):
     output = io.StringIO()
     monkeypatch.setattr(output, "isatty", lambda: True)
     monkeypatch.setattr(sys, "stdout", output)
     monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/test/glow")
     calls = []
 
     def render(command, **kwargs):
         calls.append(command)
-        assert "1. 第一条" in kwargs["input"] and "2. 第二条" in kwargs["input"]
+        assert kwargs["input"] == "**正文**"
         assert command[-1] == "-" and "--pager=false" in command
         if mode == "failed":
             raise cli.subprocess.TimeoutExpired(command, 2)
         return cli.subprocess.CompletedProcess(command, 0, stdout="Glow output\n")
 
     monkeypatch.setattr(cli.subprocess, "run", render)
-    cli.display_response("依据：1）第一条；2）第二条。", use_glow=mode != "disabled")
+    cli.display_response("**正文**", use_glow=mode != "disabled")
     assert bool(calls) == (mode != "disabled")
     assert ("Glow output" in output.getvalue()) == (mode == "glow")
     if mode != "glow":
-        assert "第一条" in output.getvalue() and "第二条" in output.getvalue()
+        assert "正文" in output.getvalue()
+
+
+@pytest.mark.parametrize("no_color", [False, True])
+def test_terminal_list_markers_and_wrapped_text_align(monkeypatch, no_color):
+    import re
+
+    output = io.StringIO()
+    monkeypatch.setattr(output, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setenv("COLUMNS", "25")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    if no_color:
+        monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(cli.shutil, "which", lambda _: pytest.fail("List replies use Rich"))
+    cli.display_response("Plain paragraph.\n\n1. Alpha bravo charlie delta echo.\n2. Next.\n\n- Bullet.")
+    rendered = output.getvalue()
+    assert bool(re.search(r"\x1b\[[0-9;]*36m[^\n]*1", rendered)) == (not no_color)
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", rendered)
+    first = next(line for line in plain.splitlines() if "Alpha" in line)
+    continuation = next(line for line in plain.splitlines() if "delta" in line)
+    assert first.index("Alpha") == continuation.index("delta")
+    assert "• Bullet." in plain

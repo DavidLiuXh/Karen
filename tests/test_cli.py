@@ -1024,3 +1024,23 @@ def test_rich_reply_distinguishes_conclusion_evidence_and_caution(width, no_colo
     output.truncate()
     console.print(ReplyMarkdown("结论：简短回复。"))
     assert "╭" not in output.getvalue()
+
+
+def test_terminal_progress_displays_only_task_milestones(monkeypatch, capsys):
+    from karen.observability import Observer
+
+    observer = Observer()
+    with observer.listen_stages(cli._display_task_stage):
+        with observer.span("task.turn", task_id="task-a"):
+            assert "理解请求" in capsys.readouterr().out
+            with observer.span("memory.recall"):
+                assert "查找相关记忆" in capsys.readouterr().out
+            with observer.span("model.call", model_role="private"):
+                pass
+            with observer.span("memory.recall", trace_id="a" * 32):
+                pass
+            assert capsys.readouterr().out == ""
+        with observer.span("execution", task_id="task-b"):
+            assert "task-b · 处理中] 规划并执行" in capsys.readouterr().out
+    with observer.span("task.turn", task_id="task-c"):
+        assert capsys.readouterr().out == ""

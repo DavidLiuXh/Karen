@@ -118,6 +118,7 @@ class Observer:
     def __init__(self, root_dir: Path | None = None, *, sensitive_values=()):
         self.root_dir = Path(root_dir).expanduser().absolute() if root_dir is not None else None
         self.sensitive_values = tuple(v for v in sensitive_values if v)
+        self._stage_listener = ContextVar("karen_stage_listener", default=None)
         self._context = ContextVar(f"karen_trace_{uuid4().hex}", default={})
         self._queue = asyncio.Queue(maxsize=512)
         self._pending_bytes = 0
@@ -161,6 +162,14 @@ class Observer:
         return dict(self._context.get())
 
     @contextmanager
+    def listen_stages(self, listener):
+        token = self._stage_listener.set(listener)
+        try:
+            yield
+        finally:
+            self._stage_listener.reset(token)
+
+    @contextmanager
     def span(self, stage, *, trace_id=None, **identity):
         parent = self.context()
         detached = trace_id is not None and trace_id != parent.get("trace_id")
@@ -175,6 +184,12 @@ class Observer:
         outcome = {}
         self.emit("span.started")
         try:
+            listener = self._stage_listener.get()
+            if listener is not None and context.get("task_id"):
+                try:
+                    listener(stage, context["task_id"])
+                except Exception:
+                    LOG.debug("Terminal progress output failed", exc_info=True)
             yield outcome
         except BaseException as exc:
             self.emit(

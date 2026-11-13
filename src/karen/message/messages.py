@@ -159,6 +159,14 @@ TASK_ROUTING_FAILED = "暂时无法判断这条消息属于哪个任务，请重
 TASK_FINISHED = "[{task_id}] 任务已结束。"
 TASK_CLOSED_LABEL = "已结束"
 TASK_HELP = "/finish ID：结束任务；/new 内容：新任务；/tasks：列表；/use ID：选中任务；/reply ID 内容：回复；/cancel ID：取消；/schedule：定时任务；/exit：退出。未指定任务且有待回答问题时，请先选择任务。"
+TASK_PROGRESS = "[{task_id} · 处理中] {stage}"
+TASK_PROGRESS_STAGES = {
+    "task.turn": "理解请求",
+    "memory.recall": "查找相关记忆",
+    "workflow.resolve": "检查可复用流程",
+    "execution": "规划并执行",
+    "workflow.execution": "执行已匹配流程",
+}
 TASK_ACCEPTED = "[{task_id}] 已接收，正在排队或处理。"
 TASK_LIST_ITEM = "[{task_id}] {state} · {title}"
 TASK_LIST_EMPTY = "当前没有任务。"

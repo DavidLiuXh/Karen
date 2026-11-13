@@ -83,6 +83,13 @@ def _render_terminal_markdown(console, text, *, use_glow):
     console.print(rendered_markdown)
 
 
+def _display_task_stage(stage, task_id):
+    label = messages.TASK_PROGRESS_STAGES.get(stage)
+    if label is not None:
+        console = Console(file=sys.stdout)
+        console.print(Text(messages.TASK_PROGRESS.format(task_id=task_id, stage=label), style="dim"))
+
+
 def display_response(text: str, *, json_output: bool = False, use_glow: bool = True) -> None:
     """Render terminal replies while keeping redirected and JSON output unchanged."""
     if json_output:
@@ -333,7 +340,12 @@ async def converse(
             schedules = create_schedules(manager, session, memory_model)
             if schedules is not None:
                 resources.callback(schedules.close)
-            with patch_stdout(raw=True) if sys.stdout.isatty() else nullcontext():
+            interactive = sys.stdout.isatty()
+            show_progress = interactive and not json_output and os.environ.get("TERM") != "dumb"
+            with (
+                patch_stdout(raw=True) if interactive else nullcontext(),
+                observer.listen_stages(_display_task_stage) if show_progress else nullcontext(),
+            ):
                 return await run_console(manager, session, read_input=read_input,
                                          display=partial(display_response, use_glow=use_glow), json_output=json_output,
                                          schedules=schedules)

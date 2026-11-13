@@ -42,7 +42,7 @@ from .task import DEFAULT_MAX_CONCURRENT_TASKS, TaskManager
 from .task.console import run_console
 from .task.resources import ExecutionResources
 from .task.terminal_rendering import TERMINAL_THEME, ReplyMarkdown
-from .tools.file_range import file_read_text_range_tool
+from .tools.file_range import READ_RANGE_BYTES, file_read_text_range_tool
 from .tools.git import git_clone_tool
 from .tools.gmail import GmailClient, GmailCredentials
 from .tools.gmail_tools import gmail_tools
@@ -257,13 +257,15 @@ async def converse(
             file_create_directory_tool,
             browser_open_local_page_tool,
         ):
-            definition = tool_factory()
             if tool_factory is file_read_text_tool:
+                definition = file_read_text_tool(max_bytes=READ_RANGE_BYTES)
                 definition = replace(
                     definition,
                     description=definition.description + " For large files or unknown sizes, "
-                    "use file.read_text_range before sending content to a model.",
+                    "use file.read_text_range to read only the needed parts.",
                 )
+            else:
+                definition = tool_factory()
             engine.register_tool(resources_guard.file_tool(
                 definition, write=tool_factory in {file_write_text_tool, file_create_directory_tool},
             ))

@@ -1,49 +1,12 @@
 """DeepSeek clients with observable inference settings and the engine model contract."""
 
 import asyncio
-import json
 
 from dynamic_graph.models.adapters import LangChainModelClient
-from dynamic_graph.models.client import ModelCallError
 from langchain_deepseek import ChatDeepSeek
 from langchain_ollama import OllamaEmbeddings
 
 DEFAULT_OUTPUT_TOKEN_LIMIT = 32768
-MAX_MODEL_TEXT_BYTES = 48 * 1024
-MAX_WORKER_REQUEST_BYTES = 64 * 1024
-
-
-def _check_model_input(request):
-    payload = {
-        "system_instruction": request.system_instruction,
-        "task_instruction": request.task_instruction,
-        "input_data": request.input_data,
-        "output_schema": request.output_schema,
-    }
-    pending = list(payload.values())
-    while pending:
-        value = pending.pop()
-        if isinstance(value, str):
-            size = len(value.encode("utf-8"))
-            if size > MAX_MODEL_TEXT_BYTES:
-                raise ModelCallError(
-                    "MODEL_INPUT_TOO_LARGE", "Model input contains oversized text",
-                    usage={"input_tokens": 0, "output_tokens": 0},
-                    details={"input_bytes": size, "limit_bytes": MAX_MODEL_TEXT_BYTES},
-                )
-        elif isinstance(value, dict):
-            pending.extend(value.values())
-        elif isinstance(value, list):
-            pending.extend(value)
-    if request.role == "worker":
-        size = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        if size > MAX_WORKER_REQUEST_BYTES:
-            raise ModelCallError(
-                "MODEL_INPUT_TOO_LARGE", "Worker request exceeds the input budget",
-                usage={"input_tokens": 0, "output_tokens": 0},
-                details={"input_bytes": size, "limit_bytes": MAX_WORKER_REQUEST_BYTES},
-            )
-
 
 
 class DeepSeekModelClient(LangChainModelClient):
@@ -64,10 +27,6 @@ class DeepSeekModelClient(LangChainModelClient):
         self.output_token_limit_source = "default"
         self.thinking = thinking
         self.reasoning_effort = reasoning_effort if thinking else None
-
-    async def generate(self, request):
-        _check_model_input(request)
-        return await super().generate(request)
 
     @property
     def metadata(self):

@@ -268,6 +268,8 @@ Interactive terminals render replies and clarification questions as Markdown, in
 
 The interactive terminal prefers the optional `glow` executable on PATH. Use `--no-glow` to select Rich. Missing or failed Glow rendering also falls back to Rich. Replies containing Markdown lists use Rich for colored markers and aligned continuation lines. With `NO_COLOR`, Rich preserves the alignment and omits marker colors. The terminal displays date and time together, for example `2026-11-13T10:09`.
 
+Rich highlights existing conclusion, evidence, risk, and limitation labels. Multi-section conclusions use a border when the terminal is wide enough. Short replies and narrow terminals use inline labels.
+
 ### Use personal Weixin
 
 ```bash

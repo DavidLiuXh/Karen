@@ -26,9 +26,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import InMemoryHistory
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.text import Text
-from rich.theme import Theme
 
 from .agent import Karen
 from .context import ContextMemory
@@ -43,6 +41,7 @@ from .schedule import ScheduledTasks
 from .task import DEFAULT_MAX_CONCURRENT_TASKS, TaskManager
 from .task.console import run_console
 from .task.resources import ExecutionResources
+from .task.terminal_rendering import TERMINAL_THEME, ReplyMarkdown
 from .tools.file_range import file_read_text_range_tool
 from .tools.git import git_clone_tool
 from .tools.gmail import GmailClient, GmailCredentials
@@ -55,12 +54,11 @@ from .workflow import ReusableWorkflows
 # Keep one history for the lifetime of the CLI process so each prompt can
 # browse commands entered at earlier prompts.
 _input_history = InMemoryHistory()
-_TERMINAL_THEME = Theme({"markdown.item.number": "bold cyan", "markdown.item.bullet": "bold cyan"})
 
 
 def _render_terminal_markdown(console, text, *, use_glow):
     markdown = terminal_markdown(text)
-    rendered_markdown = Markdown(markdown)
+    rendered_markdown = ReplyMarkdown(markdown)
     # Rich aligns wrapped list text after the marker, including nested lists.
     if any(token.type in {"ordered_list_open", "bullet_list_open"} for token in rendered_markdown.parsed):
         console.print(rendered_markdown)
@@ -90,7 +88,7 @@ def display_response(text: str, *, json_output: bool = False, use_glow: bool = T
     if json_output:
         print(text)
     elif sys.stdout.isatty() and os.environ.get("TERM") != "dumb":
-        console = Console(file=sys.stdout, theme=_TERMINAL_THEME)
+        console = Console(file=sys.stdout, theme=TERMINAL_THEME)
         console.print()
         if text == messages.TASK_HELP:
             console.print(Text(messages.CLI_TITLE, style="bold magenta"))

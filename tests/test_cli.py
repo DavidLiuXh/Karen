@@ -998,3 +998,29 @@ def test_terminal_timestamp_wraps_as_one_unit():
     assert any("2026-11-13T10:09" in line for line in output.getvalue().splitlines())
     code = "`2026-11-13 10:09`\n\n```text\n2026-11-13 10:09\n```"
     assert terminal_markdown(code) == code
+
+
+@pytest.mark.parametrize("width,no_color,expect_panel", [(64, False, True), (32, False, False), (64, True, True)])
+def test_rich_reply_distinguishes_conclusion_evidence_and_caution(width, no_color, expect_panel):
+    from rich.console import Console
+
+    from karen.task.terminal_rendering import TERMINAL_THEME, ReplyMarkdown
+
+    output = io.StringIO()
+    console = Console(
+        file=output, width=width, theme=TERMINAL_THEME, force_terminal=True,
+        color_system="standard", no_color=no_color, _environ={},
+    )
+    console.print(ReplyMarkdown(
+        "结论：价格接近低点。\n\n依据：\n\n1. **价格**低于前收。\n\n"
+        "## 风险\n\n数据限制：样本有限。"
+    ))
+    rendered = output.getvalue()
+    assert ("╭" in rendered) == expect_panel
+    assert ("\x1b[1;33m" in rendered) == (not no_color)
+    assert ("\x1b[1;36m" in rendered) == (not no_color)
+    assert all(text in rendered for text in ("价格接近低点", "依据", "风险", "样本有限"))
+    output.seek(0)
+    output.truncate()
+    console.print(ReplyMarkdown("结论：简短回复。"))
+    assert "╭" not in output.getvalue()

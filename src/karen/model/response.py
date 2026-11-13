@@ -17,6 +17,14 @@ _INLINE_ITEM = re.compile(
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
+# Keep the date and clock in one terminal wrapping unit. Separate the unit
+# from adjacent prose and timezone labels, including in unspaced CJK text.
+_TIMESTAMP = re.compile(
+    r"`+[^`\n]*`+|(?<![0-9A-Za-z_/-])(?P<date>\d{4}-\d{2}-\d{2})"
+    r"[ \t]+(?P<clock>[0-2]\d:[0-5]\d(?::[0-5]\d)?)(?![\d:])"
+)
+
+
 def _format_numbered_paragraph(text: str) -> str:
     breaks, items = [], []
     for match in _INLINE_ITEM.finditer(text):
@@ -33,6 +41,15 @@ def _format_numbered_paragraph(text: str) -> str:
     return text
 
 
+def _terminal_timestamp(match: re.Match) -> str:
+    if match["date"] is None:
+        return match[0]
+    start, end = match.span()
+    prefix = " " if start and match.string[start - 1].isalnum() else ""
+    suffix = " " if match.string[end:end + 1] in {"(", "（"} else ""
+    return f"{prefix}{match['date']}T{match['clock']}{suffix}"
+
+
 def terminal_markdown(text: str) -> str:
     return _format_inline_items(text, markdown_lists=True)
 
@@ -44,6 +61,7 @@ def _format_inline_items(text: str, *, markdown_lists=False) -> str:
     def render_paragraph():
         result = _format_numbered_paragraph("".join(paragraph))
         if markdown_lists:
+            result = _TIMESTAMP.sub(_terminal_timestamp, result)
             result = re.sub(r"(?m)^( {0,3})([1-9][0-9]*)）[ \t]*", r"\1\2. ", result)
         return result
 

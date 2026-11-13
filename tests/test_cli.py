@@ -985,3 +985,16 @@ def test_terminal_list_markers_and_wrapped_text_align(monkeypatch, no_color):
     continuation = next(line for line in plain.splitlines() if "delta" in line)
     assert first.index("Alpha") == continuation.index("delta")
     assert "• Bullet." in plain
+
+
+def test_terminal_timestamp_wraps_as_one_unit():
+    from karen.model.response import terminal_markdown
+    from rich.console import Console
+    from rich.markdown import Markdown
+
+    text = "结论：是。截至基准时点2026-11-13 10:09（Asia/Shanghai），"
+    output = io.StringIO()
+    Console(file=output, width=27).print(Markdown(terminal_markdown(text)))
+    assert any("2026-11-13T10:09" in line for line in output.getvalue().splitlines())
+    code = "`2026-11-13 10:09`\n\n```text\n2026-11-13 10:09\n```"
+    assert terminal_markdown(code) == code

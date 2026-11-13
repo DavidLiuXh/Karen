@@ -9,7 +9,9 @@ from ..model.response import format_task_event
 from .interaction import TaskInteraction
 
 
-async def run_console(manager, session, *, read_input, display, json_output=False, schedules=None):
+async def run_console(
+    manager, session, *, read_input, display, json_output=False, schedules=None, on_task_finished=None,
+):
     interaction = TaskInteraction(manager, session)
     exit_code = 0
 
@@ -18,6 +20,8 @@ async def run_console(manager, session, *, read_input, display, json_output=Fals
         while True:
             event = await manager.events.get()
             try:
+                if on_task_finished is not None:
+                    on_task_finished(event.task_id)
                 if schedules is not None:
                     schedules.record_event(event)
                 text = format_task_event(event, json_output=json_output)

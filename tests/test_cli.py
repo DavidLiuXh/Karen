@@ -1026,21 +1026,25 @@ def test_rich_reply_distinguishes_conclusion_evidence_and_caution(width, no_colo
     assert "╭" not in output.getvalue()
 
 
-def test_terminal_progress_displays_only_task_milestones(monkeypatch, capsys):
+def test_terminal_progress_replaces_one_line_and_clears_completed_tasks(capsys):
     from karen.observability import Observer
 
     observer = Observer()
-    with observer.listen_stages(cli._display_task_stage):
+    progress = cli.TerminalProgress()
+    with observer.listen_stages(progress.update):
         with observer.span("task.turn", task_id="task-a"):
-            assert "理解请求" in capsys.readouterr().out
+            assert "理解请求" in progress.toolbar()
             with observer.span("memory.recall"):
-                assert "查找相关记忆" in capsys.readouterr().out
+                assert progress.toolbar().endswith("查找相关记忆")
             with observer.span("model.call", model_role="private"):
                 pass
             with observer.span("memory.recall", trace_id="a" * 32):
                 pass
-            assert capsys.readouterr().out == ""
+            assert progress.toolbar().endswith("查找相关记忆")
         with observer.span("execution", task_id="task-b"):
-            assert "task-b · 处理中] 规划并执行" in capsys.readouterr().out
-    with observer.span("task.turn", task_id="task-c"):
-        assert capsys.readouterr().out == ""
+            assert progress.toolbar() == "[task-b · 处理中] 规划并执行"
+        progress.finish("task-b")
+        assert progress.toolbar() == "[task-a · 处理中] 查找相关记忆"
+        progress.finish("task-a")
+    assert progress.toolbar() == ""
+    assert capsys.readouterr().out == ""

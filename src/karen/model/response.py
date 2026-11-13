@@ -1,10 +1,86 @@
 """User-facing execution results shared by terminal and messaging channels."""
 
 import json
+import re
 
 from dynamic_graph import RunResult
 
 from ..message import messages
+
+
+# Inline numbered prose starts at a line boundary or after a colon. Later
+# entries follow a semicolon. Preserve code spans and fenced blocks.
+_INLINE_ITEM = re.compile(
+    r"`+[^`\n]*`+|(?P<lead>^|[：:；;])[ \t]*(?P<number>[1-9][0-9]*)[）)]",
+    re.MULTILINE,
+)
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+# Keep the date and clock in one terminal wrapping unit. Separate the unit
+# from adjacent prose and timezone labels, including in unspaced CJK text.
+_TIMESTAMP = re.compile(
+    r"`+[^`\n]*`+|(?<![0-9A-Za-z_/-])(?P<date>\d{4}-\d{2}-\d{2})"
+    r"[ \t]+(?P<clock>[0-2]\d:[0-5]\d(?::[0-5]\d)?)(?![\d:])"
+)
+
+
+def _format_numbered_paragraph(text: str) -> str:
+    breaks, items = [], []
+    for match in _INLINE_ITEM.finditer(text):
+        lead, number = match["lead"], match["number"]
+        if number == "1" and lead in {"", "：", ":"}:
+            items = [match]
+        elif items and lead in {"；", ";"} and number == str(len(items) + 1):
+            items.append(match)
+            if len(items) == 2 and items[0]["lead"]:
+                breaks.append(items[0])
+            breaks.append(match)
+    for match in reversed(breaks):
+        text = text[:match.end("lead")] + "\n\n" + text[match.start("number"):]
+    return text
+
+
+def _terminal_timestamp(match: re.Match) -> str:
+    if match["date"] is None:
+        return match[0]
+    start, end = match.span()
+    prefix = " " if start and match.string[start - 1].isalnum() else ""
+    suffix = " " if match.string[end:end + 1] in {"(", "（"} else ""
+    return f"{prefix}{match['date']}T{match['clock']}{suffix}"
+
+
+def terminal_markdown(text: str) -> str:
+    return _format_inline_items(text, markdown_lists=True)
+
+
+def _format_inline_items(text: str, *, markdown_lists=False) -> str:
+    sections, paragraph = [], []
+    fence = ""
+
+    def render_paragraph():
+        result = _format_numbered_paragraph("".join(paragraph))
+        if markdown_lists:
+            result = _TIMESTAMP.sub(_terminal_timestamp, result)
+            result = re.sub(r"(?m)^( {0,3})([1-9][0-9]*)）[ \t]*", r"\1\2. ", result)
+        return result
+
+    for line in text.splitlines(keepends=True):
+        marker = _FENCE.match(line)
+        if not (fence or marker) and line.strip() and not line.startswith(("    ", "\t")):
+            paragraph.append(line)
+            continue
+        sections.append(render_paragraph())
+        paragraph.clear()
+        if marker:
+            token = marker[1]
+            if not fence:
+                fence = token
+            elif token.startswith(fence) and not line[marker.end():].strip():
+                fence = ""
+        sections.append(line)
+    sections.append(render_paragraph())
+    return "".join(sections)
 
 
 def _diagnostic_message(diagnostic) -> str:
@@ -43,7 +119,7 @@ def format_result(result: RunResult) -> str:
     if has_answer:
         if lines:
             lines.append(messages.PARTIAL_ANSWER)
-        lines.append(answer)
+        lines.append(_format_inline_items(answer))
     for name, value in result.outputs.items():
         if has_answer and name in {"answer", "evidence", "limitations"}:
             continue
@@ -94,4 +170,6 @@ def format_task_event(event, *, json_output=False):
         return messages.TASK_ERROR.format(code="NO_RESULT")
     if turn.result is not None:
         return turn.result.model_dump_json(indent=2) if json_output else format_result(turn.result)
-    return turn.response if turn.response is not None else "\n".join(turn.session.questions)
+    if turn.response is not None:
+        return turn.response if json_output else _format_inline_items(turn.response)
+    return "\n".join(turn.session.questions)

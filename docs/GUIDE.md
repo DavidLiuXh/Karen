@@ -262,9 +262,13 @@ Open the URL printed at startup, which defaults to `http://127.0.0.1:8765/`. The
 | `--wechat-login` | Binds or refreshes Weixin credentials without starting the model |
 | `--help` | Shows command help |
 
-When running remotely, explicitly provide the user's timezone. Normal output shows the direct response or the execution result's `answer`. Requested sources and material limitations belong in the answer; internal audit fields are not appended automatically.
+When running remotely, explicitly provide the user's timezone. Normal output shows the direct response or the execution result's `answer`. Requested sources and material limitations belong in the answer; internal audit fields are not appended automatically. Inline enumerations such as `1) ...; 2) ...` are displayed as separate paragraphs.
 
 Interactive terminals render replies and clarification questions as Markdown, including lists, tables, and highlighted code blocks, wrapped to the terminal width. Redirected output and pipes retain the original text; `--json` retains raw JSON. Rendering does not change stored replies or Weixin messages. Basic terminals (`TERM=dumb`) use plain text; images and HTML are not rendered.
+
+The interactive terminal prefers the optional `glow` executable on PATH. Use `--no-glow` to select Rich. Missing or failed Glow rendering also falls back to Rich. Replies containing Markdown lists use Rich for colored markers and aligned continuation lines. With `NO_COLOR`, Rich preserves the alignment and omits marker colors. The terminal displays date and time together, for example `2026-11-13T10:09`.
+
+Rich highlights existing conclusion, evidence, risk, and limitation labels. Multi-section conclusions use a border when the terminal is wide enough. Short replies and narrow terminals use inline labels.
 
 ### Use personal Weixin
 

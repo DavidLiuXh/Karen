@@ -909,3 +909,118 @@ def test_task_concurrency_option_rejects_zero(monkeypatch):
     with pytest.raises(SystemExit) as exit:
         cli.main()
     assert exit.value.code == 2
+
+
+def test_inline_numbered_answer_is_split_into_readable_paragraphs():
+    from types import SimpleNamespace
+
+    from karen.model.response import format_task_event
+
+    text = (
+        "依据：1）第一条跨行\n仍属于第一条；2）第二条；3）第三条。\n\n"
+        "```text\n例子：1）保留；2）保留。\n```\n\n"
+        "行内示例 `例子：1）保留；2）保留。` 和单独的条款：1）保留。"
+    )
+    expected = text.replace(
+        "依据：1）第一条跨行\n仍属于第一条；2）第二条；3）第三条。",
+        "依据：\n\n1）第一条跨行\n仍属于第一条；\n\n2）第二条；\n\n3）第三条。",
+    )
+    result = RunResult(
+        run_id="inline-list", execution_status="COMPLETED", output_complete=True,
+        outputs={"answer": text},
+    )
+    assert format_result(result) == expected
+    assert result.outputs["answer"] == text
+    direct = SimpleNamespace(
+        state="completed", error=None, turn=SimpleNamespace(result=None, response=text),
+    )
+    assert format_task_event(direct) == expected
+    assert format_task_event(direct, json_output=True) == text
+
+
+@pytest.mark.parametrize("mode", ["glow", "disabled", "failed"])
+def test_terminal_prose_uses_optional_glow(monkeypatch, mode):
+    output = io.StringIO()
+    monkeypatch.setattr(output, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/test/glow")
+    calls = []
+
+    def render(command, **kwargs):
+        calls.append(command)
+        assert kwargs["input"] == "**正文**"
+        assert command[-1] == "-" and "--pager=false" in command
+        if mode == "failed":
+            raise cli.subprocess.TimeoutExpired(command, 2)
+        return cli.subprocess.CompletedProcess(command, 0, stdout="Glow output\n")
+
+    monkeypatch.setattr(cli.subprocess, "run", render)
+    cli.display_response("**正文**", use_glow=mode != "disabled")
+    assert bool(calls) == (mode != "disabled")
+    assert ("Glow output" in output.getvalue()) == (mode == "glow")
+    if mode != "glow":
+        assert "正文" in output.getvalue()
+
+
+@pytest.mark.parametrize("no_color", [False, True])
+def test_terminal_list_markers_and_wrapped_text_align(monkeypatch, no_color):
+    import re
+
+    output = io.StringIO()
+    monkeypatch.setattr(output, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setenv("COLUMNS", "25")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    if no_color:
+        monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(cli.shutil, "which", lambda _: pytest.fail("List replies use Rich"))
+    cli.display_response("Plain paragraph.\n\n1. Alpha bravo charlie delta echo.\n2. Next.\n\n- Bullet.")
+    rendered = output.getvalue()
+    assert bool(re.search(r"\x1b\[[0-9;]*36m[^\n]*1", rendered)) == (not no_color)
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", rendered)
+    first = next(line for line in plain.splitlines() if "Alpha" in line)
+    continuation = next(line for line in plain.splitlines() if "delta" in line)
+    assert first.index("Alpha") == continuation.index("delta")
+    assert "• Bullet." in plain
+
+
+def test_terminal_timestamp_wraps_as_one_unit():
+    from karen.model.response import terminal_markdown
+    from rich.console import Console
+    from rich.markdown import Markdown
+
+    text = "结论：是。截至基准时点2026-11-13 10:09（Asia/Shanghai），"
+    output = io.StringIO()
+    Console(file=output, width=27).print(Markdown(terminal_markdown(text)))
+    assert any("2026-11-13T10:09" in line for line in output.getvalue().splitlines())
+    code = "`2026-11-13 10:09`\n\n```text\n2026-11-13 10:09\n```"
+    assert terminal_markdown(code) == code
+
+
+@pytest.mark.parametrize("width,no_color,expect_panel", [(64, False, True), (32, False, False), (64, True, True)])
+def test_rich_reply_distinguishes_conclusion_evidence_and_caution(width, no_color, expect_panel):
+    from rich.console import Console
+
+    from karen.task.terminal_rendering import TERMINAL_THEME, ReplyMarkdown
+
+    output = io.StringIO()
+    console = Console(
+        file=output, width=width, theme=TERMINAL_THEME, force_terminal=True,
+        color_system="standard", no_color=no_color, _environ={},
+    )
+    console.print(ReplyMarkdown(
+        "结论：价格接近低点。\n\n依据：\n\n1. **价格**低于前收。\n\n"
+        "## 风险\n\n数据限制：样本有限。"
+    ))
+    rendered = output.getvalue()
+    assert ("╭" in rendered) == expect_panel
+    assert ("\x1b[1;33m" in rendered) == (not no_color)
+    assert ("\x1b[1;36m" in rendered) == (not no_color)
+    assert all(text in rendered for text in ("价格接近低点", "依据", "风险", "样本有限"))
+    output.seek(0)
+    output.truncate()
+    console.print(ReplyMarkdown("结论：简短回复。"))
+    assert "╭" not in output.getvalue()

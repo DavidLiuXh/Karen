@@ -9,7 +9,10 @@ from ..model.response import format_task_event
 from .interaction import TaskInteraction
 
 
-async def run_console(manager, session, *, read_input, display, json_output=False, schedules=None):
+async def run_console(
+    manager, session, *, read_input, display, json_output=False, schedules=None,
+    on_task_accepted=None, on_task_finished=None,
+):
     interaction = TaskInteraction(manager, session)
     exit_code = 0
 
@@ -18,6 +21,8 @@ async def run_console(manager, session, *, read_input, display, json_output=Fals
         while True:
             event = await manager.events.get()
             try:
+                if on_task_finished is not None:
+                    on_task_finished(event.task_id)
                 if schedules is not None:
                     schedules.record_event(event)
                 text = format_task_event(event, json_output=json_output)
@@ -113,7 +118,14 @@ async def run_console(manager, session, *, read_input, display, json_output=Fals
                 await flush_events()
                 return exit_code
             response = await schedules.handle(text) if schedules is not None else None
-            notice(response if response is not None else await interaction.accept_input(text))
+            if response is None:
+                response = await interaction.accept_input(text)
+                if on_task_accepted is not None and interaction.submitted_task_id is not None:
+                    on_task_accepted(interaction.submitted_task_id)
+                else:
+                    notice(response)
+            else:
+                notice(response)
             # Fairness also matters for redirected input that returns without yielding.
             await asyncio.sleep(0)
     finally:

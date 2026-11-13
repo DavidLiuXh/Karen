@@ -15,10 +15,12 @@ class TaskInteraction:
         self.explicit_focus = False
         self.pending = None
         self.submitted_source = None
+        self.submitted_task_id = None
 
     async def accept_input(self, text, *, received_at=None, source=None):
         """Resolve ordinary follow-ups before admitting work to a task."""
         self.submitted_source = None
+        self.submitted_task_id = None
         received_at = received_at or datetime.now(UTC)
         routing = None
         if (text.strip() and not text.lstrip().startswith("/") and self.pending is None
@@ -42,6 +44,7 @@ class TaskInteraction:
 
     def accept(self, text, *, received_at=None, source=None, routing=None):
         self.submitted_source = None
+        self.submitted_task_id = None
         text = text.strip()
         if not text:
             return messages.TASK_INPUT_REJECTED.format(code="EMPTY_TASK_INPUT")
@@ -126,4 +129,5 @@ class TaskInteraction:
         self.focus = task.task_id
         self.explicit_focus = False
         self.submitted_source = source
+        self.submitted_task_id = task.task_id
         return messages.TASK_ACCEPTED.format(task_id=task.task_id)

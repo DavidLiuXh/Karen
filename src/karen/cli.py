@@ -23,8 +23,10 @@ from dynamic_graph.tools import (
     tavily_search_tool,
 )
 from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.application import get_app
+from prompt_toolkit.formatted_text import FormattedText, to_formatted_text
 from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.text import Text
 
@@ -81,6 +83,38 @@ def _render_terminal_markdown(console, text, *, use_glow):
         except (OSError, UnicodeError, subprocess.SubprocessError):
             pass
     console.print(rendered_markdown)
+
+
+class TerminalProgress:
+    def __init__(self):
+        self.tasks = {}
+        self.app = None
+
+    def accept(self, task_id):
+        if task_id not in self.tasks:
+            self.tasks[task_id] = messages.TASK_ACCEPTED.format(task_id=task_id)
+
+    def update(self, stage, task_id):
+        label = messages.TASK_PROGRESS_STAGES.get(stage)
+        if label is not None:
+            self.tasks.pop(task_id, None)
+            self.tasks[task_id] = messages.TASK_PROGRESS.format(task_id=task_id, stage=label)
+            if self.app is not None:
+                self.app.invalidate()
+
+    def finish(self, task_id):
+        if self.tasks.pop(task_id, None) is not None and self.app is not None:
+            self.app.invalidate()
+
+    def status_line(self):
+        if not self.tasks:
+            return ""
+        task_id = next(reversed(self.tasks))
+        text = self.tasks[task_id]
+        width = get_app().output.get_size().columns
+        while text and get_cwidth(text) >= width:
+            text = text[:-1]
+        return text
 
 
 def display_response(text: str, *, json_output: bool = False, use_glow: bool = True) -> None:
@@ -147,7 +181,7 @@ def create_schedules(manager, session, model):
     )
 
 
-async def read_input() -> str:
+async def read_input(*, progress=None) -> str:
     """Cancel terminal editing cleanly; keep redirected input compatible with input()."""
     if sys.stdin.isatty():
         # Async editing restores terminal modes before cancellation or Ctrl+C propagates.
@@ -155,7 +189,20 @@ async def read_input() -> str:
         if os.environ.get("TERM") != "dumb":
             style = "" if "NO_COLOR" in os.environ else "bold ansicyan"
             prompt = FormattedText([(style, messages.CLI_INPUT_PROMPT)])
-        return await PromptSession(history=_input_history).prompt_async(prompt)
+
+        def prompt_with_progress():
+            status = progress.status_line()
+            prefix = [("", status + "\n")] if status else []
+            return FormattedText(prefix + list(to_formatted_text(prompt)))
+
+        session = PromptSession(history=_input_history)
+        if progress is not None:
+            progress.app = session.app
+        try:
+            return await session.prompt_async(prompt_with_progress if progress is not None else prompt)
+        finally:
+            if progress is not None:
+                progress.app = None
 
     # A cancelled pipe read must not hold asyncio's executor shutdown open.
     loop = asyncio.get_running_loop()
@@ -333,8 +380,20 @@ async def converse(
             schedules = create_schedules(manager, session, memory_model)
             if schedules is not None:
                 resources.callback(schedules.close)
-            with patch_stdout(raw=True) if sys.stdout.isatty() else nullcontext():
-                return await run_console(manager, session, read_input=read_input,
+            interactive = sys.stdout.isatty()
+            show_progress = (
+                interactive and sys.stdin.isatty() and not json_output
+                and os.environ.get("TERM") != "dumb"
+            )
+            progress = TerminalProgress() if show_progress else None
+            with (
+                patch_stdout(raw=True) if interactive else nullcontext(),
+                observer.listen_stages(progress.update) if progress is not None else nullcontext(),
+            ):
+                return await run_console(manager, session,
+                                         read_input=partial(read_input, progress=progress) if progress is not None else read_input,
+                                         on_task_accepted=progress.accept if progress is not None else None,
+                                         on_task_finished=progress.finish if progress is not None else None,
                                          display=partial(display_response, use_glow=use_glow), json_output=json_output,
                                          schedules=schedules)
         finally:

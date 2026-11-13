@@ -270,15 +270,7 @@ async def test_execution_output_limits_follow_selected_provider_models(monkeypat
     )
 
 
-@pytest.mark.parametrize(
-    "role,input_data",
-    [
-        ("worker", {"raw_html": "x" * 530_438}),
-        ("planner", {"file": {"content": "中" * 17_000}}),
-        ("worker", {"chunks": ["x" * 24_000] * 3}),
-    ],
-)
-async def test_model_input_limits_reject_before_provider_call(monkeypatch, role, input_data):
+async def test_worker_forwards_collected_evidence_over_former_size_limit(monkeypatch):
     from dynamic_graph.models.adapters import LangChainModelClient
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
@@ -289,8 +281,8 @@ async def test_model_input_limits_reject_before_provider_call(monkeypatch, role,
 
     monkeypatch.setattr(LangChainModelClient, "generate", generate)
     model = deepseek_client()
-    with pytest.raises(ModelCallError) as error:
-        await model.generate(ModelRequest(role, "system", "task", input_data, {}))
-    assert error.value.code == "MODEL_INPUT_TOO_LARGE"
-    assert error.value.usage == {"input_tokens": 0, "output_tokens": 0}
-    assert not error.value.retryable and not calls
+    request = ModelRequest("worker", "system", "summarize search evidence", {
+        "search_results": [{"content": "资料" * 4_000} for _ in range(3)],
+    }, {})
+    await model.generate(request)
+    assert calls == [request]

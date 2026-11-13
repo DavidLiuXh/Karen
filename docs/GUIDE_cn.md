@@ -302,7 +302,7 @@ CLI 默认注册并授权当前可用能力；Tavily 未配置时仅搜索工具
 | `web.read_page` | 读取当前 HTTP/HTTPS 网页的精简正文，保留来源链接并标记截断 |
 | `git.clone` | 使用本机 Git 将公开 HTTPS 仓库浅克隆到 `/tmp` 下的新目录，父目录须已存在 |
 | `file.create_directory` | 在 `/tmp` 下创建目录及缺失的父目录，后续文件写入须依赖建目录节点 |
-| `file.read_text` / `file.write_text` | 读写 `/tmp` 下的 UTF-8 文本，默认大小限制 1 MiB；覆盖须显式指定 |
+| `file.read_text` / `file.write_text` | 读取 `/tmp` 下最多 24,000 字节或写入最多 1 MiB 的 UTF-8 文本；覆盖须显式指定 |
 | `file.read_text_range` | 分段读取 `/tmp` 下的 UTF-8 文本，每段最多 24,000 字节，并返回下一段偏移 |
 | `browser.open_local_page` | 请求默认浏览器打开 `/tmp` 下已有的 HTML；打开请求成功不等于渲染成功 |
 
@@ -367,4 +367,4 @@ uv run ruff check .
 
 Karen 使用 `web.read_page` 获取精简正文。依赖原始 `web.fetch` 的已保存流程会跳过，本轮请求走正常规划。详见[网页正文提取](WEB.md)。
 
-DeepSeek 客户端在发出请求前拒绝超过 48 KiB 的单个文本值和超过 64 KiB 的 worker 请求。大本地文件可通过 `file.read_text_range` 分段读取、分别处理。超限时客户端返回输入过大错误。
+大本地文件通过 `file.read_text_range` 按需分段读取。收集的研究证据可以在模型上下文窗口内一并交给汇总节点。

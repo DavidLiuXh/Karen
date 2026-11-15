@@ -15,7 +15,7 @@ from dynamic_graph.models.client import ModelCallError, ModelResponse
 
 from karen.observability import ObservedModel, Observer
 from karen.observability.checks import check_trace
-from karen.observability.viewer import TraceStore, create_server
+from karen.observability.viewer import TraceStore, background_server, create_server
 
 
 def request():
@@ -607,3 +607,79 @@ async def test_quoted_task_history_requires_unique_executed_match(tmp_path):
     selected = store.task_execution(excerpts=[shared, distinguishing])
     assert selected["task_id"] == "ca11ab1f"
     assert distinguishing in selected["goal"]["objective"]
+
+
+def test_observation_polling_only_parses_new_events_and_limits_first_page(tmp_path, monkeypatch):
+    traces = tmp_path / "traces"
+    traces.mkdir()
+    ids = [uuid4().hex for _ in range(12)]
+    for index, trace_id in enumerate(ids):
+        event = {
+            "trace_id": trace_id, "stage": "turn", "event_type": "span.started",
+            "timestamp_utc": f"2026-11-15T00:{index:02d}:00Z",
+        }
+        (traces / f"{trace_id}.jsonl").write_text(json.dumps(event) + "\n")
+
+    parsed = []
+    parse_event = TraceStore._parse_event
+
+    def track(line):
+        parsed.append(line)
+        return parse_event(line)
+
+    monkeypatch.setattr(TraceStore, "_parse_event", staticmethod(track))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    with background_server(tmp_path, port=0) as server:
+        base = f"http://127.0.0.1:{server.server_port}"
+        list_url = base + "/api/tasks?limit=10"
+        detail_url = base + "/api/trace?id=" + ids[-1]
+
+        def get(url, tag=None):
+            headers = {"If-None-Match": tag} if tag else {}
+            with opener.open(urllib.request.Request(url, headers=headers), timeout=3) as response:
+                return json.load(response), response.headers["ETag"]
+
+        first, list_tag = get(list_url)
+        assert [task["trace_id"] for task in first["tasks"]] == ids[-1:-11:-1]
+        assert first["has_more"]
+        _, detail_tag = get(detail_url)
+        parsed.clear()
+        for url, tag in [(list_url, list_tag), (detail_url, detail_tag)]:
+            with pytest.raises(urllib.error.HTTPError) as error:
+                get(url, tag)
+            assert error.value.code == 304
+        assert parsed == []
+
+        task_path = traces / f"{ids[-1]}.jsonl"
+        with task_path.open("a") as handle:
+            handle.write(json.dumps({
+                **event, "event_type": "span.finished", "status": "ok",
+            }) + "\n")
+        updated, new_tag = get(list_url, list_tag)
+        assert new_tag != list_tag
+        assert updated["tasks"][0]["status"] == "ok"
+        assert len(parsed) == 1
+        detail, new_tag = get(detail_url, detail_tag)
+        assert new_tag != detail_tag
+        assert detail["events"][-1]["event_type"] == "span.finished"
+        expanded, _ = get(base + "/api/tasks?limit=20", list_tag)
+        assert len(expanded["tasks"]) == 12
+        assert not expanded["has_more"]
+
+
+def test_background_traces_do_not_crowd_out_first_task_page(tmp_path):
+    traces = tmp_path / "traces"
+    traces.mkdir()
+    task_id = uuid4().hex
+    event = {
+        "event_type": "span.started", "stage": "turn",
+        "timestamp_utc": "2026-11-15T00:00:00Z",
+    }
+    (traces / f"{task_id}.jsonl").write_text(json.dumps(event) + "\n")
+    background = json.dumps({**event, "stage": "memory.persist"}) + "\n"
+    for index in range(300):
+        (traces / f"{index:032x}.jsonl").write_text(background)
+    store = TraceStore(tmp_path)
+    assert store.tasks()["tasks"] == []
+    assert [task["trace_id"] for task in store.tasks(limit=10)["tasks"]] == [task_id]

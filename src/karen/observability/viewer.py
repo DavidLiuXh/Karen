@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -10,7 +11,9 @@ import sqlite3
 import threading
 import unicodedata
 import webbrowser
+from collections import OrderedDict
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -71,12 +74,83 @@ def trace_timing(events):
     return {"clarification_waits": waits, "reranking": reranking}
 
 
+@dataclass
+class EventWindow:
+    start: int
+    end: int
+    identity: tuple[int, int]
+    size: int
+    stamp: tuple[int, int]
+    lines: list
+    offset: int
+    unfinished: bool
+
+
 class TraceStore:
     def __init__(self, root_dir):
         self.root_dir = Path(root_dir).expanduser().absolute()
         self.runs_dir = self.root_dir.parent / "runs"
+        self._event_windows = OrderedDict()
+        self._event_bytes = 0
+        self._workflow_processes = set()
 
-    def _read(self, path, limit, *, tail=False):
+    def version(self, *, detail=False):
+        """Fingerprint record metadata without opening, sorting or parsing the records."""
+        files = {}
+
+        def add(path, info):
+            files[os.fspath(path)] = (
+                info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+            )
+
+        def scan(directory, matches):
+            if directory.is_symlink():
+                return
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        if matches(entry.name):
+                            try:
+                                yield entry, entry.stat(follow_symlinks=False)
+                            except FileNotFoundError:
+                                continue
+            except FileNotFoundError:
+                return
+
+        for entry, info in scan(
+            self.root_dir / "traces", lambda name: name.endswith((".jsonl", ".health.json")),
+        ):
+            add(entry.path, info)
+        if detail:
+            for run, info in scan(self.runs_dir, IDENTIFIER.fullmatch):
+                add(run.path, info)
+                for entry, info in scan(
+                    Path(run.path),
+                    lambda name: name.endswith((".json", ".jsonl")) or name == "artifacts",
+                ):
+                    add(entry.path, info)
+                    if entry.name == "artifacts":
+                        for artifact, info in scan(Path(entry.path), lambda name: name.endswith(".json")):
+                            add(artifact.path, info)
+        else:
+            for entry, info in scan(
+                self.root_dir.parent / "workflows",
+                lambda name: name in {"index.sqlite", "index.sqlite-wal"},
+            ):
+                if entry.name == "index.sqlite" or info.st_size:
+                    add(entry.path, info)
+        living = []
+        if not detail:
+            for pid in self._workflow_processes:
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    continue
+                living.append(pid)
+        # File iteration order can change independently of the records.
+        return hashlib.sha256(repr((sorted(files.items()), sorted(living))).encode()).hexdigest()
+
+    def _open(self, path):
         # Only observation files and the sibling engine recording directory are readable.
         path = Path(path)
         resolved = path.resolve()
@@ -97,13 +171,10 @@ class TraceStore:
         ):
             raise ValueError("SYMLINK_RECORD")
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, "rb") as handle:
-            if tail:
-                size = os.fstat(handle.fileno()).st_size
-                if size > limit:
-                    handle.seek(size - limit)
-                    data = handle.read(limit).split(b"\n", 1)
-                    return data[1] if len(data) == 2 else b"", True
+        return os.fdopen(fd, "rb")
+
+    def _read(self, path, limit):
+        with self._open(path) as handle:
             data = handle.read(limit + 1)
         return data[:limit], len(data) > limit
 
@@ -120,31 +191,76 @@ class TraceStore:
             return {"unavailable": "missing_or_invalid_record"}
 
     def _events(self, path, limit=2 * 1024 * 1024, *, tail=False):
+        key = (Path(path), limit, tail)
+        previous = self._event_windows.pop(key, None)
+        if previous:
+            self._event_bytes -= previous.end - previous.start
         try:
-            raw, partial = self._read(path, limit, tail=tail)
+            info = key[0].stat(follow_symlinks=False)
+            identity = info.st_dev, info.st_ino
+            size = info.st_size
+            stamp = info.st_mtime_ns, info.st_ctime_ns
+            start = max(0, size - limit) if tail else 0
+            end = size if tail else min(size, limit)
+            unchanged = previous and previous.size == size and previous.stamp == stamp
+            reusable = (
+                previous and previous.identity == identity
+                and (unchanged or size > previous.size)
+                and previous.offset >= start
+            )
+            lines, offset, unfinished = [], start, False
+            if reusable:
+                offset, unfinished = previous.offset, previous.unfinished
+                lines = previous.lines
+                if start != previous.start:
+                    lines = [(position, event) for position, event in lines if position > start]
+            if not reusable or end != previous.end:
+                with self._open(path) as handle:
+                    handle.seek(offset)
+                    raw = handle.read(end - offset)
+                if tail and offset == start and start:
+                    skipped, separator, raw = raw.partition(b"\n")
+                    if separator:
+                        offset += len(skipped) + 1
+                    else:
+                        raw = skipped
+                complete = raw.split(b"\n")
+                unfinished = bool(complete.pop())
+                for line in complete:
+                    lines.append((offset, self._parse_event(line)))
+                    offset += len(line) + 1
         except (OSError, ValueError):
             return [], {"unavailable": True, "partial": False, "invalid_lines": 0}
-        events, invalid, unfinished = [], 0, False
-        lines = raw.splitlines(keepends=True)
-        for index, line in enumerate(lines):
-            if not line.endswith(b"\n") and index == len(lines) - 1:
-                unfinished = True
-                continue  # A concurrent append or interrupted final line is not a terminal event.
-            try:
-                event = json.loads(line)
-                if (
-                    not isinstance(event, dict)
-                    or not isinstance(event.get("event_type"), str)
-                    or not isinstance(event.get("timestamp_utc"), str)
-                    or ("data" in event and not isinstance(event["data"], dict))
-                ):
-                    raise ValueError("Invalid event")
-                events.append(sanitize(event))
-            except (ValueError, UnicodeDecodeError):
-                invalid += 1
-        return events, {"partial": partial, "invalid_lines": invalid, "unfinished_tail": unfinished}
+        self._event_windows[key] = EventWindow(
+            start, end, identity, size, stamp, lines, offset, unfinished,
+        )
+        self._event_bytes += end - start
+        while self._event_bytes > 32 * 1024 * 1024 or len(self._event_windows) > 4096:
+            _, evicted = self._event_windows.popitem(last=False)
+            self._event_bytes -= evicted.end - evicted.start
+        events = [event for _, event in lines if event is not None]
+        return events, {
+            "partial": size > limit,
+            "invalid_lines": len(lines) - len(events),
+            "unfinished_tail": unfinished,
+        }
 
-    def _files(self):
+    @staticmethod
+    def _parse_event(line):
+        try:
+            event = json.loads(line)
+            if (
+                isinstance(event, dict)
+                and isinstance(event.get("event_type"), str)
+                and isinstance(event.get("timestamp_utc"), str)
+                and ("data" not in event or isinstance(event["data"], dict))
+            ):
+                return sanitize(event)
+        except (ValueError, UnicodeDecodeError):
+            pass
+        return None
+
+    def _files(self, limit=300):
         directory = self.root_dir / "traces"
         if not directory.exists() or directory.is_symlink():
             return [], False
@@ -154,7 +270,7 @@ class TraceStore:
             if IDENTIFIER.fullmatch(p.stem) and not p.is_symlink()
         ]
         paths.sort(key=lambda p: p.stat().st_mtime if not p.is_symlink() else 0, reverse=True)
-        return paths[:300], len(paths) > 300
+        return paths[:limit], limit is not None and len(paths) > limit
 
     def task_execution(self, task_id=None, *, excerpts=()):
         """Resolve a displayed ID or uniquely quoted executed task."""
@@ -229,13 +345,19 @@ class TraceStore:
             "conversation": conversation if isinstance(conversation, list) else [],
         }
 
-    def tasks(self):
-        paths, limited = self._files()
+    def tasks(self, *, limit=None):
+        paths, limited = self._files(None if limit is not None else 300)
         tasks, gaps, channel_events, workflow_events, total_bytes = [], [], [], [], 0
-        for path in paths:
-            if total_bytes >= 8 * 1024 * 1024:
+        for index, path in enumerate(paths):
+            if index >= 300 or total_bytes >= 8 * 1024 * 1024:
                 limited = True
-                break
+                if limit is None or len(tasks) > limit:
+                    break
+                # Background traces can fill the normal scan budget. Look for task
+                # roots in older file headers to fill the requested page.
+                header, _ = self._events(path, 4096)
+                if not header or header[0].get("stage") not in {"input", "turn", "task.turn"}:
+                    continue
             events, coverage = self._events(path, 128 * 1024)
             if coverage["partial"]:
                 tail, _ = self._events(path, 64 * 1024, tail=True)
@@ -303,7 +425,8 @@ class TraceStore:
         tasks.sort(key=lambda t: t["timestamp_utc"], reverse=True)
         channel_events.sort(key=lambda e: e["timestamp_utc"], reverse=True)
         return {
-            "tasks": tasks,
+            "tasks": tasks[:limit] if limit is not None else tasks,
+            "has_more": limit is not None and limit < len(tasks),
             "channel_events": channel_events[:20],
             "workflows": self.workflows(workflow_events),
             "coverage": {"partial": limited, "gaps": gaps},
@@ -335,6 +458,7 @@ class TraceStore:
             for field in ("state", "pid", "queue_ms", "reason"):
                 if field in data:
                     job[field] = data[field]
+        self._workflow_processes = set()
         for job in jobs.values():
             if job.get("state") in {"queued", "running"}:
                 try:
@@ -348,6 +472,7 @@ class TraceStore:
                     ):
                         raise ValueError("closed_process")
                     os.kill(pid, 0)
+                    self._workflow_processes.add(pid)
                 except (OSError, ValueError):
                     job["state"] = "interrupted_unknown"
         root = self.root_dir.parent / "workflows"
@@ -519,6 +644,7 @@ class TraceStore:
 
 def create_server(root_dir, *, port=DEFAULT_PORT):
     store = TraceStore(root_dir)
+    read_lock = threading.Lock()
     asset = Path(__file__).with_name("dashboard.html").read_bytes()
 
     class Handler(BaseHTTPRequestHandler):
@@ -583,19 +709,27 @@ def create_server(root_dir, *, port=DEFAULT_PORT):
             try:
                 if url.path == "/":
                     body, mime = asset, "text/html; charset=utf-8"
-                elif url.path == "/api/tasks":
-                    body, mime = (
-                        json.dumps(store.tasks(), ensure_ascii=False).encode(),
-                        "application/json; charset=utf-8",
-                    )
-                elif url.path == "/api/trace":
+                elif url.path in {"/api/tasks", "/api/trace"}:
                     query = parse_qs(url.query)
-                    body, mime = (
-                        json.dumps(
-                            store.trace(query.get("id", [""])[0]), ensure_ascii=False
-                        ).encode(),
-                        "application/json; charset=utf-8",
-                    )
+                    detail = url.path == "/api/trace"
+                    trace_id = query.get("id", [""])[0]
+                    limit = int(query["limit"][0]) if "limit" in query else None
+                    if detail and not IDENTIFIER.fullmatch(trace_id):
+                        raise ValueError("INVALID_TRACE_ID")
+                    if limit is not None and not 1 <= limit <= 300:
+                        raise ValueError("INVALID_TASK_LIMIT")
+                    with read_lock:
+                        version = store.version(detail=detail)
+                        etag = '"' + hashlib.sha256((version + self.path).encode()).hexdigest() + '"'
+                        if self.headers.get("If-None-Match") == etag:
+                            self.send_response(304)
+                            self.send_header("ETag", etag)
+                            self.send_header("Cache-Control", "no-store")
+                            self.end_headers()
+                            return
+                        data = store.trace(trace_id) if detail else store.tasks(limit=limit)
+                        body = json.dumps(data, ensure_ascii=False).encode()
+                    mime = "application/json; charset=utf-8"
                 else:
                     self.send_error(404)
                     return
@@ -607,6 +741,8 @@ def create_server(root_dir, *, port=DEFAULT_PORT):
                 return
             self.send_response(200)
             self.send_header("Content-Type", mime)
+            if url.path != "/":
+                self.send_header("ETag", etag)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")

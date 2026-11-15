@@ -348,6 +348,7 @@
       <h2 data-i18n="最近交互">最近交互</h2>
       <div id="tasks"></div>
       <footer id="listCoverage"></footer>
+      <button id="moreTasks" data-i18n="显示更多任务" hidden>显示更多任务</button>
       <details id="workflowLog">
         <summary data-i18n="可复用流程">可复用流程</summary>
         <input id="workflowFilter" placeholder="筛选流程、作业或状态" aria-label="Filter workflows" />
@@ -360,7 +361,7 @@
     </aside>
     <main>
       <div id="detail" class="empty">
-        <span data-i18n="尚无运行记录。启动 Karen 并输入一个任务后，记录会出现在这里。">尚无运行记录。启动 Karen 并输入一个任务后，记录会出现在这里。</span>
+        <span data-i18n="选择一条记录查看详情。">选择一条记录查看详情。</span>
       </div>
     </main>
   </div>
@@ -534,7 +535,8 @@
       "从输入、决策到执行与后台记忆的可核对记录": "Reviewable records of input, decisions, execution and background memory",
       "最近交互": "Recent interactions",
       "最近微信渠道事件": "Recent WeChat channel events",
-      "尚无运行记录。启动 Karen 并输入一个任务后，记录会出现在这里。": "No runtime records yet. Start Karen and enter a task to see records here.",
+      "选择一条记录查看详情。": "Select a record to view its details.",
+      "显示更多任务": "Show more tasks",
       "澄清轮未启动执行": "Clarification turns did not start execution",
       "历史仅在关联确认后注入": "History injected only after association was confirmed",
       "精排失败未冒充精排成功": "Failed reranking was not reported as successful",
@@ -621,11 +623,12 @@
       replied: "已回应",
     };
     let selected = null,
-      snapshot = null,
+      taskLimit = 10,
       filter = "key",
       search = "",
       busy = false;
     let lastList = null, lastDetail = null, connectionError = null;
+    let listTag = null, detailTag = null, detailId = null;
     function el(tag, text, cls) {
       const n = document.createElement(tag);
       if (text !== undefined) n.textContent = text;
@@ -651,14 +654,17 @@
       d.append(el("summary", title), el("pre", JSON.stringify(value, null, 2)));
       parent.append(d);
     }
-    async function get(path) {
-      const response = await fetch(path, { cache: "no-store" });
+    async function get(path, tag) {
+      const headers = tag ? { "If-None-Match": tag } : {};
+      const response = await fetch(path, { cache: "no-store", headers });
+      if (response.status === 304) return null;
       if (!response.ok) throw Error("HTTP " + response.status);
-      return response.json();
+      return { data: await response.json(), tag: response.headers.get("ETag") };
     }
     function tasks(data) {
       const holder = document.querySelector("#tasks");
       holder.replaceChildren();
+      document.querySelector("#moreTasks").hidden = !data.has_more;
       for (const task of data.tasks) {
         const button = el(
           "button",
@@ -683,9 +689,7 @@
         if (task.degraded) meta.append(pill(t("有降级"), "degraded"));
         button.append(meta);
         button.onclick = () => {
-          selected = task.trace_id;
-          snapshot = null;
-          refresh();
+          selectTrace(task.trace_id);
         };
         holder.append(button);
       }
@@ -702,9 +706,7 @@
         );
         if (event.data.error_code) button.append(pill(event.data.error_code, "failed"));
         button.onclick = () => {
-          selected = event.trace_id;
-          snapshot = null;
-          refresh();
+          selectTrace(event.trace_id);
         };
         channelHolder.append(button);
       }
@@ -735,7 +737,6 @@
                 body: JSON.stringify({workflow_id: definition.workflow_id, version: definition.version, enabled: definition.status !== "enabled"}),
               });
               if (!response.ok) throw Error("HTTP " + response.status);
-              snapshot = null;
               await refresh();
             } catch (error) {
               feedback.textContent = t("操作失败，请重试");
@@ -756,7 +757,6 @@
               body: JSON.stringify({workflow_id: definition.workflow_id, version: definition.version}),
             });
             if (!response.ok) throw Error("HTTP " + response.status);
-            snapshot = null;
             await refresh();
           } catch (error) { deleteFeedback.textContent = t("操作失败，请重试"); }
           finally { remove.disabled = false; }
@@ -770,7 +770,7 @@
         for (const [id, label] of [[job.trace_id, "后台流程"], [job.source_trace_id, "查看对应任务"]]) {
           if (typeof id !== "string" || !/^[a-f0-9]{32}$/.test(id)) continue;
           const button = el("button", t(label));
-          button.onclick = () => { selected = id; snapshot = null; refresh(); };
+          button.onclick = () => { selectTrace(id); };
           row.append(button);
         }
         holder.append(row);
@@ -793,7 +793,7 @@
         const sourceId = data.events.find((e) => e.source_trace_id)?.source_trace_id;
         if (typeof sourceId === "string" && /^[a-f0-9]{32}$/.test(sourceId)) {
           const button = el("button", t("查看对应任务"));
-          button.onclick = () => { selected = sourceId; snapshot = null; refresh(); };
+          button.onclick = () => { selectTrace(sourceId); };
           target.append(button);
         }
         for (const event of data.events) {
@@ -819,9 +819,7 @@
           if (typeof taskId === "string" && /^[a-f0-9]{32}$/.test(taskId) && taskId !== selected) {
             const button = el("button", t("查看对应任务"));
             button.onclick = () => {
-              selected = taskId;
-              snapshot = null;
-              refresh();
+              selectTrace(taskId);
             };
             target.append(button);
           }
@@ -1235,30 +1233,41 @@
       if (busy) return;
       busy = true;
       try {
-        const list = await get("/api/tasks");
-        if (!selected && list.tasks.length) selected = list.tasks[0].trace_id;
-        lastList = list;
-        tasks(list);
-        workflows(list.workflows || {});
-        if (selected) {
-          const data = await get(
-            "/api/trace?id=" + encodeURIComponent(selected),
+        const list = await get("/api/tasks?limit=" + taskLimit, listTag);
+        if (list) {
+          lastList = list.data;
+          listTag = list.tag;
+          tasks(lastList);
+          workflows(lastList.workflows || {});
+        }
+        const id = selected;
+        if (id) {
+          const detail = await get(
+            "/api/trace?id=" + encodeURIComponent(id),
+            id === detailId ? detailTag : null,
           );
-          lastDetail = data;
-          const serialized = JSON.stringify(data);
-          if (serialized !== snapshot) {
-            snapshot = serialized;
-            render(data);
+          if (detail && id === selected) {
+            detailId = id;
+            detailTag = detail.tag;
+            lastDetail = detail.data;
+            render(lastDetail);
           }
         }
-        connectionError = null;
-        renderConnection();
+        if (connectionError) {
+          connectionError = null;
+          renderConnection();
+        }
       } catch (error) {
         connectionError = error.message;
         renderConnection();
       } finally {
         busy = false;
       }
+    }
+    function selectTrace(id) {
+      selected = id;
+      if (lastList) tasks(lastList);
+      refresh();
     }
     function renderConnection() {
       document.querySelector("#connection").textContent = connectionError
@@ -1281,6 +1290,10 @@
       language = event.target.value;
       try { localStorage.setItem("karen.observability.language", language); } catch {}
       applyLanguage();
+    };
+    document.querySelector("#moreTasks").onclick = () => {
+      taskLimit = Math.min(taskLimit + 10, 300);
+      refresh();
     };
     applyLanguage();
     refresh();

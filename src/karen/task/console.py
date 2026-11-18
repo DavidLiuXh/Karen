@@ -26,6 +26,7 @@ async def run_console(
                 if schedules is not None:
                     schedules.record_event(event)
                 text = format_task_event(event, json_output=json_output)
+                files = manager.delivery_lines(event.deliverables)
                 schedule = schedules.for_task(event.task_id) if schedules is not None else None
                 if json_output:
                     payload = {
@@ -35,6 +36,8 @@ async def run_console(
                         "state": event.state,
                         "answer": text,
                     }
+                    if files:
+                        payload["deliveries"] = files
                     if event.turn is not None and event.turn.result is not None:
                         payload["result"] = event.turn.result.model_dump(mode="json")
                     if schedule is not None:
@@ -42,7 +45,8 @@ async def run_console(
                     display(json.dumps(payload, ensure_ascii=False), json_output=True)
                 else:
                     output = messages.TASK_EVENT.format(
-                        task_id=event.task_id, state=messages.TASK_STATE_LABELS[event.state], text=text
+                        task_id=event.task_id, state=messages.TASK_STATE_LABELS[event.state],
+                        text="\n".join((text, *files)),
                     )
                     if schedule is not None:
                         output = messages.SCHEDULE_EVENT.format(

@@ -34,7 +34,9 @@ class MemoryStub:
 
 
 @pytest.fixture(autouse=True)
-def local_memory_only(monkeypatch):
+def local_memory_only(monkeypatch, tmp_path):
+    task_store = cli.TaskStore
+    monkeypatch.setattr(cli, "TaskStore", lambda _root: task_store(tmp_path / "cli-tasks"))
     monkeypatch.setattr(cli, "create_schedules", lambda *args: None)
     monkeypatch.setattr(cli, "create_workflows", lambda *args: None)
     monkeypatch.setattr(cli, "create_memory", lambda model, **kwargs: MemoryStub())
@@ -641,6 +643,8 @@ class WaitingAgent:
         print('TASK_STARTED', flush=True)
         await asyncio.Event().wait()
 
+task_store = cli.TaskStore
+cli.TaskStore = lambda _root: task_store(Path(os.environ['KAREN_TEST_PERSISTED']).parent / 'cli-tasks')
 cli.create_memory = lambda model, **kwargs: Memory()
 cli.create_schedules = lambda *args: None
 cli.create_observer = lambda: cli.Observer(
@@ -1050,3 +1054,41 @@ def test_terminal_progress_replaces_one_line_and_clears_completed_tasks(capsys):
         progress.finish("task-a")
     assert progress.status_line() == ""
     assert capsys.readouterr().out == ""
+
+
+async def test_cli_reopens_task_history_and_accepts_reply_with_original_id(monkeypatch, capsys):
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
+    calls = []
+
+    class Agent(DisplayAgent):
+        async def advance(self, session, text, **kwargs):
+            calls.append((session, text))
+            return TaskTurn(session.model_copy(update={"reply": "交付 " + text}))
+
+    monkeypatch.setattr(cli, "Karen", lambda **kwargs: Agent())
+
+    def set_inputs(*commands):
+        inputs = iter(commands)
+
+        async def read():
+            try:
+                return next(inputs)
+            except StopIteration:
+                raise EOFError from None
+
+        monkeypatch.setattr(cli, "read_input", read)
+
+    set_inputs("/new 初始请求")
+    assert await cli.converse(json_output=True, timezone="Asia/Shanghai") == 0
+    output = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    task_id = next(event["task_id"] for event in output if event["type"] == "task")
+
+    set_inputs("/tasks", f"/task {task_id}", f"/reply {task_id} 补充要求")
+    assert await cli.converse(json_output=True, timezone="UTC") == 0
+    output = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    recent = next(event for event in output if event["type"] == "task")
+    assert recent["task_id"] == task_id and recent["answer"] == "交付 补充要求"
+    assert any("交付 初始请求" in event.get("message", "") for event in output)
+    assert [text for _, text in calls] == ["初始请求", "补充要求"]
+    assert calls[1][0].timezone == "Asia/Shanghai"

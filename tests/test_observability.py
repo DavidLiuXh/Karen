@@ -526,15 +526,18 @@ def test_trace_timing_does_not_invent_end_for_unanswered_clarification():
     assert timing["reranking"] == []
 
 
-def test_task_trace_links_rounds_and_runs_but_not_other_processes(tmp_path):
+def test_task_trace_links_restarted_conversation_but_not_unrelated_tasks(tmp_path):
     root = tmp_path / "observability"
     (root / "traces").mkdir(parents=True)
     selected = None
-    for index, (task, process) in enumerate([("shared", "p1"), ("shared", "p1"), ("shared", "p2"), ("other", "p1")]):
+    for index, (task, process, conversation) in enumerate([
+        ("shared", "p1", "saved"), ("shared", "p1", None),
+        ("shared", "p2", "unsaved"), ("other", "p1", "saved"), ("shared", "p2", "saved"),
+    ]):
         trace = uuid4().hex
         selected = selected or trace
         event = {"trace_id": trace, "task_id": task, "process_session_id": process,
-                 "request_id": f"request{index}", "span_id": "s", "stage": "turn",
+                 "conversation_id": conversation, "request_id": f"request{index}", "span_id": "s", "stage": "turn",
                  "event_type": "span.started", "timestamp_utc": "2026-11-06T00:00:00+00:00"}
         (root / "traces" / f"{trace}.jsonl").write_text(json.dumps(event) + "\n")
         run = tmp_path / "runs" / uuid4().hex
@@ -542,8 +545,8 @@ def test_task_trace_links_rounds_and_runs_but_not_other_processes(tmp_path):
         (run / "goal.json").write_text(json.dumps({"request_id": f"request{index}"}))
     detail = TraceStore(root).trace(selected)
     assert detail["task_id"] == "shared"
-    assert {e["request_id"] for e in detail["events"]} == {"request0", "request1"}
-    assert {r["goal"]["request_id"] for r in detail["runs"]} == {"request0", "request1"}
+    assert {e["request_id"] for e in detail["events"]} == {"request0", "request1", "request4"}
+    assert {r["goal"]["request_id"] for r in detail["runs"]} == {"request0", "request1", "request4"}
 
 
 async def test_managed_round_ids_reach_karen_trace_and_link_followups(tmp_path):

@@ -2,11 +2,11 @@
 
 import json
 import re
+from pathlib import Path
 
 from dynamic_graph import RunResult
 
 from ..message import messages
-
 
 # Inline numbered prose starts at a line boundary or after a colon. Later
 # entries follow a semicolon. Preserve code spans and fenced blocks.
@@ -105,6 +105,35 @@ def _diagnostic_message(diagnostic) -> str:
     return diagnostic.message
 
 
+def committed_file_operations(result: RunResult):
+    recording = result.recording or {}
+    if recording.get("status") != "complete" or not isinstance(recording.get("path"), str):
+        return
+    root = Path(recording["path"]) / "artifacts"
+    for artifact in result.artifacts:
+        if artifact.get("commit_state") != "committed" or not isinstance(artifact.get("path"), str):
+            continue
+        path = Path(artifact["path"])
+        try:
+            if (path.parent != root or path.suffix != ".json" or path.is_symlink()
+                    or root.resolve() != root.absolute() or not path.is_file()):
+                continue
+            with path.open("rb") as stream:
+                raw = stream.read(64 * 1024 + 1)
+            if len(raw) > 64 * 1024:
+                continue
+            record = json.loads(raw)
+            if record["source_node"] != artifact.get("node_id"):
+                continue
+            output = record["output"]
+            target = output["path"]
+            if not isinstance(target, str) or not target or any(ord(c) < 32 for c in target):
+                continue
+            yield record["capability"], output
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            continue
+
+
 def format_result(result: RunResult) -> str:
     lines = []
     if result.execution_status == "FAILED":
@@ -161,6 +190,17 @@ def format_result(result: RunResult) -> str:
 
 
 def format_task_event(event, *, json_output=False):
+    if event.state == "interrupted":
+        return messages.TASK_INTERRUPTED
+    if event.error == "TASK_RESULT_NOT_SAVED":
+        result = event.turn.result if event.turn is not None else None
+        if result is not None:
+            return "\n".join((
+                messages.TASK_RESULT_NOT_SAVED,
+                messages.TASK_RESULT_RUN_REFERENCE.format(run_id=result.run_id),
+                format_result(result),
+            ))
+        return messages.TASK_RESULT_NOT_SAVED
     if event.state == "cancelled" and (event.turn is None or event.turn.result is None):
         return messages.TASK_CANCELLED
     if event.error:

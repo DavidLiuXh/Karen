@@ -28,6 +28,7 @@ class TaskTurn:
     memory_result: RecallResult | None = None
     memory_warnings: tuple[str, ...] = ()
     trace_id: str | None = None
+    deliverables: tuple[dict, ...] = ()
 
     @property
     def response(self) -> str | None:
@@ -44,6 +45,7 @@ class Karen:
         observer: Observer | None = None,
         workflows: ReusableWorkflows | None = None,
         resources: ExecutionResources | None = None,
+        snapshot_deliveries=None,
     ):
         self.intent = intent
         self.engine = engine
@@ -51,6 +53,7 @@ class Karen:
         self.observer = observer or Observer()
         self.workflows = workflows
         self.resources = resources or ExecutionResources(self.observer)
+        self.snapshot_deliveries = snapshot_deliveries
 
     @asynccontextmanager
     async def _foreground(self):
@@ -229,6 +232,8 @@ class Karen:
                             received_at,
                             previous_goal=previous_goal,
                             previous_run_id=previous_run_id,
+                            task_id=task_id,
+                            turn_id=turn_id,
                         )
                         if turn.result is not None:
                             outcome["outcome"] = turn.result.execution_status
@@ -261,6 +266,8 @@ class Karen:
         *,
         previous_goal=None,
         previous_run_id=None,
+        task_id=None,
+        turn_id=None,
     ):
         warnings, recalled = [], None
         receipt = self._capture(
@@ -508,6 +515,12 @@ class Karen:
                         "business_acceptance": "not_evaluated",
                     },
                 )
+                deliveries = (
+                    self.snapshot_deliveries(task_id, turn_id, result)
+                    if self.snapshot_deliveries is not None and task_id and turn_id
+                    and result.execution_status == "COMPLETED" and result.output_complete
+                    else ()
+                )
         public_result = result.model_dump(
             mode="json",
             include={
@@ -543,4 +556,22 @@ class Karen:
                 else None
             }
         )
-        return TaskTurn(session, result, recalled, tuple(warnings), trace_id)
+        return TaskTurn(session, result, recalled, tuple(warnings), trace_id, deliveries)
+
+    def extract_workflow(self, turn: TaskTurn):
+        session = turn.session
+        if self.workflows is None:
+            return {"accepted": False, "reason": "unavailable"}
+        if (session.goal is None or turn.result is None
+                or session.completed_run_id != turn.result.run_id):
+            return {"accepted": False, "reason": "not_completed"}
+        return self.workflows.submit(
+            CompletedWorkflowRun(
+                text=next((m.content for m in session.messages if m.role == "user"),
+                          session.goal.objective),
+                messages=[m.model_dump(mode="json") for m in session.messages],
+                goal=session.goal,
+                result=turn.result,
+                source_trace_id=turn.trace_id or "",
+            )
+        )

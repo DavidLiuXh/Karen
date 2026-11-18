@@ -98,9 +98,25 @@ class TaskStore:
             "SELECT * FROM task_turns WHERE task_id=? ORDER BY turn_no", (task_id,)
         )
 
+    def latest_turn(self, task_id):
+        return self.db.execute("""
+            SELECT turn_id, text, received_at, state, was_running, run_id, trace_id
+            FROM task_turns WHERE task_id=? ORDER BY turn_no DESC LIMIT 1
+        """, (task_id,)).fetchone()
+
+    def requeue(self, task_id, turn_id):
+        with self.db:
+            changed = self.db.execute("""
+                UPDATE task_turns SET state='queued'
+                WHERE task_id=? AND turn_id=? AND state='interrupted' AND was_running=0
+                  AND turn_no=(SELECT MAX(turn_no) FROM task_turns WHERE task_id=?)
+            """, (task_id, turn_id, task_id))
+            if changed.rowcount != 1:
+                raise ValueError("TASK_NOT_WAITING")
+
     def interrupted_suffix(self, task_id):
         return self.db.execute("""
-            SELECT text, was_running FROM task_turns
+            SELECT turn_id, text, was_running FROM task_turns
             WHERE task_id=? AND turn_no > COALESCE((
                 SELECT MAX(turn_no) FROM task_turns WHERE task_id=? AND state!='interrupted'
             ), 0) ORDER BY turn_no

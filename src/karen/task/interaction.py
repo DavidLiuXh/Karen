@@ -98,6 +98,7 @@ class TaskInteraction:
                 return messages.TASK_STORAGE_UNAVAILABLE
         target = None
         consume_pending = False
+        requeue_turn_id = None
         if command == "/use":
             if rest not in self.manager.tasks:
                 return messages.TASK_UNKNOWN
@@ -135,9 +136,41 @@ class TaskInteraction:
         elif command == "/help":
             return messages.TASK_HELP + (messages.TASK_HISTORY_HELP if self.manager.store else "")
         elif command == "/reply":
-            target, _, text = rest.partition(" ")
-            if target not in self.manager.tasks:
+            args = rest.split(maxsplit=1)
+            if not args:
+                return messages.TASK_REPLY_USAGE
+            target = args[0]
+            task = self.manager.tasks.get(target)
+            if task is None:
                 return messages.TASK_UNKNOWN
+            if len(args) == 2:
+                text = args[1]
+            else:
+                if task.closed or task.state in {"queued", "running"}:
+                    return messages.TASK_NOT_WAITING
+                try:
+                    if task.state == "waiting":
+                        questions = self.manager.session_for(task).questions
+                        return messages.TASK_REPLY_QUESTIONS.format(
+                            task_id=target, questions="\n".join(questions),
+                        )
+                    interrupted = self.manager.latest_interruption(target)
+                except TaskStorageError:
+                    return messages.TASK_STORAGE_UNAVAILABLE
+                if interrupted is None:
+                    return messages.TASK_REPLY_USAGE
+                if interrupted["was_running"]:
+                    lines = [messages.TASK_REPLY_INTERRUPTED.format(
+                        task_id=target, text=interrupted["text"],
+                    )]
+                    if interrupted["run_id"]:
+                        lines.append(messages.TASK_RESULT_RUN_REFERENCE.format(run_id=interrupted["run_id"]))
+                    if interrupted["trace_id"]:
+                        lines.append(messages.TASK_TRACE_REFERENCE.format(trace_id=interrupted["trace_id"]))
+                    return "\n".join(lines)
+                text = interrupted["text"]
+                received_at = datetime.fromisoformat(interrupted["received_at"])
+                requeue_turn_id = interrupted["turn_id"]
         elif command == "/new":
             if not rest and self.pending is not None:
                 text, received_at, source = self.pending
@@ -154,7 +187,8 @@ class TaskInteraction:
                 return messages.TASK_SELECT_OWNER
         try:
             task = self.manager.submit(
-                text, self.session, task_id=target, received_at=received_at, source=source, routing=routing
+                text, self.session, task_id=target, received_at=received_at, source=source,
+                routing=routing, requeue_turn_id=requeue_turn_id,
             )
         except KeyError:
             return messages.TASK_UNKNOWN

@@ -67,6 +67,10 @@ async def test_restart_preserves_clarification_and_closed_tasks(tmp_path):
         assert waiting.task_id in ui.accept("/tasks")
         assert second.tasks[waiting.task_id].session is None
         assert "Which format?" in ui.accept(f"/task {waiting.task_id}")
+        calls_before = len(agent.calls)
+        assert "Which format?" in ui.accept(f"/reply {waiting.task_id}")
+        assert ui.submitted_task_id is None and len(agent.calls) == calls_before
+        assert ui.accept(f"/reply {closed.task_id}") == messages.TASK_NOT_WAITING
         assert ui.accept(f"/reply {closed.task_id} more") == messages.TASK_NOT_WAITING
         ui.accept(f"/reply {waiting.task_id} Markdown", received_at=datetime(2026, 11, 20, tzinfo=UTC))
         await second.drain()
@@ -235,11 +239,15 @@ async def main():
     store = TaskStore(root / "tasks")
     manager = TaskManager(Agent(), store=store)
     session = IntentSession()
-    if phase == "recover":
+    if phase in {"recover", "bare"}:
         task_id = next(iter(manager.tasks))
-        commands = iter(("/tasks", f"/task {task_id}", "/exit"))
+        commands = iter(("/tasks", f"/task {task_id}", "/exit") if phase == "recover"
+                        else (f"/reply {task_id}",))
         async def read():
-            return next(commands)
+            try:
+                return next(commands)
+            except StopIteration:
+                raise EOFError from None
         await run_console(manager, session, read_input=read,
                           display=lambda value, **kwargs: print(value), json_output=True)
         store.close()
@@ -272,6 +280,24 @@ def test_restart_after_process_dies_without_replaying_work(tmp_path, phase):
         assert not calls.exists()
     else:
         assert calls.read_text().splitlines() == ["original operation"]
+
+    def stored_turns():
+        with sqlite3.connect(tmp_path / "tasks" / "tasks.sqlite3") as db:
+            return db.execute("SELECT turn_id, received_at, state FROM task_turns").fetchall()
+
+    before = stored_turns()
+    resumed = subprocess.run([*command, "bare"], capture_output=True, text=True, timeout=15)
+    assert resumed.returncode == 0, resumed.stderr
+    assert calls.read_text().splitlines() == ["original operation"]
+    if phase == "queued":
+        assert "delivered: original operation" in resumed.stdout
+        assert stored_turns() == [(before[0][0], before[0][1], "completed")]
+    else:
+        assert stored_turns() == before
+        if phase == "running":
+            assert "original operation" in resumed.stdout and "外部操作可能已发生" in resumed.stdout
+        else:
+            assert "用法" in resumed.stdout
 
 
 async def test_real_graph_file_result_is_saved_by_task_manager(tmp_path):

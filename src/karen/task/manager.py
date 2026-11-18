@@ -131,7 +131,16 @@ class TaskManager:
         self._observe(task)
         return task
 
-    def submit(self, text, session, *, task_id=None, received_at=None, source=None, routing=None):
+    def latest_interruption(self, task_id):
+        if self.store is None or self.tasks[task_id].state != "interrupted":
+            return None
+        try:
+            return self.store.latest_turn(task_id)
+        except (OSError, sqlite3.Error) as exc:
+            raise TaskStorageError("TASK_STORAGE_UNAVAILABLE") from exc
+
+    def submit(self, text, session, *, task_id=None, received_at=None, source=None, routing=None,
+               requeue_turn_id=None):
         if self._closed:
             raise ValueError("TASK_MANAGER_CLOSED")
         if not text.strip():
@@ -155,13 +164,15 @@ class TaskManager:
                     or (task.runner is not None and not task.runner.done())):
                 raise ValueError("TASK_NOT_WAITING")
         session = self.session_for(task)
-        turn_id = uuid4().hex
+        turn_id = requeue_turn_id or uuid4().hex
         received_at = received_at or datetime.now(UTC)
         if self.store is not None:
             try:
                 if task.state == "interrupted":
                     interrupted = []
                     for row in self.store.interrupted_suffix(task_id):
+                        if row["turn_id"] == requeue_turn_id:
+                            continue
                         interrupted.extend((
                             Message(role="user", content=row["text"]),
                             Message(role="assistant", content=(
@@ -172,9 +183,13 @@ class TaskManager:
                     session = session.model_copy(update={"messages": (*session.messages, *interrupted)})
                     # A route computed before restoring the interrupted inputs used less evidence.
                     routing = None
-                self.store.enqueue(
-                    task_id, task.title, session, turn_id, text, received_at, task.turn_count + 1,
-                )
+                if requeue_turn_id is None:
+                    self.store.enqueue(
+                        task_id, task.title, session, turn_id, text, received_at, task.turn_count + 1,
+                    )
+                    task.turn_count += 1
+                else:
+                    self.store.requeue(task_id, requeue_turn_id)
             except (OSError, sqlite3.Error) as exc:
                 raise TaskStorageError("TASK_STORAGE_UNAVAILABLE") from exc
         self.tasks[task_id] = task
@@ -293,7 +308,8 @@ class TaskManager:
             else:
                 event = replace(event, deliverables=entries)
         task.session = session
-        task.turn_count += 1
+        if self.store is None:
+            task.turn_count += 1
         task.turns.append(TaskRound(event.turn_id, text, received_at, event))
         self._observe(task)
         self.events.put_nowait(event)

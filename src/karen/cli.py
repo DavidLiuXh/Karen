@@ -5,8 +5,8 @@ import asyncio
 import os
 import re
 import shutil
-import subprocess
 import sqlite3
+import subprocess
 import sys
 import threading
 from contextlib import AsyncExitStack, nullcontext
@@ -43,6 +43,7 @@ from .schedule import ScheduledTasks
 from .task import DEFAULT_MAX_CONCURRENT_TASKS, TaskManager
 from .task.console import run_console
 from .task.resources import ExecutionResources
+from .task.storage import TaskStore
 from .task.terminal_rendering import TERMINAL_THEME, ReplyMarkdown
 from .tools.file_range import READ_RANGE_BYTES, file_read_text_range_tool
 from .tools.git import git_clone_tool
@@ -139,6 +140,7 @@ def display_response(text: str, *, json_output: bool = False, use_glow: bool = T
                 messages.TASK_STATE_LABELS["completed"]: "green",
                 messages.TASK_STATE_LABELS["failed"]: "red",
                 messages.TASK_STATE_LABELS["cancelled"]: "dim",
+                messages.TASK_STATE_LABELS["interrupted"]: "yellow",
             }
             if separator and match and match[1] in state_styles:
                 console.print(Text(header, style=state_styles[match[1]]))
@@ -262,6 +264,17 @@ async def converse(
     backend = deepseek_client()
     observer = create_observer()
     async with AsyncExitStack() as resources:
+        task_store = None
+        if not wechat:
+            try:
+                task_store = TaskStore(Path.home() / ".Karne" / "tasks")
+            except (OSError, sqlite3.Error):
+                print(messages.TASK_STORAGE_UNAVAILABLE, file=sys.stderr)
+                return 1
+            resources.callback(task_store.close)
+            session = session.model_copy(update={"user_context": {
+                **session.user_context, "cli_file_deliveries": True,
+            }})
         await observer.start()
         resources.push_async_callback(observer.close)
         if observe_port is not None:
@@ -349,6 +362,7 @@ async def converse(
                 observer=observer,
                 workflows=workflows,
                 resources=resources_guard,
+                snapshot_deliveries=task_store.snapshot if task_store is not None else None,
             )
             if wechat:
                 import httpx
@@ -376,7 +390,9 @@ async def converse(
                 return 0
             from prompt_toolkit.patch_stdout import patch_stdout
 
-            manager = TaskManager(agent, max_concurrent=max_concurrent_tasks, observer=observer)
+            manager = TaskManager(
+                agent, max_concurrent=max_concurrent_tasks, observer=observer, store=task_store,
+            )
             schedules = create_schedules(manager, session, memory_model)
             if schedules is not None:
                 resources.callback(schedules.close)

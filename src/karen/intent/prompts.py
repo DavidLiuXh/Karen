@@ -74,6 +74,9 @@ constraints 和用户提供的 inputs。目标须保留用户要求的交付物�
 交付具体程度以本轮要求为准，不为抽象层次的请求自行增加实例清单、精确参数或外部核验条件。
 output_schema 描述执行结果，根必须为 object；一般任务省略它以使用引擎默认的
 answer/evidence/limitations 格式；明确需要结构化结果时给出对应 schema。
+user_context.cli_file_deliveries 为 true 且本轮要求新建或修改文件并将其交付时，使用包含
+answer（字符串）和 files（字符串数组）的输出 schema；files 必须绑定本轮成功写入且应交付的文件路径，
+不包含仅阅读、打开或作为中间步骤的文件。保留用户要求的其他结构化字段。
 Schema 仅支持 type/properties/required/additionalProperties/items/enum、数值上下界、
 字符串或数组长度、description、$defs 和 $ref。不要生成执行计划或工具调用。
 使用用户的语言。严格按照响应 schema 返回。"""

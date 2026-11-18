@@ -533,7 +533,11 @@ class TraceStore:
             if other_root and (
                 other_root.get("request_id") == request_id
                 or (root.get("task_id") and other_root.get("task_id") == root["task_id"]
-                    and other_root.get("process_session_id") == root.get("process_session_id"))
+                    and (
+                        other_root.get("process_session_id") == root.get("process_session_id")
+                        or (root.get("conversation_id")
+                            and other_root.get("conversation_id") == root["conversation_id"])
+                    ))
                 or other_root.get("source_trace_id") == trace_id
             ):
                 extra, state = self._events(other, 512 * 1024)

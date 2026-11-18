@@ -158,7 +158,14 @@ HISTORY_LINK_UNVERIFIED = "关联核验未完成，不能确定所指任务。"
 TASK_ROUTING_FAILED = "暂时无法判断这条消息属于哪个任务，请重试，或用 /reply ID 内容、/new 内容明确指定。"
 TASK_FINISHED = "[{task_id}] 任务已结束。"
 TASK_CLOSED_LABEL = "已结束"
-TASK_HELP = "/finish ID：结束任务；/new 内容：新任务；/tasks：列表；/use ID：选中任务；/reply ID 内容：回复；/cancel ID：取消；/schedule：定时任务；/exit：退出。未指定任务且有待回答问题时，请先选择任务。"
+TASK_HELP = "/finish ID：结束任务；/new 内容：新任务；/tasks：列表；/use ID：选中任务；/reply ID 内容：回复；/cancel ID：取消；/schedule：定时任务；/workflow extract ID：从已完成任务提取流程；/exit：退出。未指定任务且有待回答问题时，请先选择任务。"
+WORKFLOW_EXTRACT_USAGE = "用法：/workflow extract 任务ID"
+WORKFLOW_EXTRACT_NO_RUN = "该任务没有可用于抽取的已完成执行。"
+WORKFLOW_EXTRACT_RESTORED = "该结果来自重启前的运行，暂不支持提取流程。"
+WORKFLOW_EXTRACT_UNAVAILABLE = "当前流程服务不可用。"
+WORKFLOW_EXTRACT_REJECTED = "无法安排流程抽取（{reason}）。"
+WORKFLOW_EXTRACT_QUEUED = "已安排流程抽取，作业编号 {job_id}。可在观测页查看验证结果。"
+
 TASK_PROGRESS = "[{task_id} · 处理中] {stage}"
 TASK_PROGRESS_STAGES = {
     "task.turn": "理解请求",
@@ -171,6 +178,18 @@ TASK_ACCEPTED = "[{task_id}] 已接收，正在排队或处理。"
 TASK_LIST_ITEM = "[{task_id}] {state} · {title}"
 TASK_LIST_EMPTY = "当前没有任务。"
 TASK_LIST_USAGE = "用 /tasks 查看全部任务，也可输入 /tasks 列表 或 /tasks list；不支持其他参数。"
+TASK_HISTORY_HELP = " /task ID：查看以往轮次与交付。"
+TASK_HISTORY_USAGE = "用法：/task 任务ID"
+TASK_HISTORY_UNAVAILABLE = "此渠道暂不提供持久化任务历史。"
+TASK_HISTORY_ROUND = "第 {number} 轮 · {state}\n{text}\n{answer}"
+TASK_DELIVERY_FILE = "已保存文件：{name} · {path}"
+TASK_DELIVERY_MISSING = "文件快照不可用：{name}"
+TASK_DELIVERY_LIMIT = "部分文件超过单轮快照数量上限。"
+TASK_STORAGE_UNAVAILABLE = "任务存储不可用，请检查磁盘和是否已有另一 Karen CLI 在运行。"
+TASK_RESULT_NOT_SAVED = "本轮结果未能保存。已执行的外部操作可能生效，请核对后再决定是否重试。"
+TASK_RESULT_RUN_REFERENCE = "运行编号：{run_id}"
+TASK_INTERRUPTED = "本轮执行中断。外部操作可能已经发生，请核对后再继续。"
+TASK_INTERRUPTED_QUEUED = "本轮在排队时中断。"
 TASK_UNKNOWN = "没有找到这个任务，请用 /tasks 查看任务编号。"
 TASK_FOCUSED = "已选中任务 [{task_id}]；下一条输入将继续此任务，后续追问保留上下文；使用 /new 发起独立任务。"
 TASK_CANCEL_REQUESTED = "[{task_id}] 已请求取消。"
@@ -186,6 +205,7 @@ TASK_CONCURRENCY_INVALID = "--max-concurrent-tasks 必须为正整数"
 TASK_STATE_LABELS = {
     "queued": "排队中", "running": "处理中", "waiting": "等待回复",
     "completed": "本轮完成", "failed": "本轮失败", "cancelled": "本轮取消",
+    "interrupted": "本轮中断",
 }
 
 # Native scheduled tasks

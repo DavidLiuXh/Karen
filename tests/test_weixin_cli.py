@@ -1,3 +1,4 @@
+import asyncio
 import sqlite3
 import sys
 from pathlib import Path
@@ -12,7 +13,8 @@ from karen.channels.weixin.api import API_URL
 from karen.channels.weixin.auth import Credentials
 
 
-def test_wechat_flag_selects_channel_without_changing_cli_defaults(monkeypatch):
+@pytest.mark.parametrize("dual", [False, True])
+def test_wechat_flag_selects_channel_without_changing_cli_defaults(monkeypatch, dual):
     calls = []
 
     async def converse(**kwargs):
@@ -20,11 +22,15 @@ def test_wechat_flag_selects_channel_without_changing_cli_defaults(monkeypatch):
         return 0
 
     monkeypatch.setattr(cli, "converse", converse)
-    monkeypatch.setattr(sys, "argv", ["karen", "--wechat", "--observe", "--timezone", "UTC"])
+    args = ["karen", "--wechat", "--observe", "--timezone", "UTC"]
+    monkeypatch.setattr(sys, "argv", [*args, "--cli"] if dual else args)
     with pytest.raises(SystemExit) as stopped:
         cli.main()
     assert stopped.value.code == 0
-    assert calls == [{"json_output": False, "timezone": "UTC", "observe_port": 8765, "wechat": True}]
+    expected = {"json_output": False, "timezone": "UTC", "observe_port": 8765, "wechat": True}
+    if dual:
+        expected["cli"] = True
+    assert calls == [expected]
 
 
 @pytest.mark.parametrize("flags", [
@@ -97,6 +103,83 @@ async def test_wechat_runtime_uses_existing_agent_memory_and_observer(tmp_path, 
     assert closed == [True]
     assert len(channels) == 1
     assert channels[0]["store"].db is None
+
+
+@pytest.mark.parametrize("weixin_fails", [False, True])
+async def test_dual_channel_runs_and_stops_both_channels(tmp_path, monkeypatch, weixin_fails):
+    credentials = Credentials("secret", "bot", "owner", API_URL)
+    observer = cli.Observer(tmp_path / "observability")
+    weixin_started, console_reading = asyncio.Event(), asyncio.Event()
+    agents, stopped = {}, set()
+
+    async def bind():
+        return credentials
+
+    class Memory:
+        async def start(self):
+            pass
+
+        async def close(self):
+            assert stopped == {"console", "weixin"}
+
+    class Channel:
+        def __init__(self, *, agent, initial_session, **kwargs):
+            agents["weixin"] = agent
+            assert "cli_file_deliveries" not in initial_session.user_context
+
+        async def run(self):
+            try:
+                weixin_started.set()
+                await console_reading.wait()
+                if weixin_fails:
+                    raise weixin.WeixinError("WEIXIN_SESSION_EXPIRED")
+                await asyncio.Future()
+            finally:
+                stopped.add("weixin")
+
+    async def read_input():
+        console_reading.set()
+        await weixin_started.wait()
+        if weixin_fails:
+            await asyncio.Future()
+        return "/exit"
+
+    real_console = cli.run_console
+
+    async def run_console(manager, session, **kwargs):
+        agents["console"] = manager.agent
+        assert session.user_context["cli_file_deliveries"]
+        try:
+            return await real_console(manager, session, **kwargs)
+        finally:
+            stopped.add("console")
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(cli, "bind_weixin", bind)
+    monkeypatch.setattr(cli, "create_observer", lambda: observer)
+    monkeypatch.setattr(cli, "create_memory", lambda *args, **kwargs: Memory())
+    monkeypatch.setattr(cli, "create_workflows", lambda *args: None)
+    monkeypatch.setattr(cli, "create_schedules", lambda *args: None)
+    monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
+    monkeypatch.setattr(cli, "read_input", read_input)
+    monkeypatch.setattr(cli, "run_console", run_console)
+    monkeypatch.setattr(weixin, "WeixinChannel", Channel)
+
+    async def start():
+        return await asyncio.wait_for(cli.converse(wechat=True, cli=True), timeout=5)
+
+    if weixin_fails:
+        with pytest.raises(weixin.WeixinError, match="WEIXIN_SESSION_EXPIRED"):
+            await start()
+    else:
+        assert await start() == 0
+
+    console, channel = agents["console"], agents["weixin"]
+    assert console.memory is channel.memory
+    assert console.resources is channel.resources
+    assert console.link_run is not None and channel.link_run is None
+    assert "weixin.prepare_file@1.0.0" not in all_capabilities_policy(console.engine).allowed_tools
+    assert "weixin.prepare_file@1.0.0" in all_capabilities_policy(channel.engine).allowed_tools
 
 
 async def test_binding_persists_credentials_and_reuses_them(tmp_path, monkeypatch):

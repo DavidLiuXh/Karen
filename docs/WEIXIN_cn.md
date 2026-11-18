@@ -30,6 +30,16 @@ uv run --env-file .env karen --wechat --timezone Asia/Shanghai --observe
 uv run --env-file .env karen --observe
 ```
 
+同一进程中同时使用终端和微信时，启动命令如下。
+
+```bash
+uv run --env-file .env karen --wechat --cli --timezone Asia/Shanghai --observe
+```
+
+两个渠道分别维护任务列表、澄清会话和结果投递，共用记忆与本地文件访问保护。
+`--max-concurrent-tasks` 分别限制每个渠道的并发任务数。终端输入 `/exit`、
+输入结束或按 Ctrl+C 都会停止两个渠道。微信渠道发生不可恢复的错误时，进程会报告错误并退出。
+
 只接受绑定者的私聊。陌生联系人、群聊、机器人消息和未完成的消息不会进入模型或记忆。
 同一记忆和渠道目录只允许一个进程使用。Ctrl+C 退出时会等待正常的异步记忆持久化；
 重新绑定前先停止运行中的渠道。凭据过期会报告 `WEIXIN_SESSION_EXPIRED` 并停止，

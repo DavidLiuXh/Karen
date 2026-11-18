@@ -259,6 +259,7 @@ uv run --env-file .env karen --observe
 | `--timezone Asia/Shanghai` | 显式指定用户的 IANA 时区；默认读取本机时区 |
 | `--json` | 展示完整结果 JSON，便于调试 |
 | `--wechat` | 使用个人微信交互，首次启动扫码绑定 |
+| `--cli` | 与 `--wechat` 一起使用时同时启用终端交互 |
 | `--wechat-login` | 仅绑定或刷新微信凭据，不启动模型 |
 | `--help` | 查看命令说明 |
 

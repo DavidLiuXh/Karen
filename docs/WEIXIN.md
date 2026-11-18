@@ -34,6 +34,18 @@ QR binding when credentials are absent. The original terminal mode remains:
 uv run --env-file .env karen --observe
 ```
 
+To use the terminal and Weixin in one process, start Karen with both flags.
+
+```bash
+uv run --env-file .env karen --wechat --cli --timezone Asia/Shanghai --observe
+```
+
+Each channel has its own task list, clarification session, and result delivery.
+Both channels share memory and coordinate access to local files. The
+`--max-concurrent-tasks` limit applies to each channel. Terminal `/exit`,
+end of input, or Ctrl+C stops both channels. A permanent Weixin channel failure
+also stops the process and reports the error.
+
 Only private messages from the binding owner enter Karen. Other senders, groups,
 bot messages and incomplete messages are ignored. Do not run multiple Karen processes
 against the same memory/channel directory. Stop with Ctrl+C; normal shutdown drains

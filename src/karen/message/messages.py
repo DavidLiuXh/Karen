@@ -57,6 +57,8 @@ CLI_JSON_HELP = "展示完整执行结果 JSON"
 
 CLI_TIMEZONE_HELP = "用户的 IANA 时区，默认读取本机时区"
 
+CLI_TERMINAL_HELP = "启用终端对话，可与 --wechat 同时使用"
+
 CLI_WECHAT_HELP = "通过个人微信对话，首次启动扫码绑定"
 
 CLI_WECHAT_LOGIN_HELP = "仅扫码绑定或刷新微信凭据，不启动模型"

@@ -196,6 +196,8 @@ TASK_REPLY_INTERRUPTED = (
     "[{task_id} · 本轮中断]\n原输入：{text}\n"
     "外部操作可能已发生。请核对产物或观测记录，再用 /reply {task_id} 内容说明从哪里继续。"
 )
+TASK_RESUME_UNCERTAIN = "节点 {node_id} 的外部操作结果未确认。请核对外部结果，再用 /reply {task_id} 内容说明从哪里继续。"
+TASK_RESUME_BLOCKED = "本轮暂时无法从检查点恢复（{code}）。"
 TASK_TRACE_REFERENCE = "追踪编号：{trace_id}"
 TASK_UNKNOWN = "没有找到这个任务，请用 /tasks 查看任务编号。"
 TASK_FOCUSED = "已选中任务 [{task_id}]；下一条输入将继续此任务，后续追问保留上下文；使用 /new 发起独立任务。"

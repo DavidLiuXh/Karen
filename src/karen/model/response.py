@@ -191,6 +191,10 @@ def format_result(result: RunResult) -> str:
 
 def format_task_event(event, *, json_output=False):
     if event.state == "interrupted":
+        if event.error == "RESUME_SIDE_EFFECT_UNCERTAIN":
+            return messages.TASK_RESUME_UNCERTAIN.format(node_id=event.blocked_node, task_id=event.task_id)
+        if event.error:
+            return messages.TASK_RESUME_BLOCKED.format(code=event.error)
         return messages.TASK_INTERRUPTED
     if event.error == "TASK_RESULT_NOT_SAVED":
         result = event.turn.result if event.turn is not None else None

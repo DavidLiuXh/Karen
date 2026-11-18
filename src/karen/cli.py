@@ -250,9 +250,39 @@ async def register_gmail_tools(engine, resources, resources_guard):
         engine.register_tool(resources_guard.independent_read(definition))
 
 
+async def register_execution_tools(engine, resources, resources_guard):
+    for tool_factory in (
+        file_read_text_tool,
+        file_read_text_range_tool,
+        file_write_text_tool,
+        file_create_directory_tool,
+        browser_open_local_page_tool,
+    ):
+        if tool_factory is file_read_text_tool:
+            definition = file_read_text_tool(max_bytes=READ_RANGE_BYTES)
+            definition = replace(
+                definition,
+                description=definition.description + " For large files or unknown sizes, "
+                "use file.read_text_range to read only the needed parts.",
+            )
+        else:
+            definition = tool_factory()
+        engine.register_tool(resources_guard.file_tool(
+            definition, write=tool_factory in {file_write_text_tool, file_create_directory_tool},
+        ))
+    engine.register_tool(resources_guard.independent_read(web_read_page_tool()))
+    engine.register_tool(resources_guard.file_tool(git_clone_tool(), write=True))
+    engine.register_tool(resources_guard.file_tool(
+        run_artifacts_tool(engine.config.runs_dir), root=engine.config.runs_dir,
+    ))
+    if os.environ.get("TAVILY_API_KEY", "").strip():
+        engine.register_tool(resources_guard.independent_read(tavily_search_tool()))
+    await register_gmail_tools(engine, resources, resources_guard)
+
+
 async def converse(
     *, json_output: bool = False, timezone: str | None = None, observe_port: int | None = None,
-    wechat: bool = False, use_glow: bool = True,
+    wechat: bool = False, cli: bool = False, use_glow: bool = True,
     max_concurrent_tasks: int = DEFAULT_MAX_CONCURRENT_TASKS,
 ) -> int:
     try:
@@ -265,16 +295,13 @@ async def converse(
     observer = create_observer()
     async with AsyncExitStack() as resources:
         task_store = None
-        if not wechat:
+        if not wechat or cli:
             try:
                 task_store = TaskStore(Path.home() / ".Karne" / "tasks")
             except (OSError, sqlite3.Error):
                 print(messages.TASK_STORAGE_UNAVAILABLE, file=sys.stderr)
                 return 1
             resources.callback(task_store.close)
-            session = session.model_copy(update={"user_context": {
-                **session.user_context, "cli_file_deliveries": True,
-            }})
         await observer.start()
         resources.push_async_callback(observer.close)
         if observe_port is not None:
@@ -298,48 +325,24 @@ async def converse(
         planner = deepseek_client(reasoning_effort="medium")
         output_limit = await configure_execution_output_limits(planner, backend)
         model = ObservedModel(backend, observer)
-        engine = DynamicGraphEngine(
-            config=EngineConfig(
-                runs_dir=Path.home() / ".Karne" / "runs" if observer.root_dir else Path("runs"),
-                max_output_tokens=output_limit,
-                sensitive_values=observer.sensitive_values,
-            ),
-            models=ModelBindings(
-                planner=ObservedModel(planner, observer),
-                worker=model,
-            ),
+        config = EngineConfig(
+            runs_dir=Path.home() / ".Karne" / "runs" if observer.root_dir else Path("runs"),
+            max_output_tokens=output_limit,
+            sensitive_values=observer.sensitive_values,
         )
+        models = ModelBindings(
+            planner=ObservedModel(planner, observer),
+            worker=model,
+        )
+        Path(config.runs_dir).mkdir(parents=True, exist_ok=True)
         resources_guard = ExecutionResources(observer)
-        for tool_factory in (
-            file_read_text_tool,
-            file_read_text_range_tool,
-            file_write_text_tool,
-            file_create_directory_tool,
-            browser_open_local_page_tool,
-        ):
-            if tool_factory is file_read_text_tool:
-                definition = file_read_text_tool(max_bytes=READ_RANGE_BYTES)
-                definition = replace(
-                    definition,
-                    description=definition.description + " For large files or unknown sizes, "
-                    "use file.read_text_range to read only the needed parts.",
-                )
-            else:
-                definition = tool_factory()
-            engine.register_tool(resources_guard.file_tool(
-                definition, write=tool_factory in {file_write_text_tool, file_create_directory_tool},
-            ))
-        engine.register_tool(resources_guard.independent_read(web_read_page_tool()))
-        engine.register_tool(resources_guard.file_tool(git_clone_tool(), write=True))
-        Path(engine.config.runs_dir).mkdir(parents=True, exist_ok=True)
-        engine.register_tool(resources_guard.file_tool(
-            run_artifacts_tool(engine.config.runs_dir), root=engine.config.runs_dir,
-        ))
-        if os.environ.get("TAVILY_API_KEY", "").strip():
-            engine.register_tool(resources_guard.independent_read(tavily_search_tool()))
-        else:
+        engine = DynamicGraphEngine(config=config, models=models)
+        weixin_engine = DynamicGraphEngine(config=config, models=models) if wechat and cli else engine
+        await register_execution_tools(engine, resources, resources_guard)
+        if weixin_engine is not engine:
+            await register_execution_tools(weixin_engine, resources, resources_guard)
+        if not os.environ.get("TAVILY_API_KEY", "").strip():
             print(messages.TAVILY_UNAVAILABLE)
-        await register_gmail_tools(engine, resources, resources_guard)
         memory_model = ObservedModel(deepseek_client(thinking=False), observer)
         memory = create_memory(memory_model, rerank_model=model, observer=observer)
         try:
@@ -355,16 +358,20 @@ async def converse(
                 except (OSError, ValueError, sqlite3.Error):
                     observer.emit("workflow.unavailable", status="failed", data={"reason": "storage_unavailable"})
                     workflows = None
-            agent = Karen(
-                intent=IntentRecognizer(model, observer=observer),
-                engine=engine,
-                memory=memory,
-                observer=observer,
-                workflows=workflows,
-                resources=resources_guard,
-                snapshot_deliveries=task_store.snapshot if task_store is not None else None,
-                link_run=task_store.link_run if task_store is not None else None,
-            )
+
+            def create_agent(channel_engine, store=None):
+                return Karen(
+                    intent=IntentRecognizer(model, observer=observer),
+                    engine=channel_engine,
+                    memory=memory,
+                    observer=observer,
+                    workflows=workflows,
+                    resources=resources_guard,
+                    snapshot_deliveries=store.snapshot if store is not None else None,
+                    link_run=store.link_run if store is not None else None,
+                )
+
+            channel = None
             if wechat:
                 import httpx
 
@@ -377,22 +384,28 @@ async def converse(
 
                 store = WeixinStore(Path.home() / ".Karne" / "weixin", credentials)
                 resources.callback(store.close)
-                engine.register_tool(resources_guard.file_tool(prepare_file_tool(store)))
+                weixin_engine.register_tool(resources_guard.file_tool(prepare_file_tool(store)))
                 http = await resources.enter_async_context(httpx.AsyncClient(trust_env=False))
                 channel = WeixinChannel(
-                    agent=agent, client=ILinkClient(http, token=credentials.token,
-                                                  base_url=credentials.base_url),
+                    agent=create_agent(weixin_engine),
+                    client=ILinkClient(http, token=credentials.token,
+                                       base_url=credentials.base_url),
                     store=store, credentials=credentials, initial_session=session, observer=observer,
                     max_concurrent_tasks=max_concurrent_tasks,
                     schedule_model=memory_model,
                 )
                 print(messages.WEIXIN_STARTED, file=sys.stderr)
-                await channel.run()
-                return 0
+                if not cli:
+                    await channel.run()
+                    return 0
             from prompt_toolkit.patch_stdout import patch_stdout
 
+            session = session.model_copy(update={"user_context": {
+                **session.user_context, "cli_file_deliveries": True,
+            }})
             manager = TaskManager(
-                agent, max_concurrent=max_concurrent_tasks, observer=observer, store=task_store,
+                create_agent(engine, task_store), max_concurrent=max_concurrent_tasks,
+                observer=observer, store=task_store,
             )
             schedules = create_schedules(manager, session, memory_model)
             if schedules is not None:
@@ -403,16 +416,36 @@ async def converse(
                 and os.environ.get("TERM") != "dumb"
             )
             progress = TerminalProgress() if show_progress else None
-            with (
-                patch_stdout(raw=True) if interactive else nullcontext(),
-                observer.listen_stages(progress.update) if progress is not None else nullcontext(),
-            ):
-                return await run_console(manager, session,
-                                         read_input=partial(read_input, progress=progress) if progress is not None else read_input,
-                                         on_task_accepted=progress.accept if progress is not None else None,
-                                         on_task_finished=progress.finish if progress is not None else None,
-                                         display=partial(display_response, use_glow=use_glow), json_output=json_output,
-                                         schedules=schedules)
+
+            async def console():
+                with (
+                    patch_stdout(raw=True) if interactive else nullcontext(),
+                    observer.listen_stages(progress.update) if progress is not None else nullcontext(),
+                ):
+                    return await run_console(
+                        manager, session,
+                        read_input=partial(read_input, progress=progress) if progress is not None else read_input,
+                        on_task_accepted=progress.accept if progress is not None else None,
+                        on_task_finished=progress.finish if progress is not None else None,
+                        display=partial(display_response, use_glow=use_glow), json_output=json_output,
+                        schedules=schedules,
+                    )
+
+            if channel is None:
+                return await console()
+            weixin_task = asyncio.create_task(channel.run())
+            console_task = asyncio.create_task(console())
+            try:
+                done, _ = await asyncio.wait(
+                    {weixin_task, console_task}, return_when=asyncio.FIRST_COMPLETED,
+                )
+                if weixin_task in done:
+                    await weixin_task
+                return await console_task if console_task in done else 0
+            finally:
+                weixin_task.cancel()
+                console_task.cancel()
+                await asyncio.gather(weixin_task, console_task, return_exceptions=True)
         finally:
             try:
                 try:
@@ -453,6 +486,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=messages.CLI_DESCRIPTION)
     parser.add_argument("--json", action="store_true", help=messages.CLI_JSON_HELP)
     parser.add_argument("--timezone", help=messages.CLI_TIMEZONE_HELP)
+    parser.add_argument("--cli", action="store_true", help=messages.CLI_TERMINAL_HELP)
     parser.add_argument("--wechat", action="store_true", help=messages.CLI_WECHAT_HELP)
     parser.add_argument("--wechat-login", action="store_true", help=messages.CLI_WECHAT_LOGIN_HELP)
     parser.add_argument(
@@ -467,7 +501,7 @@ def main() -> None:
         parser.error(messages.TASK_CONCURRENCY_INVALID)
     if args.observe is not None and not 1 <= args.observe <= 65535:
         parser.error(messages.CLI_INVALID_OBSERVE_PORT)
-    if args.wechat_login and (args.wechat or args.json or args.observe is not None):
+    if args.wechat_login and (args.wechat or args.cli or args.json or args.observe is not None):
         parser.error(messages.CLI_INVALID_LOGIN_FLAGS)
     if args.wechat and args.json:
         parser.error(messages.CLI_INVALID_JSON_CHANNEL)
@@ -476,6 +510,8 @@ def main() -> None:
             asyncio.run(bind_weixin(force=True))
             raise SystemExit(0)
         options = {"wechat": True} if args.wechat else {}
+        if args.cli:
+            options["cli"] = True
         if args.no_glow:
             options["use_glow"] = False
         if args.max_concurrent_tasks != DEFAULT_MAX_CONCURRENT_TASKS:

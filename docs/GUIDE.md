@@ -259,6 +259,7 @@ Open the URL printed at startup, which defaults to `http://127.0.0.1:8765/`. The
 | `--timezone Asia/Shanghai` | Explicitly sets the user's IANA timezone; defaults to the local machine's timezone |
 | `--json` | Displays the full result JSON for debugging |
 | `--wechat` | Uses personal Weixin; offers QR binding on first start |
+| `--cli` | Enables the terminal alongside Weixin when used with `--wechat` |
 | `--wechat-login` | Binds or refreshes Weixin credentials without starting the model |
 | `--help` | Shows command help |
 

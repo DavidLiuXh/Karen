@@ -59,6 +59,7 @@ class TaskStore:
                     state TEXT NOT NULL,
                     was_running INTEGER NOT NULL DEFAULT 0,
                     request_id TEXT,
+                    resume_session TEXT,
                     trace_id TEXT,
                     run_id TEXT,
                     error TEXT,
@@ -67,6 +68,8 @@ class TaskStore:
                 );
             """)
             with self.db:
+                if "resume_session" not in {row["name"] for row in self.db.execute("PRAGMA table_info(task_turns)")}:
+                    self.db.execute("ALTER TABLE task_turns ADD COLUMN resume_session TEXT")
                 self.db.execute("""
                     UPDATE task_turns SET state='interrupted' WHERE state IN ('queued', 'running')
                 """)
@@ -104,15 +107,30 @@ class TaskStore:
             FROM task_turns WHERE task_id=? ORDER BY turn_no DESC LIMIT 1
         """, (task_id,)).fetchone()
 
-    def requeue(self, task_id, turn_id):
+    def requeue(self, task_id, turn_id, *, run_id=None):
         with self.db:
             changed = self.db.execute("""
                 UPDATE task_turns SET state='queued'
-                WHERE task_id=? AND turn_id=? AND state='interrupted' AND was_running=0
+                WHERE task_id=? AND turn_id=? AND state='interrupted' AND (was_running=0 OR (run_id=? AND resume_session IS NOT NULL))
                   AND turn_no=(SELECT MAX(turn_no) FROM task_turns WHERE task_id=?)
-            """, (task_id, turn_id, task_id))
+            """, (task_id, turn_id, run_id, task_id))
             if changed.rowcount != 1:
                 raise ValueError("TASK_NOT_WAITING")
+
+    def link_run(self, task_id, turn_id, run_id, session, trace_id):
+        with self.db:
+            changed = self.db.execute("""
+                UPDATE task_turns SET run_id=?, trace_id=?, request_id=?, resume_session=?
+                WHERE task_id=? AND turn_id=? AND state='running' AND run_id IS NULL
+            """, (run_id, trace_id, session.request_id, session.model_dump_json(), task_id, turn_id))
+            if changed.rowcount != 1:
+                raise TaskStorageError("TASK_RUN_LINK_FAILED")
+
+    def execution_session(self, turn_id):
+        row = self.db.execute(
+            "SELECT resume_session FROM task_turns WHERE turn_id=?", (turn_id,)
+        ).fetchone()
+        return IntentSession.model_validate_json(row["resume_session"])
 
     def interrupted_suffix(self, task_id):
         return self.db.execute("""
@@ -146,9 +164,12 @@ class TaskStore:
             self.db.execute("UPDATE tasks SET session=? WHERE task_id=?",
                             (session.model_dump_json(), task_id))
             self.db.execute("""
-                UPDATE task_turns SET state=?, request_id=?, trace_id=?, run_id=?, error=?,
+                UPDATE task_turns SET state=?,
+                    request_id=CASE WHEN ?='interrupted' THEN request_id ELSE ? END,
+                    resume_session=CASE WHEN ?='interrupted' THEN resume_session END,
+                    trace_id=COALESCE(?, trace_id), run_id=COALESCE(?, run_id), error=?,
                     deliverables_json=? WHERE turn_id=?
-            """, (state, session.request_id, trace_id, run_id, error,
+            """, (state, state, session.request_id, state, trace_id, run_id, error,
                   json.dumps(deliverables, ensure_ascii=False), turn_id))
 
     def cancel_waiting(self, task_id, session):
@@ -193,12 +214,13 @@ class TaskStore:
                 if value in written and source.is_relative_to(root) and source.resolve() == source:
                     relative = Path(task_id) / turn_id / str(len(entries) + 1) / name
                     target = self.files / relative
-                    content = _read_delivery(root, source.relative_to(root))
-                    if len(content) > MAX_FILE_BYTES:
-                        raise OSError("delivery exceeds write limit")
-                    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    _write_delivery(target, content)
-                    entry.update(available=True, relative_path=str(relative), size_bytes=len(content))
+                    if not target.is_file():
+                        content = _read_delivery(root, source.relative_to(root))
+                        if len(content) > MAX_FILE_BYTES:
+                            raise OSError("delivery exceeds write limit")
+                        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        _write_delivery(target, content)
+                    entry.update(available=True, relative_path=str(relative), size_bytes=target.stat().st_size)
             except (OSError, ValueError, RuntimeError):
                 pass
             entries.append(entry)

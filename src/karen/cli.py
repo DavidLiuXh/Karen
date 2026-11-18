@@ -363,6 +363,7 @@ async def converse(
                 workflows=workflows,
                 resources=resources_guard,
                 snapshot_deliveries=task_store.snapshot if task_store is not None else None,
+                link_run=task_store.link_run if task_store is not None else None,
             )
             if wechat:
                 import httpx

@@ -1190,9 +1190,12 @@ async def test_normal_cli_exit_waits_for_raw_persistence(tmp_path, monkeypatch):
     from karen import TaskTurn, cli
 
     service = ContextMemory(root_dir=tmp_path, model=MemoryModel(), embeddings=LocalEmbeddings())
+    task_store = cli.TaskStore
+    monkeypatch.setattr(cli, "TaskStore", lambda _root: task_store(tmp_path / "cli-tasks"))
     monkeypatch.setattr(cli, "create_memory", lambda model, **kwargs: service)
     monkeypatch.setattr(cli, "create_observer", lambda: cli.Observer())
     monkeypatch.setattr(cli, "create_schedules", lambda *args: None)
+    monkeypatch.setattr(cli, "create_workflows", lambda *args: None)
     monkeypatch.setattr(cli, "deepseek_client", lambda **kwargs: FakeModelClient())
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
     captured = []

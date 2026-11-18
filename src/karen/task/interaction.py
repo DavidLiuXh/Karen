@@ -99,6 +99,7 @@ class TaskInteraction:
         target = None
         consume_pending = False
         requeue_turn_id = None
+        resume_run_id = None
         if command == "/use":
             if rest not in self.manager.tasks:
                 return messages.TASK_UNKNOWN
@@ -159,7 +160,7 @@ class TaskInteraction:
                     return messages.TASK_STORAGE_UNAVAILABLE
                 if interrupted is None:
                     return messages.TASK_REPLY_USAGE
-                if interrupted["was_running"]:
+                if interrupted["was_running"] and not interrupted["run_id"]:
                     lines = [messages.TASK_REPLY_INTERRUPTED.format(
                         task_id=target, text=interrupted["text"],
                     )]
@@ -171,6 +172,8 @@ class TaskInteraction:
                 text = interrupted["text"]
                 received_at = datetime.fromisoformat(interrupted["received_at"])
                 requeue_turn_id = interrupted["turn_id"]
+                if interrupted["was_running"]:
+                    resume_run_id = interrupted["run_id"]
         elif command == "/new":
             if not rest and self.pending is not None:
                 text, received_at, source = self.pending
@@ -188,7 +191,7 @@ class TaskInteraction:
         try:
             task = self.manager.submit(
                 text, self.session, task_id=target, received_at=received_at, source=source,
-                routing=routing, requeue_turn_id=requeue_turn_id,
+                routing=routing, requeue_turn_id=requeue_turn_id, resume_run_id=resume_run_id,
             )
         except KeyError:
             return messages.TASK_UNKNOWN

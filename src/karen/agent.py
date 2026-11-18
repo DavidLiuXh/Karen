@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from dynamic_graph import CancellationToken, DynamicGraphEngine, ExecutionPolicy, RunResult
+from dynamic_graph.execution.errors import RunFailure
 
 from .capabilities import all_capabilities_policy
 from .context import ContextEvent, ContextMemory, RecallQuery, RecallResult
@@ -46,6 +47,7 @@ class Karen:
         workflows: ReusableWorkflows | None = None,
         resources: ExecutionResources | None = None,
         snapshot_deliveries=None,
+        link_run=None,
     ):
         self.intent = intent
         self.engine = engine
@@ -54,6 +56,7 @@ class Karen:
         self.workflows = workflows
         self.resources = resources or ExecutionResources(self.observer)
         self.snapshot_deliveries = snapshot_deliveries
+        self.link_run = link_run
 
     @asynccontextmanager
     async def _foreground(self):
@@ -470,6 +473,11 @@ class Karen:
         self._capture(session, "goal_created", session.goal.model_dump(mode="json"), warnings)
         if policy is None:
             policy = all_capabilities_policy(self.engine)
+        recovery = {}
+        if self.link_run is not None and task_id and turn_id and callable(getattr(self.engine, "resume", None)):
+            def link(run_id):
+                self.link_run(task_id, turn_id, run_id, session, trace_id)
+            recovery["on_run_started"] = link
         async with self.resources.run(self.engine.list_capabilities()):
             with self.observer.span("execution"):
                 self.observer.emit(
@@ -487,6 +495,7 @@ class Karen:
                             graph_spec=workflow.graph_spec,
                             policy=policy,
                             cancellation_token=cancellation_token,
+                            **recovery,
                         )
                     self.workflows.record_outcome(
                         workflow_id=workflow.workflow_id,
@@ -496,31 +505,54 @@ class Karen:
                     )
                 else:
                     result = await self.engine.run(
-                        goal=session.goal, policy=policy, cancellation_token=cancellation_token
+                        goal=session.goal, policy=policy, cancellation_token=cancellation_token,
+                        **recovery,
                     )
-                self.observer.emit(
-                    "execution.result",
-                    status="ok"
-                    if result.execution_status == "COMPLETED" and result.output_complete
-                    else "failed",
-                    data={
-                        "run_id": result.run_id,
-                        "execution_status": result.execution_status,
-                        "output_complete": result.output_complete,
-                        "outputs": result.outputs,
-                        "diagnostics": result.diagnostics,
-                        "node_records": result.node_records,
-                        "recording": result.recording,
-                        "usage": result.usage,
-                        "business_acceptance": "not_evaluated",
-                    },
-                )
-                deliveries = (
-                    self.snapshot_deliveries(task_id, turn_id, result)
-                    if self.snapshot_deliveries is not None and task_id and turn_id
-                    and result.execution_status == "COMPLETED" and result.output_complete
-                    else ()
-                )
+                deliveries = self._execution_result(result, task_id, turn_id)
+        return self._completed_turn(session, result, recalled, warnings, trace_id, deliveries, workflow)
+
+    async def resume_execution(self, session, *, run_id, task_id, turn_id, cancellation_token):
+        resume = getattr(self.engine, "resume", None)
+        if not callable(resume):
+            raise RunFailure("RESUME_UNAVAILABLE", "Execution engine does not support checkpoints")
+        trace_id = uuid4().hex
+        with self.observer.span("turn", trace_id=trace_id, task_id=task_id, turn_id=turn_id,
+                                conversation_id=session.conversation_id, request_id=session.request_id):
+            with self.observer.span("execution"):
+                async with self.resources.run(self.engine.list_capabilities()):
+                    result = await resume(
+                        run_id=run_id, policy=all_capabilities_policy(self.engine),
+                        cancellation_token=cancellation_token,
+                    )
+                    deliveries = self._execution_result(result, task_id, turn_id)
+                turn = self._completed_turn(session, result, None, [], trace_id, deliveries, None)
+                self.finish_memory_request(session)
+                return turn
+
+    def _execution_result(self, result, task_id, turn_id):
+        self.observer.emit(
+            "execution.result",
+            status="ok"
+            if result.execution_status == "COMPLETED" and result.output_complete
+            else "failed",
+            data={
+                "run_id": result.run_id,
+                "execution_status": result.execution_status,
+                "output_complete": result.output_complete,
+                "outputs": result.outputs,
+                "diagnostics": result.diagnostics,
+                "node_records": result.node_records,
+                "recording": result.recording,
+                "usage": result.usage,
+                "business_acceptance": "not_evaluated",
+            },
+        )
+        if (self.snapshot_deliveries is not None and task_id and turn_id
+                and result.execution_status == "COMPLETED" and result.output_complete):
+            return self.snapshot_deliveries(task_id, turn_id, result)
+        return ()
+
+    def _completed_turn(self, session, result, recalled, warnings, trace_id, deliveries, workflow):
         public_result = result.model_dump(
             mode="json",
             include={

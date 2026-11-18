@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from dynamic_graph import CancellationToken
+from dynamic_graph.execution.errors import RunFailure
 
 from ..intent import IntentSession
 from ..intent.recognizer import Message
@@ -55,6 +56,7 @@ class TaskEvent:
     source: Any = None
     turn_id: str | None = None
     deliverables: tuple = ()
+    blocked_node: str | None = None
 
 
 class TaskManager:
@@ -94,7 +96,7 @@ class TaskManager:
         for row in self.store.history(task_id):
             entries = json.loads(row["deliverables_json"])
             answer = "\n".join(entry["text"] for entry in entries if entry["kind"] == "text")
-            if row["state"] == "interrupted":
+            if row["state"] == "interrupted" and not answer:
                 answer = messages.TASK_INTERRUPTED if row["was_running"] else messages.TASK_INTERRUPTED_QUEUED
             elif row["state"] == "cancelled" and not answer:
                 answer = messages.TASK_CANCELLED
@@ -140,7 +142,7 @@ class TaskManager:
             raise TaskStorageError("TASK_STORAGE_UNAVAILABLE") from exc
 
     def submit(self, text, session, *, task_id=None, received_at=None, source=None, routing=None,
-               requeue_turn_id=None):
+               requeue_turn_id=None, resume_run_id=None):
         if self._closed:
             raise ValueError("TASK_MANAGER_CLOSED")
         if not text.strip():
@@ -168,7 +170,9 @@ class TaskManager:
         received_at = received_at or datetime.now(UTC)
         if self.store is not None:
             try:
-                if task.state == "interrupted":
+                if resume_run_id is not None:
+                    session = self.store.execution_session(turn_id)
+                elif task.state == "interrupted":
                     interrupted = []
                     for row in self.store.interrupted_suffix(task_id):
                         if row["turn_id"] == requeue_turn_id:
@@ -189,7 +193,7 @@ class TaskManager:
                     )
                     task.turn_count += 1
                 else:
-                    self.store.requeue(task_id, requeue_turn_id)
+                    self.store.requeue(task_id, requeue_turn_id, run_id=resume_run_id)
             except (OSError, sqlite3.Error) as exc:
                 raise TaskStorageError("TASK_STORAGE_UNAVAILABLE") from exc
         self.tasks[task_id] = task
@@ -199,7 +203,7 @@ class TaskManager:
         task.restored_execution = False
         task.current_input = text
         task.runner = asyncio.create_task(
-            self._run(task, session, turn_id, text, received_at, source, routing)
+            self._run(task, session, turn_id, text, received_at, source, routing, resume_run_id)
         )
 
         def cancelled_before_start(future):
@@ -226,7 +230,8 @@ class TaskManager:
             },
         )
 
-    async def _run(self, task, session, turn_id, text, received_at, source, routing):
+    async def _run(self, task, session, turn_id, text, received_at, source, routing, resume_run_id):
+        blocked_node = None
         try:
             async with self._slots:
                 if self.store is not None:
@@ -237,12 +242,18 @@ class TaskManager:
                 task.state = "running"
                 self._observe(task)
                 with self.observer.span("task.turn", task_id=task.task_id, turn_id=turn_id):
-                    turn = await self.agent.advance(
-                        session, text, received_at=received_at, cancellation_token=task.token,
-                        continue_task=bool(session.messages or session.questions),
-                        task_id=task.task_id, turn_id=turn_id,
-                        **({"routing": routing} if routing is not None else {}),
-                    )
+                    if resume_run_id is not None:
+                        turn = await self.agent.resume_execution(
+                            session, run_id=resume_run_id, task_id=task.task_id, turn_id=turn_id,
+                            cancellation_token=task.token,
+                        )
+                    else:
+                        turn = await self.agent.advance(
+                            session, text, received_at=received_at, cancellation_token=task.token,
+                            continue_task=bool(session.messages or session.questions),
+                            task_id=task.task_id, turn_id=turn_id,
+                            **({"routing": routing} if routing is not None else {}),
+                        )
                 task.turn = turn
                 if task.token.cancelled:
                     if task.state != "interrupted":
@@ -261,11 +272,16 @@ class TaskManager:
         except asyncio.CancelledError:
             if task.state != "interrupted":
                 task.state = "cancelled"
+        except RunFailure as exc:
+            task.state = "interrupted" if resume_run_id is not None else "failed"
+            task.error = exc.code
+            blocked_node = exc.node_id
         except Exception as exc:
             task.state = "failed"
             task.error = str(exc) if isinstance(exc, TaskStorageError) else getattr(exc, "code", type(exc).__name__)
         finally:
-            event = TaskEvent(task.task_id, task.state, task.turn, task.error, source, turn_id)
+            event = TaskEvent(task.task_id, task.state, task.turn, task.error, source, turn_id,
+                              blocked_node=blocked_node)
             self._record_round(task, text, received_at, event, session)
 
     def _record_round(self, task, text, received_at, event, starting_session):
@@ -291,7 +307,7 @@ class TaskManager:
                 })
         if self.store is not None:
             entries = files
-            if event.state != "interrupted":
+            if event.state != "interrupted" or event.error:
                 entries = ({"kind": "text", "text": answer}, *files)
             try:
                 self.store.settle(

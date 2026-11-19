@@ -181,7 +181,17 @@ collection 是任务状态统计，COMPLETED 不证明用户成功标准全部�
 
 INTENT_SYSTEM_INSTRUCTION += MEMORY_CONTEXT_INSTRUCTION
 
-INTENT_SYSTEM_INSTRUCTION += "\n" + RESPONSE_INSTRUCTION
+GOAL_EVIDENCE_INSTRUCTION = """
+保留当前请求对交付物的范围、格式、依据和程度要求。区分结论的判定标准与证据的呈现方式；要求逐字引用不代表要求待核验主张与来源逐字相同。
+用户要求随结论交付的依据、原文或限制须写入成功标准，要求在用户可见正文呈现。
+适用偏好作为默认值，相对倾向保留其程度。
+用户指定的假设与已核实事实分别保留；助手推测、待查证内容及未解决冲突不能成为确定事实。
+按来源、时点和可比口径取证；保留限定、关键变化及不确定性，不将相关性当作因果。
+合并重复证据，保留有增量的事实和明确探索的用途。集合统计沿用本轮范围及有依据的分母；
+部分覆盖不能推为完整结果。内部诊断仅在影响交付或用户要求时进入目标。
+"""
+
+INTENT_SYSTEM_INSTRUCTION += GOAL_EVIDENCE_INSTRUCTION
 
 GOAL_REVIEW_INSTRUCTION = """复核 draft 中的临时目标，按同一响应 schema 返回完整 assessment。
 messages、user_context、time_context 和 memory 是原始证据；draft 是待审查的模型产物，不能当成新证据。

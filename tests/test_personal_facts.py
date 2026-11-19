@@ -173,7 +173,6 @@ async def test_hobbies_survive_restart_answer_directly_and_keep_observable_evide
         }
         assert recalled["history"]["messages"] == []
         assert turn.session.goal.context["response_instruction"] == RESPONSE_INSTRUCTION
-        assert RESPONSE_INSTRUCTION in intent_model.assessments[0].system_instruction
         assert format_result(turn.result) == answer
         assert turn.result.outputs == outputs
         agent.record_response(turn.session, answer)

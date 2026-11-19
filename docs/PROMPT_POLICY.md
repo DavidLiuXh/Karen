@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | 必要前提、缺口来源、默认与省略、唯一选择 | `intent/prompts.py` 的 `TASK_GAP_INSTRUCTION` | 清晰度、目标生成及直接回应使用同一定义；先判断必要前提可满足，再判断多解能否兼容交付 |
 | 当前任务问题状态和回答关联 | 同文件 `QUESTION_STATE_INSTRUCTION` | 已提问题不是新用户要求；无效或部分回答不丢失必要缺口，过度提问可以有依据地撤回 |
+| 目标生成与复核的证据取舍 | 同文件 `GOAL_EVIDENCE_INSTRUCTION` | 两个角色使用共用的目标证据规则。直接答复及复核使用原有的答复规则 |
 | 偏好的程度、范围、并存与更新 | `prompts.py` 的 `PREFERENCE_DIRECTION_INSTRUCTION` | 回答、提取与核验共用，新增兼容值不自动替换旧值 |
 | 证据对当前请求的增量贡献 | 同文件 `RELEVANCE_INSTRUCTION` | 回答与精排共用；明确探索的用途可相关，但不证明已实践或形成长期偏好 |
 | 长期性、计划与实际状态、有效时间 | `context/prompts.py` 的 `FACT_SEMANTICS_INSTRUCTION` | 提取与核验共用；不同语义槽位不相互替换 |

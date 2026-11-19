@@ -109,17 +109,26 @@ class TaskManager:
             parts.append(messages.TASK_RESULT_NOT_SAVED)
         return "\n\n".join(parts)
 
+    def delivery_items(self, entries):
+        items = []
+        for entry in entries:
+            item = dict(entry)
+            if item["kind"] == "file":
+                path = self.store.files / item["relative_path"] if item["available"] else None
+                item["available"] = bool(path and path.is_file() and not path.is_symlink())
+                item["path"] = str(path) if item["available"] else None
+            items.append(item)
+        return items
+
     def delivery_lines(self, entries):
         lines = []
-        for entry in entries:
-            if entry["kind"] == "file":
-                if entry["available"]:
-                    path = self.store.files / entry["relative_path"]
-                    if path.is_file() and not path.is_symlink():
-                        lines.append(messages.TASK_DELIVERY_FILE.format(name=entry["name"], path=path))
-                        continue
-                lines.append(messages.TASK_DELIVERY_MISSING.format(name=entry["name"]))
-            elif entry["kind"] == "file_limit":
+        for item in self.delivery_items(entries):
+            if item["kind"] == "file":
+                if item["available"]:
+                    lines.append(messages.TASK_DELIVERY_FILE.format(name=item["name"], path=item["path"]))
+                else:
+                    lines.append(messages.TASK_DELIVERY_MISSING.format(name=item["name"]))
+            elif item["kind"] == "file_limit":
                 lines.append(messages.TASK_DELIVERY_LIMIT)
         return lines
 

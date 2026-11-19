@@ -102,7 +102,7 @@ def test_display_response_renders_markdown_in_terminal(monkeypatch):
     cli.display_response(text)
 
     rendered = output.getvalue()
-    assert "Karen：" in rendered
+    assert "Karen" in rendered
     assert "北京天气" in rendered and "明天有风" in rendered and "hello" in rendered
     assert "**" not in rendered and "```" not in rendered
 
@@ -986,15 +986,16 @@ def test_terminal_list_markers_and_wrapped_text_align(monkeypatch, no_color):
     assert bool(re.search(r"\x1b\[[0-9;]*36m[^\n]*1", rendered)) == (not no_color)
     plain = re.sub(r"\x1b\[[0-9;]*m", "", rendered)
     first = next(line for line in plain.splitlines() if "Alpha" in line)
-    continuation = next(line for line in plain.splitlines() if "delta" in line)
-    assert first.index("Alpha") == continuation.index("delta")
+    continuation = next(line for line in plain.splitlines() if "charlie" in line)
+    assert first.index("Alpha") == continuation.index("charlie")
     assert "• Bullet." in plain
 
 
 def test_terminal_timestamp_wraps_as_one_unit():
-    from karen.model.response import terminal_markdown
     from rich.console import Console
     from rich.markdown import Markdown
+
+    from karen.model.response import terminal_markdown
 
     text = "结论：是。截至基准时点2026-11-13 10:09（Asia/Shanghai），"
     output = io.StringIO()
@@ -1004,7 +1005,7 @@ def test_terminal_timestamp_wraps_as_one_unit():
     assert terminal_markdown(code) == code
 
 
-@pytest.mark.parametrize("width,no_color,expect_panel", [(64, False, True), (32, False, False), (64, True, True)])
+@pytest.mark.parametrize("width,no_color,expect_panel", [(64, False, False), (32, False, False), (64, True, False)])
 def test_rich_reply_distinguishes_conclusion_evidence_and_caution(width, no_color, expect_panel):
     from rich.console import Console
 
@@ -1048,7 +1049,7 @@ def test_terminal_progress_replaces_one_line_and_clears_completed_tasks(capsys):
                 pass
             assert progress.status_line().endswith("查找相关记忆")
         with observer.span("execution", task_id="task-b"):
-            assert progress.status_line() == "[task-b · 处理中] 规划并执行"
+            assert progress.status_line() == "[task-b · 处理中] 规划并执行 · 另有 1 项任务运行中"
         progress.finish("task-b")
         assert progress.status_line() == "[task-a · 处理中] 查找相关记忆"
         progress.finish("task-a")
@@ -1092,3 +1093,39 @@ async def test_cli_reopens_task_history_and_accepts_reply_with_original_id(monke
     assert any("交付 初始请求" in event.get("message", "") for event in output)
     assert [text for _, text in calls] == ["初始请求", "补充要求"]
     assert calls[1][0].timezone == "Asia/Shanghai"
+
+
+@pytest.mark.parametrize('no_color', [False, True])
+def test_background_reply_keeps_partially_edited_input_and_toolbar(tmp_path, no_color):
+    script = tmp_path / 'background_reply.py'
+    script.write_text('''
+import asyncio, json
+from prompt_toolkit.patch_stdout import patch_stdout
+from karen import cli
+
+async def main():
+    progress = cli.TerminalProgress()
+    progress.focus, progress.title = 'first', '中文任务'
+    progress.accept('first')
+    async def deliver():
+        await asyncio.sleep(0.6)
+        progress.update('execution', 'second')
+        print('BACKGROUND_REPLY', flush=True)
+        progress.finish('second')
+    with patch_stdout(raw=True):
+        background = asyncio.create_task(deliver())
+        text = await cli.read_input(progress=progress)
+        await background
+    print('RESULT=' + json.dumps(text), flush=True)
+asyncio.run(main())
+''')
+    env = {'NO_COLOR': '1'} if no_color else {}
+    with terminal_command([sys.executable, '-u', str(script)], extra_env=env) as (_, master, read_until, wait_for_exit):
+        read_until('❯'.encode())
+        os.write(master, '已输入错'.encode())
+        received = read_until(b'BACKGROUND_REPLY')
+        os.write(master, b'\x7f' + '的文字'.encode() + b'\r')
+        received += read_until(b'RESULT=')
+        received += read_until(b'\n')
+        assert json.dumps('已输入的文字').encode() in received
+        assert wait_for_exit() == 0

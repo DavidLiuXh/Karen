@@ -11,7 +11,7 @@ from .interaction import TaskInteraction
 
 async def run_console(
     manager, session, *, read_input, display, json_output=False, schedules=None,
-    on_task_accepted=None, on_task_finished=None,
+    on_task_accepted=None, on_task_finished=None, display_task=None, on_focus_changed=None,
 ):
     interaction = TaskInteraction(manager, session)
     exit_code = 0
@@ -26,7 +26,7 @@ async def run_console(
                 if schedules is not None:
                     schedules.record_event(event)
                 text = format_task_event(event, json_output=json_output)
-                files = manager.delivery_lines(event.deliverables)
+                files = manager.delivery_lines(event.deliverables) if display_task is None or json_output else []
                 schedule = schedules.for_task(event.task_id) if schedules is not None else None
                 if json_output:
                     payload = {
@@ -43,6 +43,12 @@ async def run_console(
                     if schedule is not None:
                         payload["schedule_id"] = schedule.schedule_id
                     display(json.dumps(payload, ensure_ascii=False), json_output=True)
+                elif display_task is not None:
+                    display_task(
+                        event, text, title=manager.tasks[event.task_id].title,
+                        deliveries=manager.delivery_items(event.deliverables),
+                        schedule=messages.SCHEDULE_EVENT.format(schedule_id=schedule.schedule_id, name=schedule.name, text="").strip() if schedule else None,
+                    )
                 else:
                     output = messages.TASK_EVENT.format(
                         task_id=event.task_id, state=messages.TASK_STATE_LABELS[event.state],
@@ -95,7 +101,7 @@ async def run_console(
             except (OSError, ValueError, sqlite3.Error):
                 notice(messages.SCHEDULE_START_FAILED)
                 return 1
-        notice(messages.TASK_HELP)
+        notice(messages.CLI_WELCOME if display_task is not None else messages.TASK_HELP)
         while True:
             reader = asyncio.create_task(read_input())
             try:
@@ -124,6 +130,8 @@ async def run_console(
             response = await schedules.handle(text) if schedules is not None else None
             if response is None:
                 response = await interaction.accept_input(text)
+                if on_focus_changed is not None:
+                    on_focus_changed(interaction.focus)
                 if on_task_accepted is not None and interaction.submitted_task_id is not None:
                     on_task_accepted(interaction.submitted_task_id)
                 else:

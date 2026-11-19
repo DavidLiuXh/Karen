@@ -17,11 +17,16 @@ from pydantic import ValidationError
 
 from . import prompts as prompt_text
 from .contracts import (
-    BatchExtraction, Extraction, FactCandidate, Scope, StoredMemory, Verification, utcnow,
+    BatchExtraction,
+    Extraction,
+    FactCandidate,
+    Scope,
+    StoredMemory,
+    Verification,
+    utcnow,
 )
 from .prompts import EXTRACT, MEMORY_SYSTEM, PROMPT_VERSION, REPAIR, VERIFY
-from .storage import Storage, digest, encode, stable_id
-
+from .storage import Storage, digest, encode, pointer_value, stable_id
 
 EXTRACTION_WINDOW = 12
 
@@ -219,6 +224,20 @@ class Extractor:
             for evidence in candidate.evidence:
                 try:
                     source = await self.io(self.storage.source, evidence, allowed)
+                    if source.quote is None:
+                        original = allowed[source.event_id]
+                        raw = original.model_dump(mode="json")
+                        views = (self.extraction_inputs([original])[0], bounded_data(raw))
+                        try:
+                            visible = all(
+                                encode(pointer_value(view, source.pointer))
+                                == encode(pointer_value(raw, source.pointer))
+                                for view in views
+                            )
+                        except (KeyError, IndexError, TypeError, ValueError):
+                            visible = False
+                        if not visible:
+                            raise ValueError("SOURCE_VALUE_NOT_FULLY_VISIBLE")
                     sources.append(source)
                     if source.quote != evidence.quote:
                         self.observer.emit("memory.source_quote_restored", data={
@@ -510,7 +529,7 @@ class Extractor:
                     )
                     if digest(old.value) != digest(value):
                         raise ValueError("REINFORCE_DIFFERENT_VALUE")
-                    refs = {(s.event_id, s.pointer): s for s in (*old.sources, *sources)}
+                    refs = {(s.event_id, s.pointer, s.quote): s for s in (*old.sources, *sources)}
                     update = {"sources": list(refs.values())}
                     for field in ("valid_from", "valid_to"):
                         value = getattr(candidate, field)

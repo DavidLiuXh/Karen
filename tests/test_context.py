@@ -2778,3 +2778,53 @@ async def test_verify_receives_only_cited_events_and_keeps_source_context(memory
     active = next(m for m in stored.values() if m.layer == "m1" and m.state == "active")
     assert active.value == "上海"
     assert {source.event_id for source in active.sources} == {current.event_id, cited.event_id}
+
+
+async def test_structured_evidence_persists_and_recalls_original_type(memory):
+    service, model = memory
+    generate = model.generate
+
+    async def cite_structured_value(request):
+        response = await generate(request)
+        if request.role == "memory_extract":
+            for summary in response.payload["facts"] + response.payload["summaries"]:
+                pointer = "/payload/settings/city" if "fact_key" in summary else "/payload/settings"
+                summary["evidence"] = [
+                    {**citation, "pointer": pointer, "quote": "北京" if "fact_key" in summary else None}
+                    for citation in summary["evidence"]
+                ]
+        return response
+
+    model.generate = cite_structured_value
+    raw = event("北京设备配置已保存。")
+    raw = raw.model_copy(update={
+        "payload": {**raw.payload, "settings": {"limit": 12, "enabled": False, "filters": [], "name": None, "city": "北京"}},
+    })
+    receipt = service.submit(raw)
+    await service.flush(receipt)
+    _, records, _ = service.storage.snapshot()
+    source = next(m for m in records.values() if m.layer == "m2").sources[0]
+    assert source.quote is None
+    assert next(m for m in records.values() if m.layer == "m1").sources[0].quote == "北京"
+    details = await service.search_details(DetailQuery(text="", sources=[source]))
+    assert details.status == "complete"
+    assert details.hits[0].text == '{"city":"北京","enabled":false,"filters":[],"limit":12,"name":null}'
+    assert not details.hits[0].truncated
+    assert len([r for r in model.requests if r.role == "memory_extract"]) == 1
+
+
+@pytest.mark.parametrize("pointer,quote,code", [
+    ("/payload/items/-1", None, "INVALID_SOURCE_POINTER"),
+    ("/payload/items/01", None, "INVALID_SOURCE_POINTER"),
+    ("/payload/items/0", "12", "SOURCE_VALUE_REQUIRES_NULL_QUOTE"),
+    ("/payload/content", None, "SOURCE_TEXT_REQUIRES_QUOTE"),
+    ("/payload/large", None, "SOURCE_VALUE_TOO_LARGE"),
+    ("/payload/bad~2key", None, "INVALID_SOURCE_POINTER"),
+])
+async def test_source_rejects_invalid_structured_references(memory, pointer, quote, code):
+    service, _ = memory
+    raw = event("设备").model_copy(update={
+        "payload": {"content": "设备", "items": [12], "large": ["x" * 2500], "bad~2key": 1},
+    })
+    with pytest.raises(ValueError, match=code):
+        service.storage.source(Evidence(event_id=raw.event_id, pointer=pointer, quote=quote), {raw.event_id: raw})

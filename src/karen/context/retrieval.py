@@ -214,6 +214,8 @@ def ranking_records(memories, record_ids):
             compact = {key: source[key] for key in (
                 "event_id", "source_role", "occurred_at", "sequence", "storage_state", "quote", "quote_truncated"
             ) if key in source}
+            if source.get("quote") is None:
+                compact["pointer"] = source["pointer"]
             # Pointer distinguishes independent evidence within the same event.
             identity = encode([source.get("pointer"), compact])
             if identity not in source_keys:
@@ -783,7 +785,7 @@ class Retriever:
                 message["role"] = source.source_role
                 message["source"] = source.model_dump(mode="json")
                 # The body already carries this excerpt; retain its locator only.
-                if source.quote in message["content"]:
+                if source.quote and source.quote in message["content"]:
                     message["source"].pop("quote", None)
                 history_messages.append(message)
             history_messages = fit_history_messages(history_messages, 11 * 1024)
@@ -940,7 +942,8 @@ class Retriever:
                                 hit.model_copy(
                                     update={
                                         "text": preview,
-                                        "source": hit.source.model_copy(update={"quote": preview}),
+                                        "source": hit.source if hit.source.quote is None
+                                        else hit.source.model_copy(update={"quote": preview}),
                                         "truncated": hit.truncated or preview != hit.text,
                                     }
                                 )

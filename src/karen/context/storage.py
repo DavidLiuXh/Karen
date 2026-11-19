@@ -31,6 +31,8 @@ from .contracts import (
 
 jieba.setLogLevel(40)
 
+MAX_STRUCTURED_SOURCE_BYTES = 2400
+
 FTS_SCHEMA = "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(memory_id UNINDEXED, layer UNINDEXED, tokens)"
 
 
@@ -54,8 +56,15 @@ def pointer_value(value, pointer: str):
     if not pointer.startswith("/"):
         raise ValueError("INVALID_SOURCE_POINTER")
     for part in pointer.split("/")[1:]:
+        if re.search(r"~(?![01])", part):
+            raise ValueError("INVALID_SOURCE_POINTER")
         part = part.replace("~1", "/").replace("~0", "~")
-        value = value[int(part)] if isinstance(value, list) else value[part]
+        if isinstance(value, list):
+            if not re.fullmatch(r"0|[1-9][0-9]*", part):
+                raise ValueError("INVALID_SOURCE_POINTER")
+            value = value[int(part)]
+        else:
+            value = value[part]
     return value
 
 
@@ -383,17 +392,29 @@ class Storage:
 
     def source(self, evidence: Evidence, allowed_events: dict[str, ContextEvent]) -> SourceRef:
         event = allowed_events.get(evidence.event_id)
-        if event is None or "/memory" in evidence.pointer:
+        pointer = evidence.pointer
+        if event is None or "/memory" in pointer:
             raise ValueError("INVALID_SOURCE_EVENT")
-        value = pointer_value(event.model_dump(mode="json"), evidence.pointer)
-        if not isinstance(value, str):
-            raise ValueError("INVALID_SOURCE_QUOTE")
+        try:
+            value = pointer_value(event.model_dump(mode="json"), pointer)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise ValueError("INVALID_SOURCE_POINTER") from exc
         quote = evidence.quote
+        if not isinstance(value, str):
+            if not pointer.startswith("/payload/"):
+                raise ValueError("INVALID_SOURCE_POINTER")
+            if quote is not None:
+                raise ValueError("SOURCE_VALUE_REQUIRES_NULL_QUOTE")
+            if len(encode(value).encode()) > MAX_STRUCTURED_SOURCE_BYTES:
+                raise ValueError("SOURCE_VALUE_TOO_LARGE")
+            return self.source_ref(event, pointer, None)
+        if quote is None:
+            raise ValueError("SOURCE_TEXT_REQUIRES_QUOTE")
         if quote not in value:
             quote = restore_bold_quote(value, quote)
         return self.source_ref(event, evidence.pointer, quote)
 
-    def source_ref(self, event: ContextEvent, pointer: str, quote: str = "") -> SourceRef:
+    def source_ref(self, event: ContextEvent, pointer: str, quote: str | None = "") -> SourceRef:
         """Assign provenance from the captured event, never model-generated metadata."""
         with self.connection() as conn:
             row = conn.execute(

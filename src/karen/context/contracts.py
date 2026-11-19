@@ -95,7 +95,7 @@ class MemoryFlushError(MemoryError):
 class SourceRef(Contract):
     event_id: str
     pointer: str
-    quote: str = ""
+    quote: str | None = ""
     source_role: Literal["user", "assistant", "tool"]
     occurred_at: datetime
     sequence: int | None = None
@@ -106,7 +106,7 @@ class SourceRef(Contract):
 class Evidence(Contract):
     event_id: str
     pointer: str
-    quote: str = Field(min_length=1)
+    quote: str | None = Field(min_length=1)
 
 
 class Scope(Contract):
@@ -288,9 +288,10 @@ class StoredMemory(Contract):
         for source in selected:
             item = source.model_dump(mode="json")
             limit = 800 if source == anchor else 400
-            quote = source.quote.encode()[:limit].decode("utf-8", errors="ignore")
-            item["quote"] = quote
-            item["quote_truncated"] = quote != source.quote
+            if source.quote is not None:
+                quote = source.quote.encode()[:limit].decode("utf-8", errors="ignore")
+                item["quote"] = quote
+                item["quote_truncated"] = quote != source.quote
             data.append(item)
         return data
 
@@ -492,7 +493,7 @@ class DetailHit(Contract):
     def context(self) -> dict[str, JsonValue]:
         """Keep provenance without repeating a quote already present in the text."""
         data = self.model_dump(mode="json")
-        if self.source.quote in self.text:
+        if self.source.quote and self.source.quote in self.text:
             data["source"].pop("quote")
         return data
 

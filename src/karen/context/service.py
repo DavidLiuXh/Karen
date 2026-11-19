@@ -28,8 +28,17 @@ from .contracts import (
     WriteStatus,
     utcnow,
 )
-from .extraction import Extractor
-from .storage import Storage, digest, encode, pointer_value, redact, terms, text_fields
+from .extraction import Extractor, bounded_data
+from .storage import (
+    MAX_STRUCTURED_SOURCE_BYTES,
+    Storage,
+    digest,
+    encode,
+    pointer_value,
+    redact,
+    terms,
+    text_fields,
+)
 
 
 class ContextMemory:
@@ -533,17 +542,24 @@ class ContextMemory:
                 read_bytes += size
                 scanned += 1
                 refs = [s for s in query.sources if s.event_id == event_id]
-                fields = (
-                    [
-                        (pointer, text)
-                        for source in refs
-                        for pointer, text in text_fields(
-                            pointer_value(data, source.pointer), source.pointer
-                        )
-                    ]
-                    if refs
-                    else list(text_fields(data["payload"], "/payload"))
-                )
+                fields = []
+                for source in refs:
+                    if "/memory" in source.pointer:
+                        partial = True
+                        continue
+                    value = pointer_value(data, source.pointer)
+                    if source.quote is None:
+                        preview = encode(value)
+                        if (not source.pointer.startswith("/payload/") or isinstance(value, str)
+                                or len(preview.encode()) > MAX_STRUCTURED_SOURCE_BYTES
+                                or encode(bounded_data(value)) != preview):
+                            partial = True
+                            continue
+                        hits.append(DetailHit(text=preview, source=source, request_id=event.request_id))
+                    else:
+                        fields.extend(text_fields(value, source.pointer))
+                if not refs:
+                    fields = list(text_fields(data["payload"], "/payload"))
                 for pointer, text in fields:
                     if not isinstance(text, str) or not text or "/memory" in pointer:
                         continue
@@ -562,7 +578,7 @@ class ContextMemory:
                             truncated=snippet != text,
                         )
                     )
-            except (PersistenceError, ValueError, KeyError):
+            except (PersistenceError, ValueError, KeyError, IndexError, TypeError):
                 partial = True
         return DetailSearchResult(
             status="partial" if partial else "complete",

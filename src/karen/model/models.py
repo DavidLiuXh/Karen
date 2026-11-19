@@ -1,10 +1,14 @@
 """DeepSeek clients with observable inference settings and the engine model contract."""
 
 import asyncio
+from dataclasses import replace
 
 from dynamic_graph.models.adapters import LangChainModelClient
 from langchain_deepseek import ChatDeepSeek
 from langchain_ollama import OllamaEmbeddings
+
+from ..prompt.prompts import RESPONSE_INSTRUCTION
+from .prompts import PLANNER_RESPONSE_WITHOUT_RECALL
 
 DEFAULT_OUTPUT_TOKEN_LIMIT = 32768
 
@@ -49,6 +53,47 @@ def deepseek_client(
     return DeepSeekModelClient(
         model=model, mode=mode, thinking=thinking, reasoning_effort=reasoning_effort
     )
+
+
+class KarenPlannerModel:
+    """Project the planner request while retaining the full goal in run records."""
+
+    def __init__(self, model):
+        self.model = model
+
+    @property
+    def metadata(self):
+        return getattr(self.model, "metadata", {})
+
+    async def generate(self, request):
+        goal = request.input_data["goal"]
+        context = goal.get("context", {})
+        memory = context.get("memory")
+        if isinstance(memory, dict):
+            memory = {
+                key: value for key, value in memory.items()
+                if key != "snapshot_revision" and value not in (None, [], {})
+            }
+        history = memory.get("history") if isinstance(memory, dict) else None
+        empty_recall = (
+            isinstance(memory, dict)
+            and memory.get("status") == "empty"
+            and memory.keys() <= {"status", "history", "coverage"}
+            and isinstance(history, dict)
+            and history.get("status") == "none"
+            and history.get("complete") is True
+            and not history.get("messages")
+        )
+        conversation = context.get("conversation")
+        if (
+            (not memory or empty_recall)
+            and not context.get("clarification_items")
+            and (conversation is None or isinstance(conversation, list) and len(conversation) <= 1)
+            and context.get("response_instruction") == RESPONSE_INSTRUCTION
+        ):
+            context = {**context, "response_instruction": PLANNER_RESPONSE_WITHOUT_RECALL}
+            request = replace(request, input_data={**request.input_data, "goal": {**goal, "context": context}})
+        return await self.model.generate(request)
 
 
 async def configure_execution_output_limits(planner, worker) -> int:

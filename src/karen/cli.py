@@ -35,7 +35,12 @@ from .context import ContextMemory
 from .context.contracts import PersistenceError
 from .intent import IntentRecognizer, IntentSession
 from .message import messages
-from .model.models import configure_execution_output_limits, deepseek_client, memory_embeddings
+from .model.models import (
+    KarenPlannerModel,
+    configure_execution_output_limits,
+    deepseek_client,
+    memory_embeddings,
+)
 from .model.response import terminal_markdown
 from .observability import ObservedModel, Observer
 from .observability.viewer import DEFAULT_PORT, background_server
@@ -331,7 +336,7 @@ async def converse(
             sensitive_values=observer.sensitive_values,
         )
         models = ModelBindings(
-            planner=ObservedModel(planner, observer),
+            planner=KarenPlannerModel(ObservedModel(planner, observer)),
             worker=model,
         )
         Path(config.runs_dir).mkdir(parents=True, exist_ok=True)

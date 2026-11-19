@@ -286,3 +286,38 @@ async def test_worker_forwards_collected_evidence_over_former_size_limit(monkeyp
     }, {})
     await model.generate(request)
     assert calls == [request]
+
+
+@pytest.mark.parametrize("memory,custom,compact", [
+    (None, False, True),
+    ({"status": "empty", "history": {"status": "none", "complete": True}}, False, True),
+    ({"status": "degraded"}, False, False),
+    ({"details": [{"text": "证据"}]}, False, False),
+    (None, True, False),
+    (None, False, False),
+])
+async def test_planner_only_compacts_builtin_response_policy_without_recall(memory, custom, compact):
+    from dynamic_graph import FakeModelClient, ModelResponse
+
+    from karen.model.models import KarenPlannerModel
+    from karen.model.prompts import PLANNER_RESPONSE_WITHOUT_RECALL
+    from karen.prompt.prompts import RESPONSE_INSTRUCTION
+
+    policy = "调用方指定的交付规则" if custom else RESPONSE_INSTRUCTION
+    context = {"response_instruction": policy}
+    if not compact and memory is None and not custom:
+        context["conversation"] = [{"role": "user", "content": "先给草稿"}, {"role": "user", "content": "只核验第三段"}]
+        context["clarification_items"] = [{"question_id": "scope"}]
+    if memory:
+        context["memory"] = memory
+    backend = FakeModelClient([ModelResponse({})])
+    request = ModelRequest("planner", "system", "task", {"goal": {"context": context}}, {})
+    await KarenPlannerModel(backend).generate(request)
+
+    projected = backend.requests[0].input_data["goal"]["context"]
+    if compact:
+        assert projected == {**context, "response_instruction": PLANNER_RESPONSE_WITHOUT_RECALL}
+        assert len(projected["response_instruction"].encode()) < len(policy.encode()) / 2
+    else:
+        assert projected == context
+    assert request.input_data["goal"]["context"]["response_instruction"] == policy

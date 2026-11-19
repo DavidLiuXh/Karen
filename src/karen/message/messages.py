@@ -52,7 +52,7 @@ TERMINAL_SECTION_LABELS = {
     "限制": "caution",
     "数据限制": "caution",
 }
-CLI_NO_GLOW_HELP = "使用 Rich 渲染终端回答（默认优先使用已安装的 Glow）。"
+CLI_NO_GLOW_HELP = "使用内置 Rich 渲染终端回答（默认行为）。"
 CLI_JSON_HELP = "展示完整执行结果 JSON"
 
 CLI_TIMEZONE_HELP = "用户的 IANA 时区，默认读取本机时区"
@@ -251,3 +251,13 @@ SCHEDULE_ERRORS = {
 }
 
 GMAIL_CONFIG_INCOMPLETE = "Karen：Gmail 配置不完整，需同时设置 GMAIL_CLIENT_ID、GMAIL_CLIENT_SECRET 和 GMAIL_REFRESH_TOKEN；本次未启用 Gmail 工具。"
+
+# Terminal layout
+CLI_TASK_REFERENCE = "任务 #{task_id}"
+CLI_DELIVERIES = "交付文件"
+CLI_CURRENT_TASK = "当前任务：{title} · #{task_id}"
+CLI_INPUT_HINT = "/help 命令 · /new 新任务"
+CLI_OTHER_RUNNING = " · 另有 {count} 项任务运行中"
+CLI_WELCOME = "直接输入开始对话；/help 查看全部命令。"
+
+CLI_REPLY_TITLE = "Karen"

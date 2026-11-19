@@ -3,7 +3,6 @@
 import argparse
 import asyncio
 import os
-import re
 import shutil
 import sqlite3
 import subprocess
@@ -26,6 +25,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.application import get_app
 from prompt_toolkit.formatted_text import FormattedText, to_formatted_text
 from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.text import Text
@@ -49,7 +49,13 @@ from .task import DEFAULT_MAX_CONCURRENT_TASKS, TaskManager
 from .task.console import run_console
 from .task.resources import ExecutionResources
 from .task.storage import TaskStore
-from .task.terminal_rendering import TERMINAL_THEME, ReplyMarkdown
+from .task.terminal_rendering import (
+    READING_WIDTH,
+    TERMINAL_THEME,
+    ReplyMarkdown,
+    render_notice,
+    render_reply,
+)
 from .tools.file_range import READ_RANGE_BYTES, file_read_text_range_tool
 from .tools.git import git_clone_tool
 from .tools.gmail import GmailClient, GmailCredentials
@@ -95,6 +101,20 @@ class TerminalProgress:
     def __init__(self):
         self.tasks = {}
         self.app = None
+        self.focus = None
+        self.title = ""
+
+    def toolbar(self):
+        width = max(1, min(READING_WIDTH, get_app().output.get_size().columns) - 2)
+        hint = messages.CLI_INPUT_HINT
+        current = messages.CLI_CURRENT_TASK.format(title=self.title, task_id=self.focus) if self.focus else ""
+        if current and width >= 60:
+            label = Text(current)
+            label.truncate(max(1, width - get_cwidth(hint) - 3), overflow="ellipsis")
+            text = label.plain + " · " + hint
+        else:
+            text = hint
+        return FormattedText([("", "  " + text)])
 
     def accept(self, task_id):
         if task_id not in self.tasks:
@@ -115,46 +135,52 @@ class TerminalProgress:
     def status_line(self):
         if not self.tasks:
             return ""
-        task_id = next(reversed(self.tasks))
+        task_id = self.focus if self.focus in self.tasks else next(reversed(self.tasks))
         text = self.tasks[task_id]
-        width = get_app().output.get_size().columns
+        if len(self.tasks) > 1:
+            text += messages.CLI_OTHER_RUNNING.format(count=len(self.tasks) - 1)
+        width = max(1, min(READING_WIDTH, get_app().output.get_size().columns) - 4)
         while text and get_cwidth(text) >= width:
             text = text[:-1]
         return text
 
 
-def display_response(text: str, *, json_output: bool = False, use_glow: bool = True) -> None:
+def display_response(text: str, *, json_output: bool = False, use_glow: bool = False, notice: bool = False) -> None:
     """Render terminal replies while keeping redirected and JSON output unchanged."""
     if json_output:
         print(text)
     elif sys.stdout.isatty() and os.environ.get("TERM") != "dumb":
         console = Console(file=sys.stdout, theme=TERMINAL_THEME)
-        console.print()
-        if text == messages.TASK_HELP:
-            console.print(Text(messages.CLI_TITLE, style="bold magenta"))
-            console.print(Text(text, style="dim"))
+        if text == messages.CLI_WELCOME:
+            console.print()
+            console.print(Text("  " + messages.CLI_TITLE, style="bold magenta"))
+            render_notice(console, text)
+        elif text == messages.TASK_HELP:
+            render_notice(console, text.replace("；", "\n"))
+        elif notice:
+            render_notice(console, text)
+        elif use_glow:
+            _render_terminal_markdown(console, text, use_glow=True)
         else:
-            console.print(Text(messages.KAREN_PREFIX, style="bold magenta"))
-            # Only decorate the event envelope; leave reply contents as Markdown.
-            header, separator, body = text.partition("\n")
-            match = re.fullmatch(r"\[[^\]\n]+ · ([^\]\n]+)\]", header)
-            state_styles = {
-                messages.TASK_STATE_LABELS["queued"]: "cyan",
-                messages.TASK_STATE_LABELS["running"]: "cyan",
-                messages.TASK_STATE_LABELS["waiting"]: "yellow",
-                messages.TASK_STATE_LABELS["completed"]: "green",
-                messages.TASK_STATE_LABELS["failed"]: "red",
-                messages.TASK_STATE_LABELS["cancelled"]: "dim",
-                messages.TASK_STATE_LABELS["interrupted"]: "yellow",
-            }
-            if separator and match and match[1] in state_styles:
-                console.print(Text(header, style=state_styles[match[1]]))
-                _render_terminal_markdown(console, body, use_glow=use_glow)
-            else:
-                _render_terminal_markdown(console, text, use_glow=use_glow)
-        console.print()
+            render_reply(console, terminal_markdown(text))
     else:
         print(messages.KAREN_PREFIX + text)
+
+
+def update_terminal_focus(progress, manager, task_id):
+    task = manager.tasks.get(task_id)
+    progress.focus = task_id
+    progress.title = task.title if task is not None else ""
+    if progress.app is not None:
+        progress.app.invalidate()
+
+
+def display_task_response(event, text, *, title, deliveries, schedule=None):
+    render_reply(
+        Console(file=sys.stdout, theme=TERMINAL_THEME), terminal_markdown(text),
+        task_id=event.task_id, title=title, state=event.state,
+        deliveries=deliveries, schedule=schedule,
+    )
 
 
 def create_memory(model, *, rerank_model=None, observer=None) -> ContextMemory:
@@ -199,14 +225,23 @@ async def read_input(*, progress=None) -> str:
 
         def prompt_with_progress():
             status = progress.status_line()
-            prefix = [("", status + "\n")] if status else []
-            return FormattedText(prefix + list(to_formatted_text(prompt)))
+            width = max(1, min(READING_WIDTH, get_app().output.get_size().columns) - 4)
+            muted = "" if "NO_COLOR" in os.environ else "fg:ansibrightblack"
+            prefix = [(muted, "  " + "─" * width + "\n")]
+            if status:
+                prefix.append(("", "  " + status + "\n"))
+            return FormattedText(prefix + [("", "  ")] + list(to_formatted_text(prompt)))
 
-        session = PromptSession(history=_input_history)
+        options = {}
+        if progress is not None:
+            options["style"] = Style.from_dict({"bottom-toolbar": "noreverse bg:default fg:default" + (" fg:ansibrightblack" if "NO_COLOR" not in os.environ else "")})
+        session = PromptSession(history=_input_history, **options)
         if progress is not None:
             progress.app = session.app
         try:
-            return await session.prompt_async(prompt_with_progress if progress is not None else prompt)
+            if progress is not None:
+                return await session.prompt_async(prompt_with_progress, bottom_toolbar=progress.toolbar)
+            return await session.prompt_async(prompt)
         finally:
             if progress is not None:
                 progress.app = None
@@ -287,7 +322,7 @@ async def register_execution_tools(engine, resources, resources_guard):
 
 async def converse(
     *, json_output: bool = False, timezone: str | None = None, observe_port: int | None = None,
-    wechat: bool = False, cli: bool = False, use_glow: bool = True,
+    wechat: bool = False, cli: bool = False, use_glow: bool = False,
     max_concurrent_tasks: int = DEFAULT_MAX_CONCURRENT_TASKS,
 ) -> int:
     try:
@@ -432,7 +467,10 @@ async def converse(
                         read_input=partial(read_input, progress=progress) if progress is not None else read_input,
                         on_task_accepted=progress.accept if progress is not None else None,
                         on_task_finished=progress.finish if progress is not None else None,
-                        display=partial(display_response, use_glow=use_glow), json_output=json_output,
+                        display=partial(display_response, use_glow=use_glow, notice=True),
+                        display_task=display_task_response if interactive and not json_output and os.environ.get("TERM") != "dumb" else None,
+                        on_focus_changed=partial(update_terminal_focus, progress, manager) if progress is not None else None,
+                        json_output=json_output,
                         schedules=schedules,
                     )
 

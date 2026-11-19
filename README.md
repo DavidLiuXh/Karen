@@ -134,6 +134,8 @@ Open the printed dashboard address, usually `http://127.0.0.1:8765/`. Omit `--ob
 
 ## Everyday use
 
+The terminal uses a consistent reading width, task headers, a separate file delivery area, and an input status bar. Background replies preserve text being edited. Use `/task ID` to revisit saved rounds and files; `NO_COLOR` disables colors.
+
 | Command | Purpose |
 | --- | --- |
 | `/new request` | Start an independent task |

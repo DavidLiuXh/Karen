@@ -60,7 +60,7 @@ from .tools.file_range import READ_RANGE_BYTES, file_read_text_range_tool
 from .tools.git import git_clone_tool
 from .tools.gmail import GmailClient, GmailCredentials
 from .tools.gmail_tools import gmail_tools
-from .tools.local import file_create_directory_tool
+from .tools.local import file_create_directory_tool, file_edit_text_tool
 from .tools.run_artifacts import run_artifacts_tool
 from .tools.web import web_read_page_tool
 from .workflow import ReusableWorkflows
@@ -295,6 +295,7 @@ async def register_execution_tools(engine, resources, resources_guard):
         file_read_text_tool,
         file_read_text_range_tool,
         file_write_text_tool,
+        file_edit_text_tool,
         file_create_directory_tool,
         browser_open_local_page_tool,
     ):
@@ -308,7 +309,7 @@ async def register_execution_tools(engine, resources, resources_guard):
         else:
             definition = tool_factory()
         engine.register_tool(resources_guard.file_tool(
-            definition, write=tool_factory in {file_write_text_tool, file_create_directory_tool},
+            definition, write=tool_factory in {file_write_text_tool, file_edit_text_tool, file_create_directory_tool},
         ))
     engine.register_tool(resources_guard.independent_read(web_read_page_tool()))
     engine.register_tool(resources_guard.file_tool(git_clone_tool(), write=True))
@@ -408,6 +409,7 @@ async def converse(
                     workflows=workflows,
                     resources=resources_guard,
                     snapshot_deliveries=store.snapshot if store is not None else None,
+                    recover_deliveries=store.recover_deliveries if store is not None else None,
                     link_run=store.link_run if store is not None else None,
                 )
 

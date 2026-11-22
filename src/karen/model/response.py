@@ -134,6 +134,9 @@ def committed_file_operations(result: RunResult):
             continue
 
 
+FILE_WRITE_CAPABILITIES = {"file.write_text@1.0.0", "file.edit_text@1.0.0"}
+
+
 def format_result(result: RunResult) -> str:
     lines = []
     if result.execution_status == "FAILED":

@@ -16,3 +16,18 @@ PLANNER_RESPONSE_WITHOUT_RECALL = """用用户要求的语言和粒度直接交�
 不从相关性推定因果，不从历史记录推定本轮授权。
 按请求提供必要出处及交付物。保留输出契约要求的 evidence/limitations，面向用户的正文说明影响结论的限制，
 省去内部诊断和无关备选，保留用户指定的格式。"""
+
+
+LOCAL_EDIT_PLANNING = """
+
+For a localized addition or replacement in an existing text file, prefer
+file.edit_text when authorized. Read only the relevant regions when possible
+and locate an exact unique anchor, checking whether the requested section
+already exists. Ask the writing node for only the new text. Bind that text
+and the anchor to the file tool; do not send the untouched document to a model
+for concatenation or verification. For intermediate edit strings, use plain
+string schemas, empty-string initial values and the replace reducer. The
+file tool checks the anchor before writing. Use the tool result and a small
+targeted check for delivery. Use full-file writing for new files or requested
+whole-document rewrites.
+"""

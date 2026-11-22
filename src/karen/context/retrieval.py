@@ -477,6 +477,7 @@ class Retriever:
                     else None,
                     "project_id": query.project_id,
                     "current_task_messages": query.current_task_messages,
+                    **({"bound_delivery": query.bound_delivery} if query.bound_delivery else {}),
                 },
                 QueryAnalysis,
             )
@@ -488,6 +489,15 @@ class Retriever:
             degraded.append("QUERY_ANALYSIS_FAILED")
         if query.time_constraint:
             analysis = analysis.model_copy(update={"time_range": query.time_constraint, "recall_needed": True})
+        elif (
+            query.bound_delivery and analysis.dialogue_dependency == "current_task"
+            and analysis.kind == "relevance" and not analysis.needed_fact_keys
+            and analysis.time_range is None
+            and analysis.time_mode in {"current", "unspecified"}
+        ):
+            analysis = analysis.model_copy(update={
+                "recall_needed": False, "recall_reason": "bound_delivery_and_current_task",
+            })
         return {"analysis": analysis, "degraded": degraded}
 
     async def retrieve(self, state):

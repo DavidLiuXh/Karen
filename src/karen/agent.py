@@ -47,6 +47,7 @@ class Karen:
         workflows: ReusableWorkflows | None = None,
         resources: ExecutionResources | None = None,
         snapshot_deliveries=None,
+        recover_deliveries=None,
         link_run=None,
     ):
         self.intent = intent
@@ -56,6 +57,7 @@ class Karen:
         self.workflows = workflows
         self.resources = resources or ExecutionResources(self.observer)
         self.snapshot_deliveries = snapshot_deliveries
+        self.recover_deliveries = recover_deliveries
         self.link_run = link_run
 
     @asynccontextmanager
@@ -109,12 +111,12 @@ class Karen:
         if self.memory is not None:
             self.memory.finish_request(session.conversation_id, session.request_id)
 
-    async def _recorded_task_history(self, session, user_input, *, search_quotes=False):
+    async def _recorded_task_history(self, session, user_input, *, search_quotes=False, bound_task_id=None):
         if self.observer.root_dir is None:
             return None
-        user_messages = [
-            user_input, *(m.content for m in reversed(session.messages) if m.role == "user")
-        ]
+        user_messages = [user_input]
+        if bound_task_id is None:
+            user_messages.extend(m.content for m in reversed(session.messages) if m.role == "user")
         for text in user_messages:
             ids = set(re.findall(
                 r"(?:task\s*id|任务\s*(?:id|编号))\s*(?:为|是|is\b|[:：=])?\s*`?([a-f0-9]{8})(?![a-z0-9_])",
@@ -133,15 +135,21 @@ class Karen:
                 ]
                 if excerpts:
                     break
-        if not ids and not excerpts:
+        if not ids and not excerpts and not bound_task_id:
             return None
         try:
-            archived = await asyncio.to_thread(
-                TraceStore(self.observer.root_dir).task_execution,
-                next(iter(ids), None), excerpts=excerpts,
-            )
-            if archived is not None:
-                archived["match_reason"] = "task_id" if ids else "quoted_request"
+            lookup = TraceStore(self.observer.root_dir).task_execution
+            archived = None
+            if ids or excerpts:
+                archived = await asyncio.to_thread(lookup, next(iter(ids), None), excerpts=excerpts)
+                if archived is not None:
+                    archived["match_reason"] = "task_id" if ids else "quoted_request"
+                if ids:
+                    return archived
+            if archived is None and bound_task_id:
+                archived = await asyncio.to_thread(lookup, bound_task_id, completed_only=True)
+                if archived is not None:
+                    archived["match_reason"] = "bound_task"
             return archived
         except OSError:
             return None
@@ -233,6 +241,7 @@ class Karen:
                             cancellation_token,
                             trace_id,
                             received_at,
+                            bound_task_id=task_id if continue_task else None,
                             previous_goal=previous_goal,
                             previous_run_id=previous_run_id,
                             task_id=task_id,
@@ -267,6 +276,7 @@ class Karen:
         trace_id,
         received_at,
         *,
+        bound_task_id=None,
         previous_goal=None,
         previous_run_id=None,
         task_id=None,
@@ -290,6 +300,15 @@ class Karen:
                 request_id=session.request_id,
                 source_request_id=previous_goal.request_id,
             )
+        archived = None
+        bound_delivery = None
+        if bound_task_id and session.routing.handling == "assess":
+            archived = await self._recorded_task_history(session, user_input, bound_task_id=bound_task_id)
+            if archived is not None and archived["match_reason"] == "bound_task":
+                bound_delivery = {
+                    "objective": archived["goal"]["objective"][:2000],
+                    "delivered_files": archived["goal"].get("delivered_files", [])[:32],
+                }
         if self.memory is not None and (
             session.routing.handling == "assess" or "question" in session.routing.input_types
         ):
@@ -303,14 +322,22 @@ class Karen:
                     exclude_event_ids=[receipt.event_id] if receipt else [],
                     current_task_messages=[m.model_dump(mode="json") for m in session.messages],
                     project_id=session.user_context.get("project_id"),
+                    bound_delivery=bound_delivery,
                 )
             )
         if session.routing.handling == "assess":
-            archived = await self._recorded_task_history(
-                session, user_input,
-                search_quotes=bool(recalled and recalled.coverage.get("requires_history")),
-            )
+            requires_history = bool(recalled and recalled.coverage.get("requires_history"))
+            if not bound_task_id or requires_history:
+                archived = await self._recorded_task_history(
+                    session, user_input, search_quotes=requires_history, bound_task_id=bound_task_id,
+                )
             if archived is not None:
+                files = archived["goal"].get("delivered_files")
+                if archived["match_reason"] == "bound_task" and files and self.recover_deliveries:
+                    recovered = self.recover_deliveries(bound_task_id, archived["run_id"], files)
+                    archived["goal"]["delivered_files"] = [recovered.get(path, path) for path in files]
+                    if recovered:
+                        archived["goal"]["recovered_from_snapshot"] = recovered
                 source = {
                     key: archived[key] for key in ("request_id", "task_id", "run_id", "occurred_at")
                 }
@@ -348,8 +375,15 @@ class Karen:
         memory_context = recalled.context() if recalled is not None else None
         kwargs = {"memory_context": memory_context} if memory_context is not None else {}
         workflow = None
+        uses_bound_delivery_only = (
+            archived is not None and archived["match_reason"] == "bound_task"
+            and recalled is not None
+            and recalled.coverage.get("dialogue_dependency") == "current_task"
+            and recalled.coverage.get("recall_needed") is False
+        )
         if (
             self.workflows is not None
+            and (not uses_bound_delivery_only or session.workflow_pending is not None)
             and session.routing.handling == "assess"
             and (
                 (
@@ -573,7 +607,7 @@ class Karen:
             self.workflows.submit(
                 CompletedWorkflowRun(
                     text=next(
-                        (m.content for m in session.messages if m.role == "user"), user_input
+                        (m.content for m in session.messages if m.role == "user"), session.goal.objective
                     ),
                     messages=[m.model_dump(mode="json") for m in session.messages],
                     goal=session.goal,

@@ -1,7 +1,9 @@
 """Observable routing behavior, with no real user directory or external models."""
 
 import asyncio
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings
@@ -1701,12 +1703,15 @@ async def test_ambiguous_material_can_be_an_answer_but_not_an_operation_target(o
 
 
 @pytest.mark.parametrize("followup", [False, True])
-@pytest.mark.parametrize("reference", ["id", "quote", "bound"])
+@pytest.mark.parametrize("reference", ["id", "quote", "bound", "stale_id", "missed_history", "snapshot"])
 async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path, followup, reference):
     from uuid import uuid4
 
     from dynamic_graph import GoalSpec
 
+    from karen.task.storage import TaskStore
+
+    bound = reference not in {"id", "quote"}
     task_id = "abc12345"
     request_id, run_id = uuid4().hex, uuid4().hex
     root = tmp_path / "observability"
@@ -1717,14 +1722,17 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
         old_observer.emit("input.received", data={"text": original})
         old_observer.emit("execution.result", data={
             "run_id": run_id,
-            "execution_status": "COMPLETED" if reference == "bound" else "FAILED",
-            "output_complete": reference == "bound",
+            "execution_status": "COMPLETED" if bound else "FAILED",
+            "output_complete": bound,
             "outputs": {"files": ["/tmp/sample/guide.md"]},
         })
-        if reference == "bound":
+        if bound:
             old_observer.emit("execution.result", data={
                 "run_id": uuid4().hex, "execution_status": "FAILED", "output_complete": False,
             })
+    if reference == "stale_id":
+        with old_observer.span("turn", task_id="deadbeef", request_id=request_id):
+            old_observer.emit("execution.result", data={"run_id": run_id, "execution_status": "COMPLETED"})
     await old_observer.close()
     run = tmp_path / "runs" / run_id
     run.mkdir(parents=True)
@@ -1741,8 +1749,8 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
     ).model_dump_json())
 
     backend = MemoryModel()
-    backend.requires_task_selection = True
-    backend.dependency = "needed"
+    backend.requires_task_selection = reference != "missed_history"
+    backend.dependency = "none" if reference == "missed_history" else "needed"
     backend.history_status = "unavailable"
     memory = ContextMemory(root_dir=tmp_path / "context", model=backend, embeddings=LocalEmbeddings())
     await memory.start()
@@ -1754,7 +1762,7 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
         else "请补充到这份使用说明中"
     )
     session = IntentSession(timezone="UTC")
-    if reference == "bound" and not followup:
+    if bound and not followup:
         session = session.model_copy(update={"messages": (Message(role="user", content=original),)})
     if followup:
         session = session.model_copy(update={
@@ -1767,15 +1775,34 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
             ),
             "displayed_question_ids": ("old_task",),
         })
+    if reference == "stale_id":
+        session = session.model_copy(update={
+            "messages": (Message(role="user", content="参考任务 ID deadbeef 的写法"), *session.messages),
+        })
     executor = FakeModelClient([graph_response(), {"draft": "已处理"}])
     agent, model, _ = agent_for(
         tmp_path, [routing(relation="continue" if followup else "new"), ready()],
         observer=observer, memory=memory, executor=executor,
     )
+    store = None
+    if reference == "snapshot":
+        store = TaskStore(tmp_path / "task-store")
+        turn_id = uuid4().hex
+        relative = f"{task_id}/{turn_id}/1/guide.md"
+        snapshot = store.files / relative
+        snapshot.parent.mkdir(parents=True)
+        snapshot.write_text("archived guide")
+        with store.db:
+            store.enqueue(task_id, "Guide", session, turn_id, original,
+                          datetime.now(UTC), 1)
+        store.settle(task_id, turn_id, session, "completed", run_id=run_id, deliverables=[{
+            "kind": "file", "name": "guide.md", "available": True, "relative_path": relative,
+        }])
+        agent.recover_deliveries = getattr(store, "recover_deliveries", None)
     try:
         turn = await agent.advance(
             session, "就是保存示例工程" if followup else first_input,
-            continue_task=reference == "bound", task_id=task_id if reference == "bound" else None,
+            continue_task=bound, task_id=task_id if bound else None,
         )
         assert not turn.session.questions
         assert turn.result.execution_status == "COMPLETED"
@@ -1784,12 +1811,23 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
         assert turn.memory_result.related_request_ids == [request_id]
         assert history.messages[0]["run_id"] == run_id
         assert "/tmp/sample" in history.messages[0]["content"]
-        if reference == "bound":
+        if bound:
+            assert history.messages[0]["task_id"] == task_id
             assert history.reason == "execution_record_bound_task"
-            assert "/tmp/sample/guide.md" in history.messages[0]["content"]
+            delivered = json.loads(history.messages[0]["content"])["delivered_files"]
+            if reference == "snapshot":
+                recovered = Path(delivered[0])
+                assert recovered.is_file()
+                assert recovered.is_relative_to(Path("/tmp").resolve())
+                assert recovered.read_text() == "archived guide"
+                assert snapshot.read_text() == "archived guide"
+            else:
+                assert delivered == ["/tmp/sample/guide.md"]
         assert history.messages[1]["content"] == "旧方案的代码正文。" * 700
         assert "unrelated" not in str(history.messages)
         assert any(r.role == "intent_clarity" for r in model.requests)
     finally:
+        if store is not None:
+            store.close()
         await observer.close()
         await memory.close()

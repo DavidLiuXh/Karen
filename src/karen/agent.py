@@ -47,6 +47,7 @@ class Karen:
         workflows: ReusableWorkflows | None = None,
         resources: ExecutionResources | None = None,
         snapshot_deliveries=None,
+        recover_deliveries=None,
         link_run=None,
     ):
         self.intent = intent
@@ -56,6 +57,7 @@ class Karen:
         self.workflows = workflows
         self.resources = resources or ExecutionResources(self.observer)
         self.snapshot_deliveries = snapshot_deliveries
+        self.recover_deliveries = recover_deliveries
         self.link_run = link_run
 
     @asynccontextmanager
@@ -112,9 +114,9 @@ class Karen:
     async def _recorded_task_history(self, session, user_input, *, search_quotes=False, bound_task_id=None):
         if self.observer.root_dir is None:
             return None
-        user_messages = [
-            user_input, *(m.content for m in reversed(session.messages) if m.role == "user")
-        ]
+        user_messages = [user_input]
+        if bound_task_id is None:
+            user_messages.extend(m.content for m in reversed(session.messages) if m.role == "user")
         for text in user_messages:
             ids = set(re.findall(
                 r"(?:task\s*id|任务\s*(?:id|编号))\s*(?:为|是|is\b|[:：=])?\s*`?([a-f0-9]{8})(?![a-z0-9_])",
@@ -315,15 +317,18 @@ class Karen:
             )
         if session.routing.handling == "assess":
             requires_history = bool(recalled and recalled.coverage.get("requires_history"))
-            recover_bound_history = recalled is None or (
-                requires_history and recalled.history.status != "selected"
-            )
             archived = await self._recorded_task_history(
                 session, user_input,
                 search_quotes=requires_history,
-                bound_task_id=bound_task_id if recover_bound_history else None,
+                bound_task_id=bound_task_id,
             )
             if archived is not None:
+                files = archived["goal"].get("delivered_files")
+                if archived["match_reason"] == "bound_task" and files and self.recover_deliveries:
+                    recovered = self.recover_deliveries(bound_task_id, archived["run_id"], files)
+                    archived["goal"]["delivered_files"] = [recovered.get(path, path) for path in files]
+                    if recovered:
+                        archived["goal"]["recovered_from_snapshot"] = recovered
                 source = {
                     key: archived[key] for key in ("request_id", "task_id", "run_id", "occurred_at")
                 }

@@ -408,6 +408,7 @@ async def converse(
                     workflows=workflows,
                     resources=resources_guard,
                     snapshot_deliveries=store.snapshot if store is not None else None,
+                    recover_deliveries=store.recover_deliveries if store is not None else None,
                     link_run=store.link_run if store is not None else None,
                 )
 

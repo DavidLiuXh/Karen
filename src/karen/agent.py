@@ -109,7 +109,7 @@ class Karen:
         if self.memory is not None:
             self.memory.finish_request(session.conversation_id, session.request_id)
 
-    async def _recorded_task_history(self, session, user_input, *, search_quotes=False):
+    async def _recorded_task_history(self, session, user_input, *, search_quotes=False, bound_task_id=None):
         if self.observer.root_dir is None:
             return None
         user_messages = [
@@ -133,15 +133,21 @@ class Karen:
                 ]
                 if excerpts:
                     break
-        if not ids and not excerpts:
+        if not ids and not excerpts and not bound_task_id:
             return None
         try:
-            archived = await asyncio.to_thread(
-                TraceStore(self.observer.root_dir).task_execution,
-                next(iter(ids), None), excerpts=excerpts,
-            )
-            if archived is not None:
-                archived["match_reason"] = "task_id" if ids else "quoted_request"
+            lookup = TraceStore(self.observer.root_dir).task_execution
+            archived = None
+            if ids or excerpts:
+                archived = await asyncio.to_thread(lookup, next(iter(ids), None), excerpts=excerpts)
+                if archived is not None:
+                    archived["match_reason"] = "task_id" if ids else "quoted_request"
+                if ids:
+                    return archived
+            if archived is None and bound_task_id:
+                archived = await asyncio.to_thread(lookup, bound_task_id, completed_only=True)
+                if archived is not None:
+                    archived["match_reason"] = "bound_task"
             return archived
         except OSError:
             return None
@@ -233,6 +239,7 @@ class Karen:
                             cancellation_token,
                             trace_id,
                             received_at,
+                            bound_task_id=task_id if continue_task else None,
                             previous_goal=previous_goal,
                             previous_run_id=previous_run_id,
                             task_id=task_id,
@@ -267,6 +274,7 @@ class Karen:
         trace_id,
         received_at,
         *,
+        bound_task_id=None,
         previous_goal=None,
         previous_run_id=None,
         task_id=None,
@@ -306,9 +314,14 @@ class Karen:
                 )
             )
         if session.routing.handling == "assess":
+            requires_history = bool(recalled and recalled.coverage.get("requires_history"))
+            recover_bound_history = recalled is None or (
+                requires_history and recalled.history.status != "selected"
+            )
             archived = await self._recorded_task_history(
                 session, user_input,
-                search_quotes=bool(recalled and recalled.coverage.get("requires_history")),
+                search_quotes=requires_history,
+                bound_task_id=bound_task_id if recover_bound_history else None,
             )
             if archived is not None:
                 source = {

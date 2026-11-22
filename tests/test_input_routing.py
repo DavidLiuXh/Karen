@@ -1701,7 +1701,7 @@ async def test_ambiguous_material_can_be_an_answer_but_not_an_operation_target(o
 
 
 @pytest.mark.parametrize("followup", [False, True])
-@pytest.mark.parametrize("reference", ["id", "quote"])
+@pytest.mark.parametrize("reference", ["id", "quote", "bound"])
 async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path, followup, reference):
     from uuid import uuid4
 
@@ -1715,7 +1715,16 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
     original = "请在临时目录创建示例工程，然后保存代码和使用说明"
     with old_observer.span("turn", task_id=task_id, request_id=request_id):
         old_observer.emit("input.received", data={"text": original})
-        old_observer.emit("execution.result", data={"run_id": run_id, "execution_status": "FAILED"})
+        old_observer.emit("execution.result", data={
+            "run_id": run_id,
+            "execution_status": "COMPLETED" if reference == "bound" else "FAILED",
+            "output_complete": reference == "bound",
+            "outputs": {"files": ["/tmp/sample/guide.md"]},
+        })
+        if reference == "bound":
+            old_observer.emit("execution.result", data={
+                "run_id": uuid4().hex, "execution_status": "FAILED", "output_complete": False,
+            })
     await old_observer.close()
     run = tmp_path / "runs" / run_id
     run.mkdir(parents=True)
@@ -1741,9 +1750,12 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
     await observer.start()
     first_input = (
         f"请重试 task id 为 {task_id} 的任务" if reference == "id"
-        else f"之前我请你“{original}”执行失败了，请再试一次"
+        else f"之前我请你“{original}”执行失败了，请再试一次" if reference == "quote"
+        else "请补充到这份使用说明中"
     )
     session = IntentSession(timezone="UTC")
+    if reference == "bound" and not followup:
+        session = session.model_copy(update={"messages": (Message(role="user", content=original),)})
     if followup:
         session = session.model_copy(update={
             "messages": (
@@ -1761,13 +1773,20 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
         observer=observer, memory=memory, executor=executor,
     )
     try:
-        turn = await agent.advance(session, "就是保存示例工程" if followup else first_input)
+        turn = await agent.advance(
+            session, "就是保存示例工程" if followup else first_input,
+            continue_task=reference == "bound", task_id=task_id if reference == "bound" else None,
+        )
         assert not turn.session.questions
+        assert turn.result.execution_status == "COMPLETED"
         history = turn.memory_result.history
         assert history.status == "selected"
         assert turn.memory_result.related_request_ids == [request_id]
         assert history.messages[0]["run_id"] == run_id
         assert "/tmp/sample" in history.messages[0]["content"]
+        if reference == "bound":
+            assert history.reason == "execution_record_bound_task"
+            assert "/tmp/sample/guide.md" in history.messages[0]["content"]
         assert history.messages[1]["content"] == "旧方案的代码正文。" * 700
         assert "unrelated" not in str(history.messages)
         assert any(r.role == "intent_clarity" for r in model.requests)

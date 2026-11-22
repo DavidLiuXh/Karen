@@ -272,7 +272,7 @@ class TraceStore:
         paths.sort(key=lambda p: p.stat().st_mtime if not p.is_symlink() else 0, reverse=True)
         return paths[:limit], limit is not None and len(paths) > limit
 
-    def task_execution(self, task_id=None, *, excerpts=()):
+    def task_execution(self, task_id=None, *, excerpts=(), completed_only=False):
         """Resolve a displayed ID or uniquely quoted executed task."""
         if task_id is not None and not re.fullmatch(r"[a-f0-9]{8}", task_id):
             return None
@@ -315,6 +315,10 @@ class TraceStore:
                     and isinstance(recorded_task, str)
                     and re.fullmatch(r"[a-f0-9]{8}", recorded_task)
                     and (task_id is None or recorded_task == task_id)
+                    and (not completed_only or (
+                        event["data"].get("execution_status") == "COMPLETED"
+                        and event["data"].get("output_complete") is True
+                    ))
                     and event.get("request_id")
                     and isinstance(run_id, str)
                     and IDENTIFIER.fullmatch(run_id)
@@ -334,6 +338,12 @@ class TraceStore:
         goal = self._json(self.runs_dir / run_id / "goal.json", 256 * 1024)
         if goal.get("request_id") != latest["request_id"] or not goal.get("objective"):
             return None
+        goal_summary = {key: goal[key] for key in ("objective", "inputs", "success_criteria") if key in goal}
+        if completed_only:
+            outputs = latest["data"].get("outputs")
+            files = outputs.get("files") if isinstance(outputs, dict) else None
+            if isinstance(files, list):
+                goal_summary["delivered_files"] = [path for path in files if isinstance(path, str)]
         context = goal.get("context")
         conversation = context.get("conversation", []) if isinstance(context, dict) else []
         return {
@@ -341,7 +351,7 @@ class TraceStore:
             "request_id": latest["request_id"],
             "run_id": run_id,
             "occurred_at": latest["timestamp_utc"],
-            "goal": {key: goal[key] for key in ("objective", "inputs", "success_criteria") if key in goal},
+            "goal": goal_summary,
             "conversation": conversation if isinstance(conversation, list) else [],
         }
 

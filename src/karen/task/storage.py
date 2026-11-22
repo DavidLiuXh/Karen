@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile, mkdtemp
 
 from ..intent import IntentSession
-from ..model.response import committed_file_operations
+from ..model.response import FILE_WRITE_CAPABILITIES, committed_file_operations
 
 MAX_FILE_BYTES = 1_048_576
 MAX_DELIVERY_FILES = 32
@@ -242,7 +242,7 @@ class TaskStore:
             return ()
         written = set()
         for capability, output in committed_file_operations(result):
-            if capability == "file.write_text@1.0.0" and type(output.get("bytes_written")) is int:
+            if capability in FILE_WRITE_CAPABILITIES and type(output.get("bytes_written")) is int:
                 written.add(output["path"])
         root = Path("/tmp").resolve()
         entries = []

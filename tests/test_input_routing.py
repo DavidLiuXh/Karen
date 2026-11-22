@@ -1703,7 +1703,7 @@ async def test_ambiguous_material_can_be_an_answer_but_not_an_operation_target(o
 
 
 @pytest.mark.parametrize("followup", [False, True])
-@pytest.mark.parametrize("reference", ["id", "quote", "bound", "stale_id", "missed_history", "snapshot"])
+@pytest.mark.parametrize("reference", ["id", "quote", "bound", "stale_id", "missed_history", "snapshot", "scoped"])
 async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path, followup, reference):
     from uuid import uuid4
 
@@ -1749,8 +1749,8 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
     ).model_dump_json())
 
     backend = MemoryModel()
-    backend.requires_task_selection = reference != "missed_history"
-    backend.dependency = "none" if reference == "missed_history" else "needed"
+    backend.requires_task_selection = reference not in {"missed_history", "scoped"}
+    backend.dependency = {"missed_history": "none", "scoped": "current_task"}.get(reference, "needed")
     backend.history_status = "unavailable"
     memory = ContextMemory(root_dir=tmp_path / "context", model=backend, embeddings=LocalEmbeddings())
     await memory.start()
@@ -1784,6 +1784,11 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
         tmp_path, [routing(relation="continue" if followup else "new"), ready()],
         observer=observer, memory=memory, executor=executor,
     )
+    if reference == "scoped":
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        agent.workflows = SimpleNamespace(resolve=AsyncMock(), auto_extract=False)
     store = None
     if reference == "snapshot":
         store = TaskStore(tmp_path / "task-store")
@@ -1804,6 +1809,10 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
             session, "就是保存示例工程" if followup else first_input,
             continue_task=bound, task_id=task_id if bound else None,
         )
+        if reference == "scoped":
+            agent.workflows.resolve.assert_not_awaited()
+            assert not any(r.role == "memory_rerank" for r in backend.requests)
+            assert turn.memory_result.coverage["recall_needed"] is False
         assert not turn.session.questions
         assert turn.result.execution_status == "COMPLETED"
         history = turn.memory_result.history

@@ -357,6 +357,7 @@ class RecallQuery(Contract):
     time_constraint: TimeRange | None = None
     project_id: str | None = None
     current_task_messages: list[dict[str, JsonValue]] = Field(default_factory=list)
+    bound_delivery: dict[str, JsonValue] | None = None
 
     @model_validator(mode="after")
     def valid_clock(self):

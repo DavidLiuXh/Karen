@@ -30,3 +30,28 @@ async def test_directory_tool_creates_missing_parents_and_rejects_escape(tmp_pat
     with pytest.raises(ToolCallError):
         await tool.handler({"path": "file/nested"}, context)
     assert (root / "file").read_text() == "existing file"
+
+
+async def test_edit_text_inserts_adjacent_to_unique_anchor_without_rewriting_original(tmp_path):
+    from karen.tools import local
+
+    path = tmp_path / "guide.md"
+    original = b"# Guide\r\n\r\n## First\r\nOriginal text\r\n\r\n## Last\r\n"
+    path.write_bytes(original)
+    factory = getattr(local, "file_edit_text_tool", None)
+    assert factory is not None
+    tool = factory(tmp_path)
+    context = SimpleNamespace(cancellation_token=CancellationToken(), deadline=time.monotonic() + 5)
+    result = await tool.handler({
+        "path": str(path), "anchor": "## Last\r\n", "position": "before",
+        "content": "## Glossary\r\nNew terms\r\n\r\n",
+    }, context)
+    expected = original.replace(b"## Last", b"## Glossary\r\nNew terms\r\n\r\n## Last")
+    assert path.read_bytes() == expected
+    assert result == {"path": str(path), "bytes_written": len(expected)}
+
+    for anchor in ("missing", "## "):
+        with pytest.raises(ToolCallError):
+            await tool.handler({"path": str(path), "anchor": anchor, "position": "after",
+                                "content": "Another section"}, context)
+        assert path.read_bytes() == expected

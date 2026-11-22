@@ -300,6 +300,15 @@ class Karen:
                 request_id=session.request_id,
                 source_request_id=previous_goal.request_id,
             )
+        archived = None
+        bound_delivery = None
+        if bound_task_id and session.routing.handling == "assess":
+            archived = await self._recorded_task_history(session, user_input, bound_task_id=bound_task_id)
+            if archived is not None and archived["match_reason"] == "bound_task":
+                bound_delivery = {
+                    "objective": archived["goal"]["objective"][:2000],
+                    "delivered_files": archived["goal"].get("delivered_files", [])[:32],
+                }
         if self.memory is not None and (
             session.routing.handling == "assess" or "question" in session.routing.input_types
         ):
@@ -313,15 +322,15 @@ class Karen:
                     exclude_event_ids=[receipt.event_id] if receipt else [],
                     current_task_messages=[m.model_dump(mode="json") for m in session.messages],
                     project_id=session.user_context.get("project_id"),
+                    bound_delivery=bound_delivery,
                 )
             )
         if session.routing.handling == "assess":
             requires_history = bool(recalled and recalled.coverage.get("requires_history"))
-            archived = await self._recorded_task_history(
-                session, user_input,
-                search_quotes=requires_history,
-                bound_task_id=bound_task_id,
-            )
+            if not bound_task_id or requires_history:
+                archived = await self._recorded_task_history(
+                    session, user_input, search_quotes=requires_history, bound_task_id=bound_task_id,
+                )
             if archived is not None:
                 files = archived["goal"].get("delivered_files")
                 if archived["match_reason"] == "bound_task" and files and self.recover_deliveries:
@@ -366,8 +375,15 @@ class Karen:
         memory_context = recalled.context() if recalled is not None else None
         kwargs = {"memory_context": memory_context} if memory_context is not None else {}
         workflow = None
+        uses_bound_delivery_only = (
+            archived is not None and archived["match_reason"] == "bound_task"
+            and recalled is not None
+            and recalled.coverage.get("dialogue_dependency") == "current_task"
+            and recalled.coverage.get("recall_needed") is False
+        )
         if (
             self.workflows is not None
+            and (not uses_bound_delivery_only or session.workflow_pending is not None)
             and session.routing.handling == "assess"
             and (
                 (

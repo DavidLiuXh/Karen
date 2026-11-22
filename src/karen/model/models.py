@@ -8,7 +8,7 @@ from langchain_deepseek import ChatDeepSeek
 from langchain_ollama import OllamaEmbeddings
 
 from ..prompt.prompts import RESPONSE_INSTRUCTION
-from .prompts import FINAL_DELIVERY_PLANNING, PLANNER_RESPONSE_WITHOUT_RECALL
+from .prompts import FINAL_DELIVERY_PLANNING, LOCAL_EDIT_PLANNING, PLANNER_RESPONSE_WITHOUT_RECALL
 
 DEFAULT_OUTPUT_TOKEN_LIMIT = 32768
 
@@ -94,7 +94,7 @@ class KarenPlannerModel:
             context = {**context, "response_instruction": PLANNER_RESPONSE_WITHOUT_RECALL}
             request = replace(request, input_data={**request.input_data, "goal": {**goal, "context": context}})
         return await self.model.generate(replace(
-            request, system_instruction=request.system_instruction + FINAL_DELIVERY_PLANNING
+            request, system_instruction=request.system_instruction + FINAL_DELIVERY_PLANNING + LOCAL_EDIT_PLANNING
         ))
 
 

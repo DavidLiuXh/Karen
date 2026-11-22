@@ -120,6 +120,10 @@ replace 必须有真实变化依据；correct 必须有纠错依据。
 VERIFY += FACT_SEMANTICS_INSTRUCTION + FACT_EXAMPLES
 
 QUERY = """先判断本轮是否需要从已存记忆补充信息，再确定查找范围；这是召回的唯一准入判断。
+bound_delivery 来自已明确绑定的当前任务，可用其中的目标和交付路径定位当前对象。
+如果后续只需读取或修改该交付物，判断为 current_task，且无需从全局记忆召回。
+文件正文、章节结构和已经交付过的路径由当前文件或 bound_delivery 提供，不列入 needed_fact_keys。
+有明确的其他任务引用、当前任务外的既有约定、个人事实或历史统计时，仍按实际需要召回。
 recall_needed=false：当前输入和 current_task_messages 已足以确定所需背景，后续只需常识、推导、
 外部实时资料或执行工具。独立且条件完整的研究/天气请求、当前任务中已经给清条件的澄清回复，
 不因可能有同主题旧对话就召回；不要为了猜测个性化而查记忆。此时 kind=relevance，

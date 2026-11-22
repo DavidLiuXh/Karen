@@ -65,3 +65,52 @@ def file_create_directory_tool(root="/tmp"):
         idempotent=True,
         reentrant=False,
     )
+
+
+def file_edit_text_tool(root="/tmp"):
+    """Apply a bounded edit to one uniquely identified span of UTF-8 text."""
+    from dynamic_graph.tools import file_read_text_tool, file_write_text_tool
+
+    reader = file_read_text_tool(root)
+    writer = file_write_text_tool(root)
+
+    async def edit(data, context):
+        existing = await reader.handler({"path": data["path"]}, context)
+        text, anchor = existing["content"], data["anchor"]
+        start = text.find(anchor)
+        if not anchor or start < 0 or text.find(anchor, start + 1) >= 0:
+            raise ToolCallError("Edit anchor must occur exactly once", code="EDIT_ANCHOR_NOT_UNIQUE")
+        end = start + len(anchor)
+        position = data["position"]
+        if position == "before":
+            end = start
+        elif position == "after":
+            start = end
+        updated = text[:start] + data["content"] + text[end:]
+        return await writer.handler(
+            {"path": existing["path"], "content": updated, "overwrite": True}, context,
+        )
+
+    return ToolDefinition(
+        "file.edit_text",
+        "1.0.0",
+        "Atomically insert or replace a span in an existing UTF-8 file. Supply exact, unique "
+        "anchor text from the file and only the new text. All other bytes are preserved. "
+        "Both the original and updated file must fit the local 1 MiB limit.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "anchor": {"type": "string"},
+                "position": {"type": "string", "enum": ["before", "after", "replace"]},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "anchor", "position", "content"],
+            "additionalProperties": False,
+        },
+        writer.output_schema,
+        edit,
+        read_only=False,
+        idempotent=False,
+        reentrant=False,
+    )

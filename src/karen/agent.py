@@ -607,7 +607,7 @@ class Karen:
             self.workflows.submit(
                 CompletedWorkflowRun(
                     text=next(
-                        (m.content for m in session.messages if m.role == "user"), user_input
+                        (m.content for m in session.messages if m.role == "user"), session.goal.objective
                     ),
                     messages=[m.model_dump(mode="json") for m in session.messages],
                     goal=session.goal,

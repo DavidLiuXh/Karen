@@ -1788,7 +1788,7 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
         from types import SimpleNamespace
         from unittest.mock import AsyncMock
 
-        agent.workflows = SimpleNamespace(resolve=AsyncMock(), auto_extract=False)
+        agent.workflows = SimpleNamespace(resolve=AsyncMock(), submit=lambda run: None, auto_extract=False)
     store = None
     if reference == "snapshot":
         store = TaskStore(tmp_path / "task-store")

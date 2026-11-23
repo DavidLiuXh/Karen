@@ -31,3 +31,11 @@ file tool checks the anchor before writing. Use the tool result and a small
 targeted check for delivery. Use full-file writing for new files or requested
 whole-document rewrites.
 """
+
+
+PLANNER_BINDING_REPAIR = """
+修复 repair_node_index 指向的节点的输入绑定。根据 repair.validation_errors、原图、
+目标与已注册能力契约，返回该节点完整的 input_bindings，包括未受影响的绑定。
+只返回包含 input_bindings 的对象。程序会保留图的其他部分并校验完整图。
+只引用已有且保证可用的输入和状态字段。
+"""

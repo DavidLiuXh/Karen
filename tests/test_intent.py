@@ -94,6 +94,10 @@ async def test_recalled_uses_are_reviewed_before_goal_creation():
                 draft_goal = request.input_data["draft"]["decision"]["goal"]
                 assert draft_goal["objective"] == original["decision"]["goal"]["objective"]
                 assert draft_goal["supporting_facts"] == original["decision"]["goal"]["supporting_facts"]
+                return ModelResponse({"accepted": False, "issues": ["补齐视频剪辑的范围"]})
+            if request.role == "intent_goal_revision":
+                self.requests.append(request)
+                assert request.input_data["review_issues"] == ["补齐视频剪辑的范围"]
                 return ModelResponse(revised)
             return await super().generate(request)
 
@@ -331,7 +335,7 @@ async def test_custom_output_schema_is_validated_by_engine_contract():
     assert len(model.assessments) == 2
 
 
-@pytest.mark.parametrize("stage", ["intent", "intent_goal_review"])
+@pytest.mark.parametrize("stage", ["intent", "intent_goal_revision"])
 async def test_optional_null_output_schema_uses_the_engine_default(stage):
     import jsonschema
     from dynamic_graph.contracts import default_output_schema
@@ -339,6 +343,8 @@ async def test_optional_null_output_schema_uses_the_engine_default(stage):
 
     class Model(TaskIntentModel):
         async def generate(self, request):
+            if request.role == "intent_goal_review" and stage == "intent_goal_revision":
+                return ModelResponse({"accepted": False, "issues": ["修订目标范围"]})
             if request.role == stage:
                 self.requests.append(request)
                 return ModelResponse(ready(output_schema=None))

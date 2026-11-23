@@ -384,6 +384,8 @@ class ObservedModel:
                     "usage": response.usage,
                     "provider_request_id": response.provider_request_id,
                     "model": response.response_metadata.get("model"),
+                    **({"json_recovery": response.response_metadata["json_recovery"]}
+                       if "json_recovery" in response.response_metadata else {}),
                 },
             )
             return response

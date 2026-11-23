@@ -21,7 +21,6 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
-    RootModel,
     StringConstraints,
     ValidationError,
     field_validator,
@@ -115,6 +114,7 @@ class InputRouting(IntentContract):
     handling: Literal["respond", "assess", "cancel"]
     task_relation: Literal["new", "continue"]
     reason: Text = Field(max_length=1000)
+    capability_question: bool = False
 
     @model_validator(mode="after")
     def valid_routing(self):
@@ -124,6 +124,8 @@ class InputRouting(IntentContract):
             "task_control" not in self.input_types or self.task_relation != "continue"
         ):
             raise ValueError("cancel must refer to a pending task")
+        if self.capability_question and (self.handling != "respond" or self.input_types != ["question"]):
+            raise ValueError("Capability questions must be direct questions")
         if "task_request" in self.input_types and self.handling != "assess":
             raise ValueError("task requests must be assessed before execution")
         return self
@@ -166,17 +168,18 @@ class DirectAssessment(IntentContract):
     decision: Annotated[Reply | Clarification, Field(discriminator="outcome")]
 
 
-class AcceptedDraft(IntentContract):
-    accepted: Literal[True]
-    evidence_coverage: list[EvidenceUse]
+class DraftReview(IntentContract):
+    accepted: bool
+    evidence_coverage: list[EvidenceUse] = Field(default_factory=list)
+    issues: list[Text] = Field(default_factory=list)
 
-
-class GoalReview(RootModel[AcceptedDraft | Assessment]):
-    pass
-
-
-class ReplyReview(RootModel[AcceptedDraft | DirectAssessment]):
-    pass
+    @model_validator(mode="after")
+    def check_verdict(self):
+        if self.accepted == bool(self.issues):
+            raise ValueError("REVIEW_ISSUES_MUST_MATCH_VERDICT")
+        if not self.accepted and self.evidence_coverage:
+            raise ValueError("REJECTED_REVIEW_CANNOT_CERTIFY_COVERAGE")
+        return self
 
 
 class ReferenceAssessment(IntentContract):
@@ -389,8 +392,9 @@ class IntentState(TypedDict):
 
 
 class IntentRecognizer:
-    def __init__(self, model: ModelClient, *, observer: Observer | None = None):
+    def __init__(self, model: ModelClient, *, observer: Observer | None = None, capabilities=None):
         self.model = model
+        self.capabilities = capabilities
         self.observer = observer or Observer()
         graph = StateGraph(IntentState)
         graph.add_node(
@@ -434,6 +438,8 @@ class IntentRecognizer:
     @staticmethod
     def _initial_route(state: IntentState):
         routing = state["session"].routing
+        if routing.capability_question and not state["session"].questions:
+            return "respond"
         if routing.task_relation == "continue" and routing.handling != "cancel":
             return "check_clarity"
         memory = state.get("memory_context") or {}
@@ -742,6 +748,7 @@ class IntentRecognizer:
                 task_instruction=prompt_text.ROUTING_TASK_INSTRUCTION,
                 input_data={
                     "text": message.content,
+                    **({"capability_inventory_available": True} if self.capabilities is not None else {}),
                     "pending_task": {
                         "messages": [m.model_dump(mode="json") for m in session.messages],
                         "questions": list(session.questions),
@@ -850,6 +857,8 @@ class IntentRecognizer:
         """One JSON/schema repair within the original deadline and original requirements."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + request.timeout_seconds
+        patch_base = None
+        patch_fields = set()
         try:
             async with asyncio.timeout(request.timeout_seconds):
                 for attempt in range(2):
@@ -857,7 +866,12 @@ class IntentRecognizer:
                         response = await self._generate(
                             replace(request, timeout_seconds=max(0, deadline - loop.time()))
                         )
-                        result = schema.model_validate(response.payload)
+                        payload = response.payload
+                        if patch_base is not None:
+                            if not isinstance(payload, dict) or payload.keys() != patch_fields:
+                                raise ModelCallError("MODEL_RESPONSE_INVALID", "Unexpected intent repair fields")
+                            payload = {**patch_base, **payload}
+                        result = schema.model_validate(payload)
                         if validate is not None:
                             checked = validate(result)
                             if checked is not None:
@@ -909,6 +923,27 @@ class IntentRecognizer:
                             for item in error.errors(include_input=False, include_url=False)
                         ]
                         previous_response = response.payload
+                        properties = request.output_schema.get("properties", {})
+                        if errors and all(
+                            item["path"] and item["path"][0] in properties for item in errors
+                        ):
+                            affected = {item["path"][0] for item in errors}
+                            if isinstance(previous_response, dict) and affected < properties.keys():
+                                patch_base = previous_response
+                                patch_fields = affected
+                                previous_response = {
+                                    key: value for key, value in patch_base.items() if key in affected
+                                }
+                                output_schema = {
+                                    "type": "object",
+                                    "properties": {key: properties[key] for key in sorted(affected)},
+                                    "required": sorted(affected),
+                                    "additionalProperties": False,
+                                }
+                                if "$defs" in request.output_schema:
+                                    output_schema["$defs"] = request.output_schema["$defs"]
+                                repair_instruction = prompt_text.FIELD_REPAIR_INSTRUCTION
+                                request = replace(request, output_schema=output_schema)
                     except ValueError as error:
                         # Boundary validators below emit contract codes only.
                         if attempt:
@@ -920,7 +955,8 @@ class IntentRecognizer:
                         previous_response = response.payload
                     self.observer.emit(
                         "model.schema_repair",
-                        data={"model_role": request.role, "errors": errors, "next_attempt": 2},
+                        data={"model_role": request.role, "errors": errors, "next_attempt": 2,
+                              "repair_fields": sorted(patch_fields)},
                     )
                     request = replace(
                         request,
@@ -992,6 +1028,11 @@ class IntentRecognizer:
 
     async def _respond(self, state: IntentState) -> dict:
         inputs = self._model_inputs(state)
+        if state["session"].routing.capability_question and self.capabilities is not None:
+            inputs["registered_tools"] = [
+                {"name": tool.name, "description": tool.to_dict().get("description")}
+                for tool in self.capabilities() if tool.kind == "tool"
+            ]
         request = ModelRequest(
             role="intent_response",
             system_instruction=DIRECT_RESPONSE_INSTRUCTION,
@@ -1005,17 +1046,16 @@ class IntentRecognizer:
         assessment = await self._validated(request, DirectAssessment)
         memory = state.get("memory_context") or {}
         if any(memory.get(layer) for layer in ("m1", "m2", "details")):
-            assessment = await self._validated(
+            assessment = await self._review_draft(
                 replace(
                     request,
                     role="intent_response_review",
                     task_instruction=DIRECT_RESPONSE_REVIEW_INSTRUCTION,
                     input_data={"original_input": inputs, "draft": assessment.model_dump(mode="json")},
                     timeout_seconds=max(0, deadline - loop.time()),
-                    output_schema=ReplyReview.model_json_schema(),
+                    output_schema=DraftReview.model_json_schema(),
                 ),
-                ReplyReview,
-                validate=lambda result: self._resolve_review(inputs, assessment, result),
+                request, assessment, deadline,
             )
             self.observer.emit("intent.evidence_coverage", data={
                 "stage": "reply", "coverage": assessment.evidence_coverage,
@@ -1095,21 +1135,40 @@ class IntentRecognizer:
                 items[key] = {"evidence_id": key, "text": hit.get("text", ""), "layer": "m3"}
         return list(items.values())
 
-    @staticmethod
-    def _resolve_review(inputs, draft, review):
-        result = review.root
-        if isinstance(result, AcceptedDraft):
+    async def _review_draft(self, review_request, original_request, draft, deadline):
+        inputs = original_request.input_data
+
+        def apply_coverage(verdict):
+            if not verdict.accepted:
+                return None
             if isinstance(draft.decision, Ready):
                 goal = draft.decision.goal.model_copy(update={
-                    "evidence_coverage": result.evidence_coverage,
+                    "evidence_coverage": verdict.evidence_coverage,
                 })
-                result = draft.model_copy(update={
+                accepted = draft.model_copy(update={
                     "decision": draft.decision.model_copy(update={"goal": goal}),
                 })
             else:
-                result = draft.model_copy(update={"evidence_coverage": result.evidence_coverage})
-        IntentRecognizer._check_evidence_coverage(inputs, result)
-        return result
+                accepted = draft.model_copy(update={"evidence_coverage": verdict.evidence_coverage})
+            self._check_evidence_coverage(inputs, accepted)
+            return accepted
+
+        verdict = await self._validated(
+            review_request, DraftReview, validate=apply_coverage,
+        )
+        if not isinstance(verdict, DraftReview):
+            return verdict
+        return await self._validated(
+            replace(
+                original_request,
+                role=review_request.role.replace("_review", "_revision"),
+                task_instruction=original_request.task_instruction + prompt_text.DRAFT_REVISION_INSTRUCTION,
+                input_data={**inputs, "draft": draft.model_dump(mode="json"), "review_issues": verdict.issues},
+                timeout_seconds=max(0, deadline - asyncio.get_running_loop().time()),
+            ),
+            type(draft),
+            validate=lambda result: self._check_evidence_coverage(inputs, result),
+        )
 
     @staticmethod
     def _check_evidence_coverage(inputs: dict, assessment) -> None:
@@ -1180,17 +1239,16 @@ class IntentRecognizer:
         if isinstance(assessment.decision, Ready) and any(
             memory.get(layer) for layer in ("m1", "m2", "details")
         ):
-            assessment = await self._validated(
+            assessment = await self._review_draft(
                 replace(
                     request,
                     role="intent_goal_review",
                     task_instruction=GOAL_REVIEW_INSTRUCTION,
                     input_data={**inputs, "draft": assessment.model_dump(mode="json")},
                     timeout_seconds=max(0, deadline - loop.time()),
-                    output_schema=GoalReview.model_json_schema(),
+                    output_schema=DraftReview.model_json_schema(),
                 ),
-                GoalReview,
-                validate=lambda result: self._resolve_review(inputs, assessment, result),
+                request, assessment, deadline,
             )
             self.observer.emit("intent.evidence_coverage", data={
                 "stage": "goal", "coverage": assessment.decision.goal.evidence_coverage

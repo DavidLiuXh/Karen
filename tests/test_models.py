@@ -61,7 +61,11 @@ async def test_deepseek_backend_json_object_request_retains_strict_parsing(
                         "message": message,
                     }
                 ],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                "usage": {
+                    "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+                    "prompt_cache_hit_tokens": 4, "prompt_cache_miss_tokens": 6,
+                    "completion_tokens_details": {"reasoning_tokens": 3},
+                },
             },
         )
 
@@ -78,16 +82,16 @@ async def test_deepseek_backend_json_object_request_retains_strict_parsing(
             output_schema=Assessment.model_json_schema(),
             max_output_tokens=29,
         )
-        if surplus_delimiter:
-            with pytest.raises(ModelCallError) as caught:
-                await client.generate(task)
-            assert caught.value.code == "MODEL_RESPONSE_INVALID"
-            assert caught.value.raw_response.endswith("}")
-        else:
-            response = await client.generate(task)
-            assert response.payload == payload
-            assert "private_thinking_content" not in json.dumps(response.payload)
-            assert response.usage == {"input_tokens": 10, "output_tokens": 5}
+        response = await client.generate(task)
+        assert response.payload == payload
+        assert Assessment.model_validate(response.payload).decision.questions == ["给谁写？"]
+        assert "private_thinking_content" not in json.dumps(response.payload)
+        assert response.usage == {
+            "input_tokens": 10, "output_tokens": 5,
+            "input_cache_hit_tokens": 4, "input_cache_miss_tokens": 6,
+            "reasoning_tokens": 3,
+        }
+        assert bool(response.response_metadata.get("json_recovery")) is surplus_delimiter
     assert len(calls) == 1
     assert calls[0]["model"] == "deepseek-flash"
     assert calls[0]["max_tokens"] == 29
@@ -101,7 +105,8 @@ async def test_deepseek_backend_json_object_request_retains_strict_parsing(
     if mode == "json_mode":
         assert calls[0]["response_format"] == {"type": "json_object"}
         assert "tools" not in calls[0]
-        assert "schema" in calls[0]["messages"][-1]["content"]
+        assert "schema" in calls[0]["messages"][1]["content"]
+        assert "写邮件" in calls[0]["messages"][-1]["content"]
     else:
         assert "response_format" not in calls[0]
         assert calls[0]["tools"][0]["function"]["parameters"]["type"] == "object"
@@ -270,6 +275,41 @@ async def test_execution_output_limits_follow_selected_provider_models(monkeypat
     )
 
 
+async def test_planner_view_preserves_execution_evidence_and_original_goal():
+    from dynamic_graph import FakeModelClient, ModelResponse
+
+    from karen.model.models import KarenPlannerModel
+
+    original_context = {
+        "input_routing": {"reason": "Task request"},
+        "timezone": "Asia/Shanghai",
+        "constraints": ["Keep the exact date"],
+        "conversation": [{"role": "user", "content": "2026-11-11"}],
+        "memory": {"snapshot_revision": 3, "m1": [], "details": [{"text": "Source evidence"}]},
+    }
+    goal = {"inputs": {"date": "2026-11-11"}, "context": original_context}
+    backend = FakeModelClient([ModelResponse({})])
+    planner = KarenPlannerModel(backend)
+    request = ModelRequest("planner", "system", "task", {"goal": goal, "repair": {},
+        "examples": [{"case_name": "example", "capability_keys": [], "response": {"outcome": "blocked"}}],
+        "allowed_capabilities": [{"name": "demo", "timeout_hint": None, "read_only": False}],
+    }, {})
+    await planner.generate(request)
+    assert "把以下要求写进该节点的 instruction" in backend.requests[0].system_instruction
+    assert "内部证据标签、空分类和检索过程" in backend.requests[0].system_instruction
+    sent = backend.requests[0].input_data
+    assert sent["goal"]["context"] == {
+        "timezone": "Asia/Shanghai",
+        "constraints": ["Keep the exact date"],
+        "memory": {"details": [{"text": "Source evidence"}]},
+    }
+    assert sent["goal"]["inputs"] == goal["inputs"] and sent["repair"] == {}
+    assert sent["examples"] == [{"response": {"outcome": "blocked"}}]
+    assert sent["allowed_capabilities"] == [{"name": "demo", "read_only": False}]
+    assert request.input_data["goal"]["context"] == original_context
+    assert original_context["conversation"][0]["content"] == "2026-11-11"
+
+
 async def test_worker_forwards_collected_evidence_over_former_size_limit(monkeypatch):
     from dynamic_graph.models.adapters import LangChainModelClient
 
@@ -321,3 +361,118 @@ async def test_planner_only_compacts_builtin_response_policy_without_recall(memo
     else:
         assert projected == context
     assert request.input_data["goal"]["context"]["response_instruction"] == policy
+
+
+async def test_planner_restores_registered_tool_contract_without_changing_bindings():
+    from dynamic_graph import FakeModelClient, ModelResponse
+
+    from karen.model.models import KarenPlannerModel
+
+    ref = {"name": "file.write_text", "version": "1"}
+    input_schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}, "overwrite": {"type": "boolean"}},
+        "required": ["path"],
+    }
+    output_schema = {"type": "object", "properties": {"path": {"type": "string"}}}
+    node = {
+        "kind": "tool",
+        "capability": ref,
+        "input_schema": {**input_schema, "required": ["path", "overwrite"]},
+        "output_schema": {},
+        "input_bindings": {"path": {"source": "input", "pointer": "/path"}},
+    }
+    unknown = {**node, "capability": {**ref, "version": "2"}}
+    payload = {"outcome": "graph", "graph": {"nodes": [node, unknown]}}
+    planner = KarenPlannerModel(FakeModelClient([ModelResponse(payload)]))
+    response = await planner.generate(ModelRequest("planner", "", "", {
+        "goal": {},
+        "allowed_capabilities": [{
+            **ref, "kind": "tool", "input_schema": input_schema, "output_schema": output_schema,
+        }],
+    }, {}))
+
+    assert response.payload["graph"]["nodes"] == [
+        {**node, "input_schema": input_schema, "output_schema": output_schema},
+        unknown,
+    ]
+    assert node["input_schema"]["required"] == ["path", "overwrite"]
+
+
+async def test_planner_repairs_closed_object_and_passthrough_replace_contracts():
+    from dynamic_graph import FakeModelClient, ModelResponse
+
+    from karen.model.models import KarenPlannerModel
+
+    canonical = {"type": "object", "properties": {"body": {"type": "string"}},
+                 "required": ["body"], "additionalProperties": False}
+    candidate = {**canonical}
+    candidate.pop("additionalProperties")
+    graph = {"state_fields": {"page": {
+        "value_schema": candidate, "update_schema": {"type": "string"},
+        "initial": {"literal": {"body": ""}}, "reducer": {"name": "builtin.replace", "version": "1.0.0"},
+    }}}
+    nodes = [
+        {"kind": "tool", "capability": {"name": "web.read", "version": "1"},
+         "output_schema": canonical, "writes": [{"field": "page", "output_pointer": ""}]},
+        {"kind": "llm", "input_schema": {"type": "object", "properties": {"page": candidate}}},
+    ]
+    planner = KarenPlannerModel(FakeModelClient([ModelResponse({"graph": {**graph, "nodes": nodes}})]))
+    result = await planner.generate(ModelRequest("planner", "", "", {"goal": {}, "allowed_capabilities": [
+        {"name": "web.read", "version": "1", "kind": "tool", "input_schema": {}, "output_schema": canonical},
+    ]}, {}))
+    fields = result.payload["graph"]["state_fields"]
+    nodes = result.payload["graph"]["nodes"]
+    assert fields["page"]["value_schema"] == fields["page"]["update_schema"] == canonical
+    assert nodes[1]["input_schema"]["additionalProperties"] is False
+    assert nodes[1]["input_schema"]["properties"]["page"] == canonical
+    assert "additionalProperties" not in candidate
+
+
+@pytest.mark.parametrize("raw", [
+    '{"a": 1} {"b": 2}', '{"a": 1', '{"a": 1, "a": 2}}',
+    '{"a": NaN}}', '{"a": 1e999}}', '{"a": 1} trailing',
+    '[{"a": 1}]]', '{"a": 1,}}',
+])
+def test_json_delimiter_recovery_leaves_ambiguous_or_invalid_content_for_retry(raw):
+    assert karen.model.models._recover_json_object(raw) is None
+
+
+@pytest.mark.parametrize("fallback", [None, "another_node", "redacted", "final_round"])
+async def test_planner_repairs_only_unambiguous_single_node_bindings(fallback):
+    from copy import deepcopy
+
+    import jsonschema
+    from dynamic_graph import FakeModelClient
+
+    from karen.model.models import KarenPlannerModel
+
+    previous = {"outcome": "graph", "graph": {"nodes": [
+        {"id": "source", "instruction": "保留原有来源"},
+        {"id": "target", "input_bindings": {"name": {"source": "input", "pointer": "/wrong"}}},
+    ]}}
+    errors = [{"code": "INVALID_BINDING", "path": "/nodes/1/input_bindings/name"}]
+    if fallback == "another_node":
+        errors.append({"code": "MISSING_INPUT_BINDING", "path": "/nodes/0"})
+    if fallback == "redacted":
+        previous["graph"]["nodes"][0]["instruction"] = "[REDACTED]"
+    original = deepcopy(previous)
+    patch = {"input_bindings": {"name": {"source": "input", "pointer": "/name"}}}
+    backend = FakeModelClient([{"outcome": "blocked"} if fallback else patch])
+    request = ModelRequest("planner", "system", "full repair", {
+        "goal": {"inputs": {"name": "示例"}},
+        "repair": {"attempt": 2, "remaining_rounds": 0 if fallback == "final_round" else 1,
+                   "validation_errors": errors, "previous_response": previous},
+    }, {})
+    response = await KarenPlannerModel(backend).generate(request)
+    assert previous == original
+    if fallback:
+        assert backend.requests[0].task_instruction == "full repair"
+        assert response.payload == {"outcome": "blocked"}
+    else:
+        sent = backend.requests[0]
+        jsonschema.validate(patch, sent.output_schema)
+        assert sent.input_data["repair_node_index"] == 1
+        assert response.payload["graph"]["nodes"] == [
+            original["graph"]["nodes"][0], {"id": "target", **patch},
+        ]

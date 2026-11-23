@@ -75,16 +75,20 @@ async def test_direct_memory_reply_is_reviewed_against_original_evidence(
     from dynamic_graph import FakeModelClient as RawModel
 
     clear = {"known_referents": {}, "references": [], "selection_criteria": [], "questions": [], "reason": "输入清晰"}
-    model = RawModel([routing("respond", types=["question"]), clear, draft, reviewed])
+    model = RawModel([routing("respond", types=["question"]), clear, draft,
+                      {"accepted": False, "issues": ["纠正回应中的事实和范围"]}, reviewed])
     session = IntentSession()
     result = await IntentRecognizer(model).advance(session, question, memory_context=memory)
     assert result.reply == reviewed["decision"]["answer"]
     assert result.goal is None and result.questions == () and session.messages == ()
-    review = model.requests[-1]
+    review = model.requests[-2]
     assert review.role == "intent_response_review"
     assert review.input_data["original_input"]["memory"] == memory
     assert review.input_data["draft"]["decision"]["answer"] == draft["decision"]["answer"]
-    assert model.requests[-2].timeout_seconds >= review.timeout_seconds > 0
+    revision = model.requests[-1]
+    assert revision.role == "intent_response_revision"
+    assert revision.input_data["review_issues"] == ["纠正回应中的事实和范围"]
+    assert model.requests[-3].timeout_seconds >= review.timeout_seconds >= revision.timeout_seconds > 0
 
 
 async def test_direct_reply_review_keeps_the_original_total_deadline(monkeypatch):
@@ -983,7 +987,7 @@ async def test_optional_task_identity_does_not_block_supported_fact_reading(stat
 
     model = RawModel(
         [routing("respond", types=["question"]), reply("按记录的报价，差额是78美元。"),
-         reply("按记录的报价，差额是78美元。")]
+         {"accepted": True, "evidence_coverage": []}]
     )
     memory = {
         "coverage": {"query_kind": "detail", "requires_history": required},
@@ -1415,7 +1419,7 @@ async def test_clarity_and_goal_use_the_same_scoped_memory_policy():
         "questions": [],
         "reason": "使用已知偏好作为默认标准",
     }
-    model = RawModel([routing(), clarity, ready(), ready()])
+    model = RawModel([routing(), clarity, ready(), {"accepted": True, "evidence_coverage": []}])
     result = await IntentRecognizer(model).advance(
         IntentSession(), "推荐近期论文", memory_context=memory
     )
@@ -1840,3 +1844,21 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
             store.close()
         await observer.close()
         await memory.close()
+
+
+async def test_capability_only_followup_uses_registered_tools_without_planning():
+    from types import SimpleNamespace
+
+    model = FakeModelClient([
+        {**routing("respond", types=["question"], relation="continue"), "capability_question": True},
+        reply("当前接入了本地文本读取，不能直接处理视频。"),
+    ])
+    tool = SimpleNamespace(kind="tool", name="file.read_text", to_dict=lambda: {"description": "Read text"})
+    intent = IntentRecognizer(model, capabilities=lambda: [tool])
+    session = IntentSession(messages=(Message(role="user", content="我装了视频编辑软件。"),))
+    result = await intent.advance(session, "你现在能直接用它处理视频吗？")
+    assert result.reply == "当前接入了本地文本读取，不能直接处理视频。"
+    assert [call.role for call in model.requests] == ["intent_router", "intent_response"]
+    assert model.requests[-1].input_data["registered_tools"] == [
+        {"name": "file.read_text", "description": "Read text"},
+    ]

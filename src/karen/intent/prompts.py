@@ -201,7 +201,7 @@ messages、user_context、time_context 和 memory 是原始证据；draft 是待
 核对当前要求及适用证据对交付的影响是否进入 objective 或 success_criteria，
 不能只列在 supporting_facts 后遗漏交付范围。按共用范围、证据与缺口规则复核，
 不虚构事实、用途或旧任务约定，不把相对倾向改成绝对排除。
-目标已完整时保留；有遗漏或无依据要求时直接修正，仅仍存在确实阻碍执行的必要缺口才澄清。
+目标已完整时确认通过；指出遗漏、无依据要求或确实阻碍执行的必要缺口。
 不生成执行计划、不回答任务，不把核验过程加入用户交付物。"""
 
 
@@ -282,8 +282,7 @@ draft 是待审查的模型产物，不能把其 supporting_facts、结论或省
 对照 messages、memory.details 原话及 m1/m2 的来源与时间，按系统中的证据、计算和范围规则
 核对前提、来源、推导结果及相关方面的覆盖。不能只检查文句是否自然，或只沿用排名靠前的摘要。
 按本轮所问前提与范围交付，不用其他假设或泛化内容替代实际要求。
-回答已准确完整时保留；遗漏、无依据内容或不必要的澄清直接修正。
-仅仍有实质缺口时提出简短澄清。不新增外部查证任务、无关用途、来源附录或内部核验说明。"""
+回答已准确完整时确认通过；指出遗漏、无依据内容、不必要的澄清或仍存在的实质缺口。不新增外部查证任务、无关用途、来源附录或内部核验说明。"""
 
 INTENT_SYSTEM_INSTRUCTION += """
 routing 是已完成的输入分类；保留混合输入中的事实、任务和当前明确纠正。
@@ -356,11 +355,17 @@ DIRECT_RESPONSE_REVIEW_SYSTEM_INSTRUCTION = (
 )
 
 COMPACT_REVIEW_INSTRUCTION = """
-本次是复核。若草稿准确完整，无需重写，返回 {"accepted":true,"evidence_coverage":[...]}；
-覆盖报告仍逐条核对原草稿的实际交付文字。不能以 accepted 跳过证据或需求核验。
-若需修正事实、范围、覆盖或必要澄清，按同一 schema 的完整 Assessment 分支返回替代稿，
-不能返回 accepted=false、混合确认与替代稿、局部补丁或只改 supporting_facts。
-复核已有输入、草稿与已定位的证据缺口，不重复完整分析过程或生成新的需求。
+草稿准确完整时返回 accepted=true 和草稿的 evidence_coverage，issues 留空。
+草稿需要修改时返回 accepted=false 和简短、可执行的 issues，evidence_coverage 留空。
+本轮只给出复核结论，不重写草稿。覆盖引文必须取自草稿的实际交付文字。
+"""
+DRAFT_REVISION_INSTRUCTION = """
+根据 review_issues 修订 draft。以原始输入为准，保留草稿中正确的内容，
+提交完整的决策及逐条证据覆盖记录。若仍有实质缺口，按原决策契约处理。
+"""
+FIELD_REPAIR_INSTRUCTION = """
+只返回当前 schema 要求修复的字段。其他字段由程序保留。
+结合原始输入、所列错误及待修字段值修复，所有要求修复的字段都须返回。
 """
 DIRECT_RESPONSE_REVIEW_INSTRUCTION += COMPACT_REVIEW_INSTRUCTION
 GOAL_REVIEW_INSTRUCTION += COMPACT_REVIEW_INSTRUCTION

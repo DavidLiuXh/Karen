@@ -82,20 +82,16 @@ async def test_deepseek_backend_json_object_request_retains_strict_parsing(
             output_schema=Assessment.model_json_schema(),
             max_output_tokens=29,
         )
-        if surplus_delimiter:
-            with pytest.raises(ModelCallError) as caught:
-                await client.generate(task)
-            assert caught.value.code == "MODEL_RESPONSE_INVALID"
-            assert caught.value.raw_response.endswith("}")
-        else:
-            response = await client.generate(task)
-            assert response.payload == payload
-            assert "private_thinking_content" not in json.dumps(response.payload)
-            assert response.usage == {
-                "input_tokens": 10, "output_tokens": 5,
-                "input_cache_hit_tokens": 4, "input_cache_miss_tokens": 6,
-                "reasoning_tokens": 3,
-            }
+        response = await client.generate(task)
+        assert response.payload == payload
+        assert Assessment.model_validate(response.payload).decision.questions == ["给谁写？"]
+        assert "private_thinking_content" not in json.dumps(response.payload)
+        assert response.usage == {
+            "input_tokens": 10, "output_tokens": 5,
+            "input_cache_hit_tokens": 4, "input_cache_miss_tokens": 6,
+            "reasoning_tokens": 3,
+        }
+        assert bool(response.response_metadata.get("json_recovery")) is surplus_delimiter
     assert len(calls) == 1
     assert calls[0]["model"] == "deepseek-flash"
     assert calls[0]["max_tokens"] == 29
@@ -433,3 +429,52 @@ async def test_planner_repairs_closed_object_and_passthrough_replace_contracts()
     assert nodes[1]["input_schema"]["additionalProperties"] is False
     assert nodes[1]["input_schema"]["properties"]["page"] == canonical
     assert "additionalProperties" not in candidate
+
+
+@pytest.mark.parametrize("raw", [
+    '{"a": 1} {"b": 2}', '{"a": 1', '{"a": 1, "a": 2}}',
+    '{"a": NaN}}', '{"a": 1e999}}', '{"a": 1} trailing',
+    '[{"a": 1}]]', '{"a": 1,}}',
+])
+def test_json_delimiter_recovery_leaves_ambiguous_or_invalid_content_for_retry(raw):
+    assert karen.model.models._recover_json_object(raw) is None
+
+
+@pytest.mark.parametrize("fallback", [None, "another_node", "redacted", "final_round"])
+async def test_planner_repairs_only_unambiguous_single_node_bindings(fallback):
+    from copy import deepcopy
+
+    import jsonschema
+    from dynamic_graph import FakeModelClient
+
+    from karen.model.models import KarenPlannerModel
+
+    previous = {"outcome": "graph", "graph": {"nodes": [
+        {"id": "source", "instruction": "保留原有来源"},
+        {"id": "target", "input_bindings": {"name": {"source": "input", "pointer": "/wrong"}}},
+    ]}}
+    errors = [{"code": "INVALID_BINDING", "path": "/nodes/1/input_bindings/name"}]
+    if fallback == "another_node":
+        errors.append({"code": "MISSING_INPUT_BINDING", "path": "/nodes/0"})
+    if fallback == "redacted":
+        previous["graph"]["nodes"][0]["instruction"] = "[REDACTED]"
+    original = deepcopy(previous)
+    patch = {"input_bindings": {"name": {"source": "input", "pointer": "/name"}}}
+    backend = FakeModelClient([{"outcome": "blocked"} if fallback else patch])
+    request = ModelRequest("planner", "system", "full repair", {
+        "goal": {"inputs": {"name": "示例"}},
+        "repair": {"attempt": 2, "remaining_rounds": 0 if fallback == "final_round" else 1,
+                   "validation_errors": errors, "previous_response": previous},
+    }, {})
+    response = await KarenPlannerModel(backend).generate(request)
+    assert previous == original
+    if fallback:
+        assert backend.requests[0].task_instruction == "full repair"
+        assert response.payload == {"outcome": "blocked"}
+    else:
+        sent = backend.requests[0]
+        jsonschema.validate(patch, sent.output_schema)
+        assert sent.input_data["repair_node_index"] == 1
+        assert response.payload["graph"]["nodes"] == [
+            original["graph"]["nodes"][0], {"id": "target", **patch},
+        ]

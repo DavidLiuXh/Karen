@@ -40,6 +40,7 @@ async def test_invalid_coverage_is_repaired_before_publishing_reply(bad):
     model = FakeModelClient([
         {"input_types": ["question"], "handling": "respond", "task_relation": "new",
          "reason": "根据已有记录回应"}, clear(), draft,
+        {"accepted": False, "issues": ["补齐证据"]},
         reply(corrected["decision"]["answer"], bad), corrected,
     ])
     session = IntentSession()
@@ -49,9 +50,9 @@ async def test_invalid_coverage_is_repaired_before_publishing_reply(bad):
     assert result.reply == corrected["decision"]["answer"]
     assert session.reply is None and not session.messages
     repair = model.requests[-1]
-    assert repair.role == "intent_response_review"
+    assert repair.role == "intent_response_revision"
     assert repair.input_data["validation_errors"]
-    original = repair.input_data["original_input"]["original_input"]
+    original = repair.input_data["original_input"]
     assert original["evidence_to_consider"][0]["evidence_id"] == "practice"
     assert original["memory"] == memory()
 
@@ -59,13 +60,14 @@ async def test_invalid_coverage_is_repaired_before_publishing_reply(bad):
 async def test_repeated_invalid_coverage_does_not_publish_draft():
     model = FakeModelClient([
         {"input_types": ["question"], "handling": "respond", "task_relation": "new",
-         "reason": "根据已有记录回应"}, clear(), reply("草稿"), reply("未覆盖"), reply("未覆盖"),
+         "reason": "根据已有记录回应"}, clear(), reply("草稿"), {"accepted": False, "issues": ["补齐证据"]},
+        reply("未覆盖"), reply("未覆盖"),
     ])
     session = IntentSession()
     with pytest.raises(ModelCallError, match="coverage"):
         await IntentRecognizer(model).advance(session, "设备如何改进？", memory_context=memory())
     assert session.reply is None and not session.messages
-    assert len([r for r in model.requests if r.role == "intent_response_review"]) == 2
+    assert len([r for r in model.requests if r.role == "intent_response_revision"]) == 2
 
 
 def test_supporting_facts_alone_do_not_prove_goal_coverage():
@@ -111,3 +113,30 @@ async def test_accepted_review_preserves_draft_and_still_checks_deliverable_cove
     repairs = [r for r in model.requests if r.role.endswith("_review")]
     assert len(repairs) == 2
     assert repairs[-1].input_data["validation_errors"] == [{"type": "COVERAGE_QUOTE_NOT_IN_DELIVERABLE"}]
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+async def test_schema_retry_repairs_only_invalid_fields_and_revalidates_result(tamper):
+    from dynamic_graph import ModelRequest
+    from pydantic import BaseModel, Field
+
+    class Output(BaseModel):
+        answer: str
+        count: int = Field(ge=1)
+
+    first = {"answer": "保留原有回答", "count": 0}
+    patch = {"count": 2, **({"answer": "改写其他字段"} if tamper else {})}
+    model = FakeModelClient([first, patch])
+    request = ModelRequest("test", "", "", {}, Output.model_json_schema())
+    validations = []
+    call = IntentRecognizer(model)._validated(request, Output, validate=validations.append)
+    if tamper:
+        with pytest.raises(ModelCallError, match="Unexpected intent repair fields"):
+            await call
+        assert not validations
+    else:
+        result = await call
+        assert result.model_dump() == {"answer": "保留原有回答", "count": 2}
+        assert validations == [result]
+    assert model.requests[1].output_schema["required"] == ["count"]
+    assert model.requests[1].input_data["previous_response"] == {"count": 0}

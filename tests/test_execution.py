@@ -466,3 +466,34 @@ async def test_larger_node_budget_cannot_outlive_execution_deadline(tmp_path):
     assert result.execution_status == "FAILED"
     assert any(d.code == "DEADLINE_EXCEEDED" for d in result.diagnostics)
     assert result.usage["duration_seconds"] < 1
+
+
+@pytest.mark.parametrize("binding_works", [True, False])
+async def test_binding_patch_is_validated_by_engine_before_execution(tmp_path, binding_works):
+    from karen.model.models import KarenPlannerModel
+
+    previous = graph_response()
+    node = previous["graph"]["nodes"][0]
+    node["input_schema"]["properties"]["name"] = {"type": "string"}
+    node["input_schema"]["required"] = ["name"]
+    patch = {"input_bindings": {"name": {"literal": "客户" if binding_works else 7}}}
+    planner_backend = FakeModelClient(
+        [previous, patch] if binding_works else [previous, patch, graph_response()]
+    )
+    worker = FakeModelClient([{"draft": "客户您好。"}])
+    engine = DynamicGraphEngine(
+        config=EngineConfig(runs_dir=tmp_path),
+        models=ModelBindings(KarenPlannerModel(planner_backend), worker),
+    )
+    agent = Karen(intent=IntentRecognizer(TaskIntentModel([ready()])), engine=engine)
+    turn = await agent.advance(IntentSession(), "写一封中文邮件", policy=ExecutionPolicy())
+
+    assert turn.result.execution_status == "COMPLETED"
+    assert turn.result.outputs == {"draft": "客户您好。"}
+    assert len(worker.requests) == 1
+    assert len(planner_backend.requests) == (2 if binding_works else 3)
+    assert planner_backend.requests[1].output_schema["required"] == ["input_bindings"]
+    if binding_works:
+        assert worker.requests[0].input_data == {"name": "客户"}
+    else:
+        assert "repair_node_index" not in planner_backend.requests[2].input_data

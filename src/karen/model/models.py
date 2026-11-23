@@ -1,17 +1,24 @@
 """DeepSeek clients with observable inference settings and the engine model contract."""
 
 import asyncio
+import json
+import re
 from dataclasses import replace
 
-from dynamic_graph.graph.schemas import SchemaError, validate_value
+from dynamic_graph.execution.privacy import REDACTED
+from dynamic_graph.graph.schemas import SchemaError, strict_loads, validate_value
+from dynamic_graph.graph.spec import Binding
 from dynamic_graph.models.adapters import LangChainModelClient
+from dynamic_graph.models.client import ModelCallError, ModelResponse
 from langchain_deepseek import ChatDeepSeek
 from langchain_ollama import OllamaEmbeddings
+from pydantic import TypeAdapter
 
 from ..prompt.prompts import RESPONSE_INSTRUCTION
 from .prompts import (
     FINAL_DELIVERY_PLANNING,
     LOCAL_EDIT_PLANNING,
+    PLANNER_BINDING_REPAIR,
     PLANNER_RESPONSE_WITHOUT_RECALL,
     WEB_TOOL_SELECTION,
 )
@@ -38,6 +45,27 @@ class DeepSeekModelClient(LangChainModelClient):
         self.thinking = thinking
         self.reasoning_effort = reasoning_effort if thinking else None
 
+    async def generate(self, request):
+        try:
+            return await super().generate(request)
+        except ModelCallError as error:
+            raw = error.raw_response
+            syntax = error.details.get("json_syntax", {})
+            cause = error.__cause__
+            extra_data = syntax.get("message") == "Extra data" or (
+                isinstance(cause, json.JSONDecodeError) and cause.msg == "Extra data"
+            )
+            if (self.mode != "json_mode" or error.code != "MODEL_RESPONSE_INVALID"
+                    or not extra_data or not isinstance(raw, str)):
+                raise
+            payload = _recover_json_object(raw)
+            if payload is None:
+                raise
+            return ModelResponse(
+                payload, error.usage, error.provider_request_id,
+                {"model": self.model, "mode": self.mode, "json_recovery": "surplus_closing_delimiters"},
+            )
+
     @property
     def metadata(self):
         return {
@@ -51,6 +79,20 @@ class DeepSeekModelClient(LangChainModelClient):
                 else self.reasoning_effort
             ),
         }
+
+
+def _recover_json_object(raw):
+    raw = raw.lstrip()
+    try:
+        root, end = json.JSONDecoder().raw_decode(raw)
+        suffix = raw[end:].translate(str.maketrans("", "", " \t\r\n"))
+        if not isinstance(root, dict) or not suffix or set(suffix) - {"}", "]"}:
+            return None
+        payload = strict_loads(raw[:end])
+        json.dumps(payload, allow_nan=False)
+        return payload
+    except ValueError:
+        return None
 
 
 def deepseek_client(
@@ -125,12 +167,45 @@ class KarenPlannerModel:
                 {key: value for key, value in capability.items() if value is not None}
                 for capability in data["allowed_capabilities"]
             ]
-        response = await self.model.generate(replace(
+        backend_request = replace(
             request,
             system_instruction=(request.system_instruction + WEB_TOOL_SELECTION + FINAL_DELIVERY_PLANNING
                                 + LOCAL_EDIT_PLANNING),
             input_data=data,
-        ))
+        )
+        scope = _binding_repair_scope(data.get("repair"))
+        if scope is None:
+            response = await self.model.generate(backend_request)
+        else:
+            previous, index = scope
+            bindings_schema = TypeAdapter(dict[str, Binding]).json_schema()
+            definitions = bindings_schema.pop("$defs", {})
+            response = await self.model.generate(replace(
+                backend_request,
+                task_instruction=PLANNER_BINDING_REPAIR,
+                input_data={**data, "repair_node_index": index},
+                output_schema={
+                    "type": "object",
+                    "properties": {"input_bindings": bindings_schema},
+                    "$defs": definitions,
+                    "required": ["input_bindings"],
+                    "additionalProperties": False,
+                },
+            ))
+            patch = response.payload
+            if (not isinstance(patch, dict) or set(patch) != {"input_bindings"}
+                    or not isinstance(patch["input_bindings"], dict)):
+                raise ModelCallError(
+                    "MODEL_RESPONSE_INVALID", "Planner returned an invalid binding repair",
+                    retryable=True, usage=response.usage, provider_request_id=response.provider_request_id,
+                )
+            graph = previous["graph"]
+            nodes = list(graph["nodes"])
+            nodes[index] = {**nodes[index], "input_bindings": patch["input_bindings"]}
+            response = replace(
+                response, payload={**previous, "graph": {**graph, "nodes": nodes}},
+                response_metadata={**response.response_metadata, "repair_scope": "node_input_bindings"},
+            )
         payload = response.payload
         graph = payload.get("graph") if isinstance(payload, dict) else None
         if not isinstance(graph, dict) or not isinstance(graph.get("nodes"), list):
@@ -161,6 +236,39 @@ class KarenPlannerModel:
         if fields is not None:
             repaired["state_fields"] = fields
         return replace(response, payload={**payload, "graph": repaired})
+
+
+def _binding_repair_scope(repair):
+    if not repair or repair.get("attempt") != 2 or not repair.get("remaining_rounds"):
+        return None
+    previous = repair.get("previous_response")
+    errors = repair.get("validation_errors")
+    if not isinstance(previous, dict) or previous.get("outcome") != "graph" or not errors:
+        return None
+    graph = previous.get("graph")
+    if not isinstance(graph, dict) or REDACTED in json.dumps(graph):
+        return None
+    nodes = graph.get("nodes")
+    if not isinstance(nodes, list):
+        return None
+    indices = set()
+    for error in errors:
+        code = error.get("code")
+        path = error.get("path", "")
+        if code == "MISSING_INPUT_BINDING":
+            match = re.fullmatch(r"/nodes/([0-9]+)", path)
+        elif code in {"INVALID_BINDING", "TYPE_COMPATIBILITY_UNPROVEN"}:
+            match = re.fullmatch(r"/nodes/([0-9]+)/input_bindings(?:/.*)?", path)
+        else:
+            return None
+        if match is None:
+            return None
+        indices.add(int(match[1]))
+    if len(indices) == 1:
+        index = indices.pop()
+        if index < len(nodes) and isinstance(nodes[index], dict):
+            return previous, index
+    return None
 
 
 def _close_objects(schema):

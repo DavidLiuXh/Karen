@@ -3,12 +3,18 @@
 import asyncio
 from dataclasses import replace
 
+from dynamic_graph.graph.schemas import SchemaError, validate_value
 from dynamic_graph.models.adapters import LangChainModelClient
 from langchain_deepseek import ChatDeepSeek
 from langchain_ollama import OllamaEmbeddings
 
 from ..prompt.prompts import RESPONSE_INSTRUCTION
-from .prompts import FINAL_DELIVERY_PLANNING, LOCAL_EDIT_PLANNING, PLANNER_RESPONSE_WITHOUT_RECALL
+from .prompts import (
+    FINAL_DELIVERY_PLANNING,
+    LOCAL_EDIT_PLANNING,
+    PLANNER_RESPONSE_WITHOUT_RECALL,
+    WEB_TOOL_SELECTION,
+)
 
 DEFAULT_OUTPUT_TOKEN_LIMIT = 32768
 
@@ -67,10 +73,13 @@ class KarenPlannerModel:
 
     async def generate(self, request):
         goal = request.input_data["goal"]
-        context = goal.get("context", {})
+        context = {
+            key: value for key, value in goal.get("context", {}).items()
+            if key != "input_routing" and value not in (None, [], {})
+        }
         memory = context.get("memory")
         if isinstance(memory, dict):
-            memory = {
+            memory = context["memory"] = {
                 key: value for key, value in memory.items()
                 if key != "snapshot_revision" and value not in (None, [], {})
             }
@@ -84,6 +93,9 @@ class KarenPlannerModel:
             and history.get("complete") is True
             and not history.get("messages")
         )
+        # An exact user quote already in inputs needs no second copy in the dialogue.
+        # Retain all turns when anything refers to their positions in the ledger.
+        inputs = goal.get("inputs", {})
         conversation = context.get("conversation")
         if (
             (not memory or empty_recall)
@@ -91,11 +103,122 @@ class KarenPlannerModel:
             and (conversation is None or isinstance(conversation, list) and len(conversation) <= 1)
             and context.get("response_instruction") == RESPONSE_INSTRUCTION
         ):
-            context = {**context, "response_instruction": PLANNER_RESPONSE_WITHOUT_RECALL}
-            request = replace(request, input_data={**request.input_data, "goal": {**goal, "context": context}})
-        return await self.model.generate(replace(
-            request, system_instruction=request.system_instruction + FINAL_DELIVERY_PLANNING + LOCAL_EDIT_PLANNING
+            context["response_instruction"] = PLANNER_RESPONSE_WITHOUT_RECALL
+        if isinstance(conversation, list) and len(conversation) == 1:
+            message = conversation[0]
+            if (isinstance(message, dict) and message.get("role") == "user"
+                    and isinstance(message.get("content"), str)
+                    and message["content"] in inputs.values()
+                    and not context.get("clarification_items")):
+                context.pop("conversation")
+        data = {**request.input_data, "goal": {**goal, "context": context}}
+        if "examples" in data:
+            # The engine has already selected examples by authorized capability.
+            # Keep their goals and graph responses, omitting selection metadata.
+            data["examples"] = [
+                {key: value for key, value in example.items()
+                 if key not in {"case_name", "capability_keys"}}
+                for example in data["examples"]
+            ]
+        if "allowed_capabilities" in data:
+            data["allowed_capabilities"] = [
+                {key: value for key, value in capability.items() if value is not None}
+                for capability in data["allowed_capabilities"]
+            ]
+        response = await self.model.generate(replace(
+            request,
+            system_instruction=(request.system_instruction + WEB_TOOL_SELECTION + FINAL_DELIVERY_PLANNING
+                                + LOCAL_EDIT_PLANNING),
+            input_data=data,
         ))
+        payload = response.payload
+        graph = payload.get("graph") if isinstance(payload, dict) else None
+        if not isinstance(graph, dict) or not isinstance(graph.get("nodes"), list):
+            return response
+
+        # The catalog owns capability contracts. The engine still validates
+        # authorization, bindings, writes, and the rest of the candidate graph.
+        contracts = {
+            (entry.get("kind"), entry.get("name"), entry.get("version")): entry
+            for entry in data.get("allowed_capabilities", [])
+            if "input_schema" in entry and "output_schema" in entry
+        }
+        nodes = []
+        registered = set()
+        for index, node in enumerate(graph["nodes"]):
+            ref = node.get("capability") if isinstance(node, dict) else None
+            if isinstance(ref, dict) and node.get("kind") in ("tool", "check"):
+                name, version = ref.get("name"), ref.get("version")
+                if isinstance(name, str) and isinstance(version, str):
+                    contract = contracts.get((node["kind"], name, version))
+                    if contract is not None:
+                        registered.add(index)
+                        node = {**node, "input_schema": contract["input_schema"],
+                                "output_schema": contract["output_schema"]}
+            nodes.append(node)
+        fields = _repair_data_contracts(graph, nodes, registered)
+        repaired = {**graph, "nodes": nodes}
+        if fields is not None:
+            repaired["state_fields"] = fields
+        return replace(response, payload={**payload, "graph": repaired})
+
+
+def _close_objects(schema):
+    if not isinstance(schema, dict):
+        return schema
+    closed = dict(schema)
+    kind = schema.get("type")
+    if kind == "object" or isinstance(kind, list) and "object" in kind:
+        closed.setdefault("additionalProperties", False)
+    for key in ("properties", "$defs"):
+        if isinstance(schema.get(key), dict):
+            closed[key] = {name: _close_objects(value) for name, value in schema[key].items()}
+    for key in ("items", "additionalProperties"):
+        if isinstance(schema.get(key), dict):
+            closed[key] = _close_objects(schema[key])
+    return closed
+
+
+def _repair_data_contracts(graph, nodes, registered):
+    writers = {}
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            continue
+        if node.get("kind") == "llm":
+            nodes[index] = {**node, **{
+                key: _close_objects(node[key]) for key in ("input_schema", "output_schema") if key in node
+            }}
+        writes = node.get("writes")
+        for write in writes if isinstance(writes, list) else ():
+            if isinstance(write, dict) and isinstance(write.get("field"), str):
+                writers.setdefault(write["field"], []).append((index, write.get("output_pointer")))
+    fields = graph.get("state_fields")
+    if not isinstance(fields, dict):
+        return fields
+    repaired = dict(fields)
+    for name, field in fields.items():
+        if not isinstance(field, dict):
+            continue
+        field = repaired[name] = {**field, **{
+            key: _close_objects(field[key]) for key in ("value_schema", "update_schema") if key in field
+        }}
+        reducer, initial = field.get("reducer"), field.get("initial")
+        sources = writers.get(name, ())
+        if (not isinstance(reducer, dict) or reducer.get("name") != "builtin.replace"
+                or reducer.get("version") != "1.0.0" or len(sources) != 1
+                or not isinstance(initial, dict) or "literal" not in initial):
+            continue
+        index, pointer = sources[0]
+        if index not in registered or pointer != "":
+            continue
+        source = nodes[index]["output_schema"]
+        if field.get("value_schema") == source and field.get("update_schema") != source:
+            try:
+                validate_value(source, initial["literal"])
+            except (SchemaError, ValueError, KeyError, TypeError):
+                continue
+            field["update_schema"] = source
+    return repaired
 
 
 async def configure_execution_output_limits(planner, worker) -> int:

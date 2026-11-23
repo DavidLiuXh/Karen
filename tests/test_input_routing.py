@@ -1840,3 +1840,21 @@ async def test_explicit_task_reference_uses_archived_goal_after_restart(tmp_path
             store.close()
         await observer.close()
         await memory.close()
+
+
+async def test_capability_only_followup_uses_registered_tools_without_planning():
+    from types import SimpleNamespace
+
+    model = FakeModelClient([
+        {**routing("respond", types=["question"], relation="continue"), "capability_question": True},
+        reply("当前接入了本地文本读取，不能直接处理视频。"),
+    ])
+    tool = SimpleNamespace(kind="tool", name="file.read_text", to_dict=lambda: {"description": "Read text"})
+    intent = IntentRecognizer(model, capabilities=lambda: [tool])
+    session = IntentSession(messages=(Message(role="user", content="我装了视频编辑软件。"),))
+    result = await intent.advance(session, "你现在能直接用它处理视频吗？")
+    assert result.reply == "当前接入了本地文本读取，不能直接处理视频。"
+    assert [call.role for call in model.requests] == ["intent_router", "intent_response"]
+    assert model.requests[-1].input_data["registered_tools"] == [
+        {"name": "file.read_text", "description": "Read text"},
+    ]

@@ -402,7 +402,7 @@ async def converse(
 
             def create_agent(channel_engine, store=None):
                 return Karen(
-                    intent=IntentRecognizer(model, observer=observer),
+                    intent=IntentRecognizer(model, observer=observer, capabilities=channel_engine.list_capabilities),
                     engine=channel_engine,
                     memory=memory,
                     observer=observer,

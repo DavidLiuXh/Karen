@@ -309,7 +309,7 @@ class Karen:
                     "objective": archived["goal"]["objective"][:2000],
                     "delivered_files": archived["goal"].get("delivered_files", [])[:32],
                 }
-        if self.memory is not None and (
+        if self.memory is not None and not session.routing.capability_question and (
             session.routing.handling == "assess" or "question" in session.routing.input_types
         ):
             recalled = await self.memory.recall(

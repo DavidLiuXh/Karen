@@ -115,6 +115,7 @@ class InputRouting(IntentContract):
     handling: Literal["respond", "assess", "cancel"]
     task_relation: Literal["new", "continue"]
     reason: Text = Field(max_length=1000)
+    capability_question: bool = False
 
     @model_validator(mode="after")
     def valid_routing(self):
@@ -124,6 +125,8 @@ class InputRouting(IntentContract):
             "task_control" not in self.input_types or self.task_relation != "continue"
         ):
             raise ValueError("cancel must refer to a pending task")
+        if self.capability_question and (self.handling != "respond" or self.input_types != ["question"]):
+            raise ValueError("Capability questions must be direct questions")
         if "task_request" in self.input_types and self.handling != "assess":
             raise ValueError("task requests must be assessed before execution")
         return self
@@ -389,8 +392,9 @@ class IntentState(TypedDict):
 
 
 class IntentRecognizer:
-    def __init__(self, model: ModelClient, *, observer: Observer | None = None):
+    def __init__(self, model: ModelClient, *, observer: Observer | None = None, capabilities=None):
         self.model = model
+        self.capabilities = capabilities
         self.observer = observer or Observer()
         graph = StateGraph(IntentState)
         graph.add_node(
@@ -434,6 +438,8 @@ class IntentRecognizer:
     @staticmethod
     def _initial_route(state: IntentState):
         routing = state["session"].routing
+        if routing.capability_question and not state["session"].questions:
+            return "respond"
         if routing.task_relation == "continue" and routing.handling != "cancel":
             return "check_clarity"
         memory = state.get("memory_context") or {}
@@ -742,6 +748,7 @@ class IntentRecognizer:
                 task_instruction=prompt_text.ROUTING_TASK_INSTRUCTION,
                 input_data={
                     "text": message.content,
+                    **({"capability_inventory_available": True} if self.capabilities is not None else {}),
                     "pending_task": {
                         "messages": [m.model_dump(mode="json") for m in session.messages],
                         "questions": list(session.questions),
@@ -992,6 +999,11 @@ class IntentRecognizer:
 
     async def _respond(self, state: IntentState) -> dict:
         inputs = self._model_inputs(state)
+        if state["session"].routing.capability_question and self.capabilities is not None:
+            inputs["registered_tools"] = [
+                {"name": tool.name, "description": tool.to_dict().get("description")}
+                for tool in self.capabilities() if tool.kind == "tool"
+            ]
         request = ModelRequest(
             role="intent_response",
             system_instruction=DIRECT_RESPONSE_INSTRUCTION,

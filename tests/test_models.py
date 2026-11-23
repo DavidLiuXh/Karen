@@ -295,8 +295,6 @@ async def test_planner_view_preserves_execution_evidence_and_original_goal():
         "allowed_capabilities": [{"name": "demo", "timeout_hint": None, "read_only": False}],
     }, {})
     await planner.generate(request)
-    assert "prefer web.read_page" in backend.requests[0].system_instruction
-    assert "iframe src" in backend.requests[0].system_instruction
     assert "把以下要求写进该节点的 instruction" in backend.requests[0].system_instruction
     assert "内部证据标签、空分类和检索过程" in backend.requests[0].system_instruction
     sent = backend.requests[0].input_data

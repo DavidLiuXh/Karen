@@ -20,7 +20,6 @@ from .prompts import (
     LOCAL_EDIT_PLANNING,
     PLANNER_BINDING_REPAIR,
     PLANNER_RESPONSE_WITHOUT_RECALL,
-    WEB_TOOL_SELECTION,
 )
 
 DEFAULT_OUTPUT_TOKEN_LIMIT = 32768
@@ -169,7 +168,7 @@ class KarenPlannerModel:
             ]
         backend_request = replace(
             request,
-            system_instruction=(request.system_instruction + WEB_TOOL_SELECTION + FINAL_DELIVERY_PLANNING
+            system_instruction=(request.system_instruction + FINAL_DELIVERY_PLANNING
                                 + LOCAL_EDIT_PLANNING),
             input_data=data,
         )

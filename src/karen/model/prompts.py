@@ -7,6 +7,16 @@ WEB_TOOL_SELECTION = """
 For web discovery, prefer deepseek.search when authorized. Use tavily.search
 when DeepSeek search is unavailable or when a separate search index would help.
 Search scores from different providers are not comparable.
+Plan searches for the requested explanation and actors, including targeted
+searches for primary documents when available. A premise check supports that
+analysis. For material claims about recent events or causation, plan to read
+source text before synthesis. When URLs are discovered at runtime, bind the
+whole results array to deepseek.fetch_search_results if authorized. Avoid
+indexing a result that may be absent. For known URLs use a single-page reader.
+Treat summaries as leads. Preserve relevant leads, supporting passages and
+attribution through extraction. Prefer dated event-specific sources over
+general profiles when resolving conflicting claims. If a page cannot be read,
+distinguish unverified leads and source gaps from evidence against the claim.
 For an explicitly requested DeepSeek read or an alternative extraction of a
 public webpage, use deepseek.fetch when authorized. Its URL is the requested URL,
 and its content is extracted Markdown. Prefer web.read_page for reading or

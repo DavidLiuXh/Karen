@@ -352,6 +352,7 @@ async def test_cli_registers_and_authorizes_all_available_tools(
         expected_tools.add("tavily.search@1.0.0")
     if deepseek_key:
         expected_tools.update({"deepseek.search@1.0.0", "deepseek.fetch@1.0.0"})
+        expected_tools.add("deepseek.fetch_search_results@1.0.0")
     assert set(policy.allowed_tools) == expected_tools
     assert set(policy.allowed_side_effect_tools) == {
         "file.write_text@1.0.0",

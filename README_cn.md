@@ -122,7 +122,9 @@ DEEPSEEK_API_KEY=your_deepseek_api_key
 TAVILY_API_KEY=your_tavily_api_key
 ```
 
-Tavily 为可选配置，用于网络搜索。`.env` 已被 Git 忽略。
+`DEEPSEEK_API_KEY` 启用独立的 DeepSeek 网页搜索（`deepseek.search`）和 Markdown 抓取（`deepseek.fetch`）。Karen 优先使用 DeepSeek 搜索。Tavily 可选，提供独立的搜索索引。阅读网页时可用内置正文工具，需要原始标记时使用原始抓取工具。DeepSeek 对返回结果的独立 API 调用计费。[DeepSeek API 使用指南](https://api-docs.deepseek.com/zh-cn/guides/search/)
+
+`.env` 已被 Git 忽略。更新配置后请重启 Karen。
 
 **4. 启动 Karen：**
 

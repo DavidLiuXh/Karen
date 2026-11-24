@@ -2,6 +2,23 @@
 
 from ..prompt.prompts import ANSWER_PRESENTATION_INSTRUCTION
 
+WEB_TOOL_SELECTION = """
+
+For web discovery, prefer deepseek.search when authorized. Use tavily.search
+when DeepSeek search is unavailable or when a separate search index would help.
+Search scores from different providers are not comparable.
+For an explicitly requested DeepSeek read or an alternative extraction of a
+public webpage, use deepseek.fetch when authorized. Its URL is the requested URL,
+and its content is extracted Markdown. Prefer web.read_page for reading or
+summarizing visible webpage content, extracting visible links or tables, and
+collecting evidence for research. Use web.fetch when the goal requires the raw
+response or depends on markup-only evidence, such as iframe src, embedded metadata,
+or DOM structure. A large or truncated readable page alone is not a reason to
+send its full HTML to a model. For raw responses, prefer extracting the needed
+fields before model synthesis when an authorized tool can do so. Bind only the
+evidence needed by each downstream node.
+"""
+
 FINAL_DELIVERY_PLANNING = """
 
 若规划包含撰写面向用户正文的节点，把以下要求写进该节点的 instruction，

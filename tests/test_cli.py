@@ -310,7 +310,11 @@ async def test_cli_uses_thinking_for_decisions_and_nonthinking_for_memory(monkey
 
 
 @pytest.mark.parametrize("api_key", [None, "test-key"])
-async def test_cli_registers_and_authorizes_all_available_tools(monkeypatch, capsys, api_key):
+@pytest.mark.parametrize("deepseek_key", ["", "deepseek-test-key"])
+async def test_cli_registers_and_authorizes_all_available_tools(
+    monkeypatch, capsys, api_key, deepseek_key
+):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", deepseek_key)
     if api_key is None:
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     else:
@@ -346,6 +350,8 @@ async def test_cli_registers_and_authorizes_all_available_tools(monkeypatch, cap
     }
     if api_key:
         expected_tools.add("tavily.search@1.0.0")
+    if deepseek_key:
+        expected_tools.update({"deepseek.search@1.0.0", "deepseek.fetch@1.0.0"})
     assert set(policy.allowed_tools) == expected_tools
     assert set(policy.allowed_side_effect_tools) == {
         "file.write_text@1.0.0",

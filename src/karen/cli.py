@@ -14,6 +14,7 @@ from functools import partial
 from pathlib import Path
 from zoneinfo import ZoneInfoNotFoundError
 
+import httpx
 from dynamic_graph import DynamicGraphEngine, EngineConfig, ModelBindings
 from dynamic_graph.tools import (
     browser_open_local_page_tool,
@@ -56,6 +57,7 @@ from .task.terminal_rendering import (
     render_notice,
     render_reply,
 )
+from .tools.deepseek_web import deepseek_web_tools
 from .tools.file_range import READ_RANGE_BYTES, file_read_text_range_tool
 from .tools.git import git_clone_tool
 from .tools.gmail import GmailClient, GmailCredentials
@@ -282,8 +284,6 @@ async def register_gmail_tools(engine, resources, resources_guard):
     if not all(values):
         print(messages.GMAIL_CONFIG_INCOMPLETE, file=sys.stderr)
         return
-    import httpx
-
     http = await resources.enter_async_context(httpx.AsyncClient())
     client = GmailClient(http, GmailCredentials(*values))
     for definition in gmail_tools(client):
@@ -316,6 +316,10 @@ async def register_execution_tools(engine, resources, resources_guard):
     engine.register_tool(resources_guard.file_tool(
         run_artifacts_tool(engine.config.runs_dir), root=engine.config.runs_dir,
     ))
+    if api_key := os.environ.get("DEEPSEEK_API_KEY", "").strip():
+        http = await resources.enter_async_context(httpx.AsyncClient())
+        for definition in deepseek_web_tools(http, api_key):
+            engine.register_tool(resources_guard.independent_read(definition))
     if os.environ.get("TAVILY_API_KEY", "").strip():
         engine.register_tool(resources_guard.independent_read(tavily_search_tool()))
     await register_gmail_tools(engine, resources, resources_guard)

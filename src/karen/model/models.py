@@ -17,6 +17,7 @@ from pydantic import TypeAdapter
 from ..prompt.prompts import RESPONSE_INSTRUCTION
 from .prompts import (
     FINAL_DELIVERY_PLANNING,
+    WEB_TOOL_SELECTION,
     LOCAL_EDIT_PLANNING,
     PLANNER_BINDING_REPAIR,
     PLANNER_RESPONSE_WITHOUT_RECALL,
@@ -168,7 +169,7 @@ class KarenPlannerModel:
             ]
         backend_request = replace(
             request,
-            system_instruction=(request.system_instruction + FINAL_DELIVERY_PLANNING
+            system_instruction=(request.system_instruction + WEB_TOOL_SELECTION + FINAL_DELIVERY_PLANNING
                                 + LOCAL_EDIT_PLANNING),
             input_data=data,
         )

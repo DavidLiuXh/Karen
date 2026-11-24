@@ -122,7 +122,9 @@ DEEPSEEK_API_KEY=your_deepseek_api_key
 TAVILY_API_KEY=your_tavily_api_key
 ```
 
-Tavily is optional and enables web search. `.env` is ignored by Git.
+`DEEPSEEK_API_KEY` enables standalone DeepSeek web search (`deepseek.search`) and Markdown fetching (`deepseek.fetch`) in both the terminal and WeChat. Karen prefers DeepSeek for search. Tavily remains optional and provides a separate search index. Use the built-in reader for readable page content and the raw fetch tool for original markup. DeepSeek charges for standalone calls that return results. [DeepSeek API guide](https://api-docs.deepseek.com/zh-cn/guides/search/)
+
+`.env` is ignored by Git. Restart Karen after updating its configuration.
 
 **4. Start Karen:**
 

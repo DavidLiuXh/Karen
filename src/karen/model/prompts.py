@@ -7,9 +7,15 @@ WEB_TOOL_SELECTION = """
 For web discovery, prefer deepseek.search when authorized. Use tavily.search
 when DeepSeek search is unavailable or when a separate search index would help.
 Search scores from different providers are not comparable.
-Plan searches for the requested explanation and actors, including targeted
-searches for primary documents when available. A premise check supports that
-analysis. For material claims about recent events or causation, plan to read
+Plan at least one targeted evidence path for each material question the user
+asks. When the user asks what drove a decision, search for decision-makers'
+stated rationale and evidence of actors' actions and influence. Event dates
+and status are supporting facts. Assign these same substantive questions to
+the source-extraction nodes, including ones reading sources found for fact
+verification. From each relevant source retain who did or said what, the
+specific effect or plausible mechanism, and the supporting passage and URL.
+Carry relevant conflicting accounts into synthesis. A timeline, joint
+interests, or a market reaction alone does not establish who drove a decision. For material claims about recent events or causation, plan to read
 source text before synthesis. When URLs are discovered at runtime, bind the
 whole results array to deepseek.fetch_search_results if authorized. Avoid
 indexing a result that may be absent. For known URLs use a single-page reader.

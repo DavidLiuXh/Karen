@@ -279,6 +279,7 @@ async def test_planner_view_preserves_execution_evidence_and_original_goal():
     from dynamic_graph import FakeModelClient, ModelResponse
 
     from karen.model.models import KarenPlannerModel
+    from karen.prompt.prompts import NATURAL_PROSE_INSTRUCTION
 
     original_context = {
         "input_routing": {"reason": "Task request"},
@@ -296,7 +297,7 @@ async def test_planner_view_preserves_execution_evidence_and_original_goal():
     }, {})
     await planner.generate(request)
     assert "把以下要求写进该节点的 instruction" in backend.requests[0].system_instruction
-    assert "内部证据标签、空分类和检索过程" in backend.requests[0].system_instruction
+    assert NATURAL_PROSE_INSTRUCTION in backend.requests[0].system_instruction
     sent = backend.requests[0].input_data
     assert sent["goal"]["context"] == {
         "timezone": "Asia/Shanghai",

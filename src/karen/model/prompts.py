@@ -26,7 +26,7 @@ source evidence against the requested deliverables. It should emit a required st
 query (maxLength 128), empty if the evidence is sufficient. If an expected
 primary record could settle a material decision date or rationale and only
 secondary accounts were obtained, treat that as a gap. Keep decision,
-announcement and effective dates distinct in synthesis. Use a targeted query
+announcement and effective dates distinct in the evidence. Use a targeted query
 for the most consequential missing fact or conflict. Bind that query to
 deepseek.search_followup and bind its entire results array to
 deepseek.fetch_search_results. Give synthesis the first-pass evidence and the
@@ -52,9 +52,8 @@ FINAL_DELIVERY_PLANNING = """
 
 若规划包含撰写面向用户正文的节点，把以下要求写进该节点的 instruction，
 使其无需读取 GoalSpec.context 也能执行：
-""" + ANSWER_PRESENTATION_INSTRUCTION + """
-证据分级可用于中间分析和输出契约规定的字段。只有用户明确要求按证据等级组织正文时，
-才安排这样的章节；有意义的证据强弱用自然语言随对应判断说明。"""
+""" + ANSWER_PRESENTATION_INSTRUCTION + "\n"
+
 
 PLANNER_RESPONSE_WITHOUT_RECALL = """用用户要求的语言和粒度直接交付，明确约束与否定限定优先于默认值和适用偏好。
 只使用支持本轮目标的证据，保留关键事实及其时间、来源和范围。用户给定的假设按条件使用，区分已核实事实、

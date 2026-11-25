@@ -117,6 +117,7 @@ uv run pytest tests/test_workflow.py tests/test_workflow_revisions.py tests/test
 
 实例化复用图时，将当前请求的 IANA 时区作为 `_karen_user_timezone` 绑定到每个 LLM 节点的输入，
 并提示面向用户的文字和 HTML 按该时区转换时间，明确标注时区。原始抓取时间及证据仍保留 UTC。
+实例化时也附加共用正文规则，把关键时间、归因和证据限制写进对应事实的句子。结构化交付继续保留契约字段。
 仅将时区写入 GoalSpec.context 不保证执行节点能读取，因此这里使用实际节点输入绑定。
 此改动作用于下一次实例化的流程；已生成页面需重新生成或单独修正。模型输出的具体转换仍需验收。
 

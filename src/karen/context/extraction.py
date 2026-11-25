@@ -20,6 +20,7 @@ from .contracts import (
     BatchExtraction,
     Extraction,
     FactCandidate,
+    PersistenceError,
     Scope,
     StoredMemory,
     Verification,
@@ -29,6 +30,7 @@ from .prompts import EXTRACT, MEMORY_SYSTEM, PROMPT_VERSION, REPAIR, VERIFY
 from .storage import Storage, digest, encode, pointer_value, stable_id
 
 EXTRACTION_WINDOW = 12
+PREFERENCE_HISTORY_LIMIT = 8
 
 
 def direct_fact_evidence(event, sources):
@@ -43,6 +45,7 @@ class ExtractionState(TypedDict, total=False):
     extraction: Extraction
     verification: Verification
     allowed_events: dict
+    preference_history: dict
     existing: dict[str, StoredMemory]
     revision: int
     model_info: dict
@@ -359,6 +362,7 @@ class Extractor:
 
     async def verify(self, state):
         revision, all_memories, vectors = await self.io(self.storage.snapshot)
+        event = state["allowed_events"][state["event_id"]]
         facts = state["extraction"].facts
         exact = [
             m
@@ -371,6 +375,7 @@ class Extractor:
         ]
         query = " ".join(f.text for f in facts)
         keywords = await self.io(self.storage.keyword_ranks, query)
+        preference_history = {}
         expanded = [
             all_memories[mid]
             for mid in keywords.get("m1", [])
@@ -391,13 +396,40 @@ class Extractor:
                 existing.update({m.memory_id: m for m in similar})
             except Exception:
                 info["matching"] = "bm25_and_exact_keys"
+        if event.event_type == "user_message" and any(f.inferred_preference for f in facts):
+            summary_text = " ".join(summary.text for summary in state["extraction"].summaries)
+            ranked = await self.io(self.storage.keyword_ranks, f"{query} {summary_text}")
+            for mid in ranked.get("m2", []):
+                memory = all_memories.get(mid)
+                if memory is None or memory.request_id == event.request_id:
+                    continue
+                source = memory.anchor_source()
+                if not source or source.source_role != "user" or source.event_id in preference_history:
+                    continue
+                try:
+                    old = await self.io(self.storage.load_event, source.event_id, max_bytes=16000)
+                except PersistenceError:
+                    continue
+                if (
+                    old.event_type == "user_message"
+                    and old.project_id == event.project_id
+                    and old.occurred_at < event.occurred_at
+                ):
+                    preference_history[old.event_id] = old
+                    if len(preference_history) == PREFERENCE_HISTORY_LIMIT:
+                        break
+        facts = [f for f in facts if not f.inferred_preference or preference_history]
+
         async def checked_verification(verification):
             if sorted(d.candidate_id for d in verification.decisions) != sorted(
                 f.candidate_id for f in facts
             ):
                 raise ValueError("INCOMPLETE_VERIFICATION")
             self.build_changes(
-                {**state, "verification": verification, "existing": existing, "model_info": info}
+                {
+                    **state, "verification": verification, "existing": existing, "model_info": info,
+                    "preference_history": preference_history,
+                }
             )
             return verification
 
@@ -412,6 +444,8 @@ class Extractor:
                 ],
                 "existing": [memory.context() for memory in existing.values()],
             }
+            if preference_history:
+                inputs["preference_history"] = self.extraction_inputs(preference_history.values())
             verification, name = await self.call(
                 "memory_verify", VERIFY, inputs, Verification, validate=checked_verification
             )
@@ -429,6 +463,7 @@ class Extractor:
             "existing": existing,
             "revision": revision,
             "model_info": info,
+            "preference_history": preference_history,
         }
 
     async def commit(self, state):
@@ -452,6 +487,32 @@ class Extractor:
             # Assistant echoes and goals cannot create durable personal assertions.
             if not direct_fact_evidence(event, sources):
                 continue
+            if candidate.inferred_preference:
+                history = state.get("preference_history", {})
+                if (
+                    event.event_type != "user_message"
+                    or candidate.subject != "user"
+                    or (event.project_id and candidate.scope.kind != "project")
+                    or not decision.supporting_choices
+                ):
+                    raise ValueError("INSUFFICIENT_PREFERENCE_EVIDENCE")
+                for evidence in decision.supporting_choices:
+                    old = history.get(evidence.event_id)
+                    if (
+                        old is None or old.request_id == event.request_id
+                        or evidence.pointer != "/payload/content"
+                        or not evidence.quote
+                        or evidence.quote not in str(bounded_data(old.payload).get("content", ""))
+                    ):
+                        raise ValueError("INVALID_PREFERENCE_EVIDENCE")
+                    source = self.storage.source(evidence, history)
+                    if source not in sources:
+                        sources.append(source)
+                if not any(
+                    s.event_id == event.event_id and s.pointer == "/payload/content" and s.quote
+                    for s in sources
+                ):
+                    raise ValueError("INSUFFICIENT_PREFERENCE_EVIDENCE")
             if len(decision.matched_ids) != len(set(decision.matched_ids)):
                 raise ValueError("DUPLICATE_MATCHED_ID")
             matched = []
@@ -470,6 +531,10 @@ class Extractor:
                     }:
                         matched.append(old)
             matched_ids = [old.memory_id for old in matched]
+            if candidate.inferred_preference and any(
+                old.assertion_type == "explicit" for old in matched
+            ):
+                raise ValueError("INFERRED_PREFERENCE_CANNOT_CHANGE_EXPLICIT_FACT")
             if decision.operation != "new" and not matched:
                 raise ValueError("MISSING_FACT_MATCH")
             if decision.operation == "new" and matched:
@@ -531,6 +596,12 @@ class Extractor:
                         raise ValueError("REINFORCE_DIFFERENT_VALUE")
                     refs = {(s.event_id, s.pointer, s.quote): s for s in (*old.sources, *sources)}
                     update = {"sources": list(refs.values())}
+                    if (
+                        old.assertion_type == "inferred"
+                        and event.event_type == "user_message"
+                        and not candidate.inferred_preference
+                    ):
+                        update["assertion_type"] = "explicit"
                     for field in ("valid_from", "valid_to"):
                         value = getattr(candidate, field)
                         if getattr(old, field) is None and value and value.origin == "explicit":
@@ -555,8 +626,15 @@ class Extractor:
                 sources=sources,
                 state="conflicted" if group else "active",
                 verification_reason=decision.reason,
-                assertion_type="observed" if event.event_type == "task_result" else "explicit",
-                recorded_at=min(s.occurred_at for s in sources),
+                assertion_type=(
+                    "inferred" if candidate.inferred_preference
+                    else "observed" if event.event_type == "task_result"
+                    else "explicit"
+                ),
+                recorded_at=(
+                    event.occurred_at if candidate.inferred_preference
+                    else min(s.occurred_at for s in sources)
+                ),
                 created_at=now,
                 updated_at=now,
                 valid_from=candidate.valid_from,

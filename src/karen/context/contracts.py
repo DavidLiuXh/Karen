@@ -167,6 +167,7 @@ class FactCandidate(Contract):
     text: str = Field(min_length=1)
     scope: Scope = Field(default_factory=Scope)
     evidence: list[Evidence] = Field(min_length=1)
+    inferred_preference: bool = False
     valid_from: TemporalValue | None = None
     valid_to: TemporalValue | None = None
 
@@ -226,6 +227,7 @@ class FactDecision(Contract):
     matched_ids: list[str] = Field(default_factory=list)
     reason: str = Field(min_length=1)
     canonical_value: JsonValue = None
+    supporting_choices: list[Evidence] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def valid_normalization(self):

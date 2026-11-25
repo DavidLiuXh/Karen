@@ -2828,3 +2828,47 @@ async def test_source_rejects_invalid_structured_references(memory, pointer, quo
     })
     with pytest.raises(ValueError, match=code):
         service.storage.source(Evidence(event_id=raw.event_id, pointer=pointer, quote=quote), {raw.event_id: raw})
+
+
+async def test_repeated_choices_learn_a_source_backed_default(memory, monkeypatch):
+    service, model = memory
+    generate = model.generate
+
+    async def learn(request):
+        response = await generate(request)
+        data = request.input_data
+        if request.role == "memory_extract" and "new_event_id" in data:
+            current = next(e for e in data["events"] if e["event_id"] == data["new_event_id"])
+            if current["event_type"] == "user_message":
+                response.payload["facts"] = [{
+                    "candidate_id": "layout",
+                    "fact_key": "preference.research.layout",
+                    "value": "comparison table",
+                    "text": "技术调研默认使用对照表",
+                    "inferred_preference": True,
+                    "evidence": response.payload["summaries"][0]["evidence"],
+                }]
+        if request.role == "memory_verify":
+            history = data["preference_history"]
+            assert len(history) == 1
+            old = history[0]
+            response.payload["decisions"][0]["supporting_choices"] = [{
+                "event_id": old["event_id"], "pointer": "/payload/content",
+                "quote": old["payload"]["content"],
+            }]
+        return response
+
+    monkeypatch.setattr(model, "generate", learn)
+    first = service.submit(event("这份技术调研用对照表", request="first"))
+    await service.flush(first)
+    echo = service.submit(event("这份技术调研用对照表", request="echo", kind="assistant_message"))
+    await service.flush(echo)
+    assert not (await service.recall(query("做一份技术调研"))).m1
+
+    second = service.submit(event("另一份技术调研也用对照表", request="second"))
+    await service.flush(second)
+    result = await service.recall(query("做一份技术调研"))
+    learned, = [hit.memory for hit in result.m1 if not hit.evidence_only]
+    assert learned.value == "comparison table"
+    assert learned.assertion_type == "inferred"
+    assert {s.event_id for s in learned.sources} == {first.event_id, second.event_id}

@@ -1236,8 +1236,10 @@ class IntentRecognizer:
         deadline = loop.time() + request.timeout_seconds
         assessment = await self._validated(request, Assessment)
         memory = state.get("memory_context") or {}
-        if isinstance(assessment.decision, Ready) and any(
-            memory.get(layer) for layer in ("m1", "m2", "details")
+        clarity = state.get("clarity")
+        external_research = bool(clarity and clarity.external_information_needed)
+        if isinstance(assessment.decision, Ready) and (
+            external_research or any(memory.get(layer) for layer in ("m1", "m2", "details"))
         ):
             assessment = await self._review_draft(
                 replace(

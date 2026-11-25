@@ -23,7 +23,10 @@ For in-depth research with material gaps that may only become clear after
 reading the first sources, plan one optional follow-up when deepseek.search_followup
 is authorized and compatible with the requested search provider. Have a model assess the initial
 source evidence against the requested deliverables. It should emit a required string
-query (maxLength 128), empty if the evidence is sufficient. Use a targeted query
+query (maxLength 128), empty if the evidence is sufficient. If an expected
+primary record could settle a material decision date or rationale and only
+secondary accounts were obtained, treat that as a gap. Keep decision,
+announcement and effective dates distinct in synthesis. Use a targeted query
 for the most consequential missing fact or conflict. Bind that query to
 deepseek.search_followup and bind its entire results array to
 deepseek.fetch_search_results. Give synthesis the first-pass evidence and the

@@ -14,6 +14,7 @@ from dynamic_graph.models.client import ModelCallError, ModelClient
 from langchain_core.embeddings import Embeddings
 
 from ..observability import Observer
+from .budgets import MemoryBudgets
 from .contracts import (
     ContextEvent,
     DetailHit,
@@ -55,6 +56,7 @@ class ContextMemory:
         self.model = model
         self.rerank_model = rerank_model if rerank_model is not None else model
         self.embeddings = embeddings
+        self.budgets = MemoryBudgets.from_env()
         self.observer = observer or Observer()
         self.storage = Storage(self.root_dir)
         self._queue = asyncio.Queue()
@@ -526,17 +528,22 @@ class ContextMemory:
             event_ids = list(dict.fromkeys(event_ids))
         words = terms(query.text)
         excluded = set(query.exclude_event_ids)
+        budgets = self.budgets
         for event_id in event_ids:
             if event_id in excluded:
                 continue
-            if scanned >= 200 or read_bytes >= 2 * 1024 * 1024 or time.monotonic() - start >= 2:
+            if (
+                scanned >= budgets.detail_max_events
+                or read_bytes >= budgets.detail_read_bytes
+                or time.monotonic() - start >= budgets.detail_timeout_seconds
+            ):
                 partial = True
                 break
             try:
-                event = await self.load_event(event_id, max_bytes=2 * 1024 * 1024 - read_bytes)
+                event = await self.load_event(event_id, max_bytes=budgets.detail_read_bytes - read_bytes)
                 data = event.model_dump(mode="json")
                 size = len(encode(data).encode())
-                if read_bytes + size > 2 * 1024 * 1024:
+                if read_bytes + size > budgets.detail_read_bytes:
                     partial = True
                     break
                 read_bytes += size

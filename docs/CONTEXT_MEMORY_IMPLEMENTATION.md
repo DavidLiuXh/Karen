@@ -16,6 +16,27 @@ uv run --env-file .env karen --timezone Asia/Shanghai
 Ollama 暂不可用时，已有记录可降级为 BM25；派生向量任务会报告失败并保留原文和已提交事实。
 目录锁冲突、存储初始化失败会明确结束启动，避免在用户不知情时停用记忆或启动第二个写入进程。
 
+### 原文回查与装包配置
+
+可将下列变量加入 `.env`，并用上面的启动命令加载。默认值如下。
+
+```dotenv
+KAREN_MEMORY_DETAIL_MAX_SOURCES=12
+KAREN_MEMORY_DETAIL_MAX_TASKS=3
+KAREN_MEMORY_DETAIL_MAX_EVENTS=200
+KAREN_MEMORY_DETAIL_READ_BYTES=2097152
+KAREN_MEMORY_DETAIL_TIMEOUT_SECONDS=2
+KAREN_MEMORY_DETAIL_MEMORY_BYTES=6144
+KAREN_MEMORY_DETAIL_CONTEXT_BYTES=11264
+KAREN_MEMORY_CONTEXT_BYTES=12288
+```
+
+- `DETAIL_MAX_SOURCES` 限制首轮原文回查的来源定位数，`DETAIL_MAX_TASKS` 限制追加回查的历史任务数。
+- `DETAIL_MAX_EVENTS`、`DETAIL_READ_BYTES`、`DETAIL_TIMEOUT_SECONDS` 限制每次原文回查的扫描事件数、读取字节数和扫描时间，时间按事件之间的检查执行。
+- `DETAIL_MEMORY_BYTES` 是详情召回的记忆条目预算，`DETAIL_CONTEXT_BYTES` 是该路径的记忆条目加原文摘录预算。最终装包会按 `CONTEXT_BYTES` 裁剪证据。希望增加可交给模型的详情时，按需同时调整这三项。
+
+数量与字节数使用正整数，秒数可用正小数。非法值在启动时会报错。已运行的 Karen 需要重启才能读取新设置。
+
 ## 实现与公共接口
 
 | 文件 | 职责 |

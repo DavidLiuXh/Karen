@@ -694,6 +694,7 @@ class Retriever:
         return {"ranking": ranking, "degraded": degraded, "primary": primary}
 
     async def assemble(self, state):
+        budgets = self.service.budgets
         query, analysis, ranking = state["query"], state["analysis"], state["ranking"]
         memories, scores = state["memories"], state["scores"]
         degraded = list(state["degraded"])
@@ -710,6 +711,7 @@ class Retriever:
         m1, m2, included, used = [], [], set(), 0
         memory_groups = []
         root_counts = {"m1": 0, "m2": 0}
+        memory_budget = budgets.detail_memory_bytes if analysis.kind == "detail" else 10 * 1024
         if "RERANK_FAILED_FUSION_ORDER" not in degraded:
             # Rank relevance, then pack distinct user evidence before verbose
             # assistant guidance. Sorting is stable within each category. Do not
@@ -749,7 +751,6 @@ class Retriever:
                 ).encode()
             )
             # Enumeration needs room for raw interaction previews, not just top-k summaries.
-            memory_budget = (6 if analysis.kind == "detail" else 10) * 1024
             if used + size > memory_budget:
                 degraded.append("CONTEXT_BUDGET_LIMIT")
                 continue
@@ -843,7 +844,7 @@ class Retriever:
                     if identity not in seen_sources:
                         seen_sources.add(identity)
                         refs.append(source)
-            if len(refs) > 12:
+            if len(refs) > budgets.detail_max_sources:
                 degraded.append("DETAIL_SOURCE_BUDGET_LIMIT")
             scope_task = (
                 ranking.related_request_ids[0] if len(ranking.related_request_ids) == 1 else None
@@ -861,7 +862,7 @@ class Retriever:
                 DetailQuery(
                     text=analysis.search_text,
                     exclude_event_ids=query.exclude_event_ids,
-                    sources=refs[:12],
+                    sources=refs[:budgets.detail_max_sources],
                     request_id=scope_task,
                     time_range=detail_range,
                     conversation_id=query.conversation_id
@@ -902,9 +903,9 @@ class Retriever:
                 )
             )
             scopes = [scope for scope in scopes if scope != query.request_id]
-            if len(scopes) > 3:
+            if len(scopes) > budgets.detail_max_tasks:
                 degraded.append("DETAIL_SCOPE_BUDGET_LIMIT")
-            for scope in scopes[:3]:
+            for scope in scopes[:budgets.detail_max_tasks]:
                 if time.monotonic() >= state["deadline"]:
                     detail_status = "partial"
                     break
@@ -974,7 +975,7 @@ class Retriever:
                     continue
                 seen_details.add(identity)
                 size = len(encode(hit.context()).encode())
-                if used + size > 11 * 1024:
+                if used + size > budgets.detail_context_bytes:
                     degraded.append("DETAIL_BUDGET_LIMIT")
                     continue
                 details.append(hit)
@@ -1027,7 +1028,7 @@ class Retriever:
         # Account for the actual envelope. A small overflow must not erase every
         # recalled fact and source. Keep the highest-priority raw details; memory
         # timeline groups are removed together so successors never stand alone.
-        while len(encode(result.context()).encode()) > 12 * 1024 and detail_priority:
+        while len(encode(result.context()).encode()) > budgets.context_bytes and detail_priority:
             identity = detail_priority.pop()
             result = result.model_copy(
                 update={
@@ -1042,7 +1043,7 @@ class Retriever:
                     ),
                 }
             )
-        while len(encode(result.context()).encode()) > 12 * 1024 and memory_groups:
+        while len(encode(result.context()).encode()) > budgets.context_bytes and memory_groups:
             removed = memory_groups.pop()
             result = result.model_copy(
                 update={
@@ -1058,14 +1059,14 @@ class Retriever:
                     ),
                 }
             )
-        if len(encode(result.context()).encode()) > 12 * 1024 and result.history.messages:
+        if len(encode(result.context()).encode()) > budgets.context_bytes and result.history.messages:
             result = result.model_copy(update={
                 "history": result.history.model_copy(update={"complete": False}),
                 "status": "degraded",
                 "coverage": {**result.coverage, "complete": False},
                 "degradations": list(dict.fromkeys([*result.degradations, "HISTORY_BUDGET_LIMIT"])),
             })
-            overflow = len(encode(result.context()).encode()) - 12 * 1024
+            overflow = len(encode(result.context()).encode()) - budgets.context_bytes
             result = result.model_copy(update={
                 "history": result.history.model_copy(update={
                     "messages": fit_history_messages(

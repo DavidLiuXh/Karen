@@ -2872,3 +2872,30 @@ async def test_repeated_choices_learn_a_source_backed_default(memory, monkeypatc
     assert learned.value == "comparison table"
     assert learned.assertion_type == "inferred"
     assert {s.event_id for s in learned.sources} == {first.event_id, second.event_id}
+
+
+async def test_memory_budgets_from_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("KAREN_MEMORY_DETAIL_MAX_EVENTS", "1")
+    monkeypatch.setenv("KAREN_MEMORY_DETAIL_MAX_SOURCES", "1")
+    monkeypatch.setenv("KAREN_MEMORY_DETAIL_MAX_TASKS", "1")
+    monkeypatch.setenv("KAREN_MEMORY_CONTEXT_BYTES", "1800")
+    model = MemoryModel()
+    model.kind = "detail"
+    service = ContextMemory(root_dir=tmp_path, model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        for request in ("first", "second", "third"):
+            for number in range(2):
+                receipt = service.submit(event(f"保存报告 /tmp/{request}-{number}.md", request=request))
+                await service.flush(receipt)
+        details = await service.search_details(DetailQuery(text="报告", request_id="first"))
+        assert details.status == "partial"
+        assert details.scanned_events == 1
+        result = await service.recall(query("保存过哪些报告"))
+        assert {"DETAIL_SOURCE_BUDGET_LIMIT", "DETAIL_SCOPE_BUDGET_LIMIT"} <= set(
+            result.degradations
+        )
+        assert "CONTEXT_BUDGET_LIMIT" in result.degradations
+        assert len(encode(result.context()).encode()) <= 1800
+    finally:
+        await service.close()

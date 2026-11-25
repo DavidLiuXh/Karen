@@ -4,28 +4,58 @@ from ..prompt.prompts import ANSWER_PRESENTATION_INSTRUCTION
 
 WEB_TOOL_SELECTION = """
 
-For web discovery, prefer deepseek.search when authorized. Use tavily.search
-when DeepSeek search is unavailable or when a separate search index would help.
+For web discovery, honor any search provider explicitly requested by the user
+when authorized. Default to {preferred} when authorized and available. If it is unavailable, use {alternate}
+when authorized. Use a separate search index when independent coverage is needed.
 Search scores from different providers are not comparable.
-For an explicitly requested DeepSeek read or an alternative extraction of a
-public webpage, use deepseek.fetch when authorized. Its URL is the requested URL,
-and its content is extracted Markdown. Prefer web.read_page for reading or
-summarizing visible webpage content, extracting visible links or tables, and
-collecting evidence for research. Use web.fetch when the goal requires the raw
-response or depends on markup-only evidence, such as iframe src, embedded metadata,
-or DOM structure. A large or truncated readable page alone is not a reason to
-send its full HTML to a model. For raw responses, prefer extracting the needed
-fields before model synthesis when an authorized tool can do so. Bind only the
-evidence needed by each downstream node.
+Plan at least one targeted evidence path for each material question the user
+asks. When the user asks what drove a decision, search for decision-makers'
+stated rationale and evidence of actors' actions and influence. Event dates
+and status are supporting facts. Assign these same substantive questions to
+the source-extraction nodes, including ones reading sources found for fact
+verification. From each relevant source retain who did or said what, the
+specific effect or plausible mechanism, and the supporting passage and URL.
+Carry relevant conflicting accounts into synthesis. A timeline, joint
+interests, or a market reaction alone does not establish who drove a decision. For material claims about recent events or causation, plan to read
+source text before synthesis. When URLs are discovered at runtime, bind the
+whole results array to deepseek.fetch_search_results if authorized. Avoid
+indexing a result that may be absent. For known URLs use a single-page reader.
+For in-depth research with material gaps that may only become clear after
+reading the first sources, plan one optional follow-up when deepseek.search_followup
+is authorized and compatible with the requested search provider. Have a model assess the initial
+source evidence against the requested deliverables. It should emit a required string
+query (maxLength 128), empty if the evidence is sufficient. If an expected
+primary record could settle a material decision date or rationale and only
+secondary accounts were obtained, treat that as a gap. Keep decision,
+announcement and effective dates distinct in the evidence. Use a targeted query
+for the most consequential missing fact or conflict. Bind that query to
+deepseek.search_followup and bind its entire results array to
+deepseek.fetch_search_results. Give synthesis the first-pass evidence and the
+follow-up pages; require it to explain any material unresolved gap. Skip this
+sequence for straightforward lookups.
+Treat summaries as leads. Preserve relevant leads, supporting passages and
+attribution through extraction. Prefer dated event-specific sources over
+general profiles when resolving conflicting claims. If a page cannot be read,
+distinguish unverified leads and source gaps from evidence against the claim.
+Honor an explicitly requested fetch tool when authorized and appropriate.
+Default to deepseek.fetch for readable webpage content at a known URL when
+authorized. It returns Markdown, the requested URL, and a truncation flag.
+Use web.read_page when DeepSeek Fetch is unavailable or when its final URL
+or extraction metadata is needed. Use web.fetch for original markup or DOM
+evidence when that tool is registered and authorized. Bind only the evidence
+each node needs. Treat batch pages with error as missing evidence.
+Prefer primary documents or official filing repositories. Verify that each
+source supports the requested facts and report material gaps.
+These text tools cannot read PDFs. An older filing cannot substitute for a
+requested reporting period.
 """
 
 FINAL_DELIVERY_PLANNING = """
 
 若规划包含撰写面向用户正文的节点，把以下要求写进该节点的 instruction，
 使其无需读取 GoalSpec.context 也能执行：
-""" + ANSWER_PRESENTATION_INSTRUCTION + """
-证据分级可用于中间分析和输出契约规定的字段。只有用户明确要求按证据等级组织正文时，
-才安排这样的章节；有意义的证据强弱用自然语言随对应判断说明。"""
+""" + ANSWER_PRESENTATION_INSTRUCTION + "\n"
+
 
 PLANNER_RESPONSE_WITHOUT_RECALL = """用用户要求的语言和粒度直接交付，明确约束与否定限定优先于默认值和适用偏好。
 只使用支持本轮目标的证据，保留关键事实及其时间、来源和范围。用户给定的假设按条件使用，区分已核实事实、

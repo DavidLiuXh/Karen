@@ -2,11 +2,12 @@
 
 import asyncio
 import json
+import os
 import re
 from dataclasses import replace
 
 from dynamic_graph.execution.privacy import REDACTED
-from dynamic_graph.graph.schemas import SchemaError, strict_loads, validate_value
+from dynamic_graph.graph.schemas import SchemaError, compatible, strict_loads, validate_value
 from dynamic_graph.graph.spec import Binding
 from dynamic_graph.models.adapters import LangChainModelClient
 from dynamic_graph.models.client import ModelCallError, ModelResponse
@@ -108,6 +109,12 @@ class KarenPlannerModel:
 
     def __init__(self, model):
         self.model = model
+        provider = os.environ.get("KAREN_WEB_SEARCH_PROVIDER", "").strip().lower()
+        preferred, alternate = (
+            ("tavily.search", "deepseek.search") if provider == "tavily"
+            else ("deepseek.search", "tavily.search")
+        )
+        self.web_tool_selection = WEB_TOOL_SELECTION.format(preferred=preferred, alternate=alternate)
 
     @property
     def metadata(self):
@@ -169,7 +176,7 @@ class KarenPlannerModel:
             ]
         backend_request = replace(
             request,
-            system_instruction=(request.system_instruction + WEB_TOOL_SELECTION + FINAL_DELIVERY_PLANNING
+            system_instruction=(request.system_instruction + self.web_tool_selection + FINAL_DELIVERY_PLANNING
                                 + LOCAL_EDIT_PLANNING),
             input_data=data,
         )
@@ -320,12 +327,14 @@ def _repair_data_contracts(graph, nodes, registered):
         if index not in registered or pointer != "":
             continue
         source = nodes[index]["output_schema"]
-        if field.get("value_schema") == source and field.get("update_schema") != source:
-            try:
-                validate_value(source, initial["literal"])
-            except (SchemaError, ValueError, KeyError, TypeError):
+        try:
+            if not compatible(source, field["value_schema"]):
                 continue
-            field["update_schema"] = source
+            validate_value(source, initial["literal"])
+        except (SchemaError, ValueError, KeyError, TypeError):
+            continue
+        # The initial value and the only writer both satisfy the registered contract.
+        field["value_schema"] = field["update_schema"] = source
     return repaired
 
 

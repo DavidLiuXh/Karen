@@ -120,9 +120,10 @@ ollama pull bge-m3:latest
 ```dotenv
 DEEPSEEK_API_KEY=your_deepseek_api_key
 TAVILY_API_KEY=your_tavily_api_key
+KAREN_WEB_SEARCH_PROVIDER=deepseek
 ```
 
-`DEEPSEEK_API_KEY` enables standalone DeepSeek web search (`deepseek.search`) and Markdown fetching (`deepseek.fetch`) in both the terminal and WeChat. Karen prefers DeepSeek for search. Tavily remains optional and provides a separate search index. Use the built-in reader for readable page content and the raw fetch tool for original markup. DeepSeek charges for standalone calls that return results. [DeepSeek API guide](https://api-docs.deepseek.com/zh-cn/guides/search/)
+`DEEPSEEK_API_KEY` enables standalone DeepSeek web search (`deepseek.search`) and Markdown fetching (`deepseek.fetch`) in both the terminal and WeChat. Set `KAREN_WEB_SEARCH_PROVIDER=deepseek` (the default) or `tavily` to choose the preferred search provider. If the preferred provider is unavailable, the planner can use the other registered provider. Tavily requires `TAVILY_API_KEY`. Readable pages default to `deepseek.fetch` when available, regardless of the search preference. Use `web.read_page` when its final URL or extraction metadata are needed, and an authorized raw fetch tool for original markup. DeepSeek charges for standalone calls that return results. [DeepSeek API guide](https://api-docs.deepseek.com/zh-cn/guides/search/)
 
 `.env` is ignored by Git. Restart Karen after updating its configuration.
 

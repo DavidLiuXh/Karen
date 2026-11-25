@@ -1137,10 +1137,14 @@ async def test_public_fact_lookup_preserves_unknowns_without_promoting_them_to_f
         "questions": [],
         "reason": "查证对象与问题已明确，缺少的是外部资料",
     }
-    model = RawModel([routing(initial_handling, types=["question"]), assessment, ready()])
+    model = RawModel([
+        routing(initial_handling, types=["question"]), assessment, ready(),
+        {"accepted": True, "evidence_coverage": []},
+    ])
     result = await IntentRecognizer(model).advance(IntentSession(), "查询这个精确名称的公开参数")
     assert result.goal and not result.questions
     assert result.routing.handling == "assess"
+    assert model.requests[-1].role == "intent_goal_review"
     assert model.requests[-1].input_data["clarity"]["external_information_needed"] == missing
     assert result.goal.context["information_to_verify"] == missing
     assert result.goal.context["supporting_facts"] == []
@@ -1395,11 +1399,13 @@ async def test_unknown_public_identity_is_lookup_information_not_user_clarificat
                        "blocking_reason": "查证 Neravion 的身份与公开出现时间。"}],
         "reason": "名称精确，缺少的是公共资料。",
     }
-    model = RawModel([routing(), assessment, ready()])
+    model = RawModel([routing(), assessment, ready(), {"accepted": True, "evidence_coverage": []}])
     result = await IntentRecognizer(model).advance(IntentSession(), "Neravion 什么时候出现？")
     assert result.goal and not result.questions
     assert result.goal.context["information_to_verify"] == ["查证 Neravion 的身份与公开出现时间。"]
-    assert [r.role for r in model.requests] == ["intent_router", "intent_clarity", "intent"]
+    assert [r.role for r in model.requests] == [
+        "intent_router", "intent_clarity", "intent", "intent_goal_review",
+    ]
 
 
 async def test_clarity_and_goal_use_the_same_scoped_memory_policy():
@@ -1657,7 +1663,10 @@ async def test_nonuser_information_gaps_do_not_block_a_clear_goal(resolution_sou
                        "blocking_reason": "交付物可按一般文本格式，资料可查询。"}],
         "reason": "没有必须由用户解决的缺口",
     }
-    model = RawModel([routing(), assessment, ready()])
+    responses = [routing(), assessment, ready()]
+    if resolution_source == "external_lookup":
+        responses.append({"accepted": True, "evidence_coverage": []})
+    model = RawModel(responses)
     result = await IntentRecognizer(model).advance(IntentSession(), "整理项目介绍")
     assert result.goal and not result.questions
     assert bool(result.goal.context.get("information_to_verify")) is (

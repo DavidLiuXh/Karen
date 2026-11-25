@@ -160,7 +160,7 @@ def create_engine(model, directory, search_fixture, *, live_search=False, planne
     elif live_search:
         # Read-only public research is part of the real agent's capability set.
         # Absence of credentials is a setup error, never a silent file-only run.
-        engine.register_tool(tavily_search_tool())
+        engine.register_tool(tavily_search_tool(trust_env=False))
     return engine
 
 

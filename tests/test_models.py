@@ -279,6 +279,7 @@ async def test_planner_view_preserves_execution_evidence_and_original_goal():
     from dynamic_graph import FakeModelClient, ModelResponse
 
     from karen.model.models import KarenPlannerModel
+    from karen.prompt.prompts import NATURAL_PROSE_INSTRUCTION
 
     original_context = {
         "input_routing": {"reason": "Task request"},
@@ -296,7 +297,7 @@ async def test_planner_view_preserves_execution_evidence_and_original_goal():
     }, {})
     await planner.generate(request)
     assert "把以下要求写进该节点的 instruction" in backend.requests[0].system_instruction
-    assert "内部证据标签、空分类和检索过程" in backend.requests[0].system_instruction
+    assert NATURAL_PROSE_INSTRUCTION in backend.requests[0].system_instruction
     sent = backend.requests[0].input_data
     assert sent["goal"]["context"] == {
         "timezone": "Asia/Shanghai",
@@ -408,6 +409,7 @@ async def test_planner_repairs_closed_object_and_passthrough_replace_contracts()
                  "required": ["body"], "additionalProperties": False}
     candidate = {**canonical}
     candidate.pop("additionalProperties")
+    canonical["properties"] = {"body": {"type": "string", "maxLength": 100}}
     graph = {"state_fields": {"page": {
         "value_schema": candidate, "update_schema": {"type": "string"},
         "initial": {"literal": {"body": ""}}, "reducer": {"name": "builtin.replace", "version": "1.0.0"},
@@ -425,7 +427,7 @@ async def test_planner_repairs_closed_object_and_passthrough_replace_contracts()
     nodes = result.payload["graph"]["nodes"]
     assert fields["page"]["value_schema"] == fields["page"]["update_schema"] == canonical
     assert nodes[1]["input_schema"]["additionalProperties"] is False
-    assert nodes[1]["input_schema"]["properties"]["page"] == canonical
+    assert nodes[1]["input_schema"]["properties"]["page"] == {**candidate, "additionalProperties": False}
     assert "additionalProperties" not in candidate
 
 
@@ -476,3 +478,25 @@ async def test_planner_repairs_only_unambiguous_single_node_bindings(fallback):
         assert response.payload["graph"]["nodes"] == [
             original["graph"]["nodes"][0], {"id": "target", **patch},
         ]
+
+
+@pytest.mark.parametrize(("setting", "preferred", "alternate"), [
+    (None, "deepseek.search", "tavily.search"),
+    ("deepseek", "deepseek.search", "tavily.search"),
+    ("tavily", "tavily.search", "deepseek.search"),
+    ("unknown", "deepseek.search", "tavily.search"),
+])
+async def test_planner_uses_configured_web_search_preference(monkeypatch, setting, preferred, alternate):
+    from dynamic_graph import FakeModelClient, ModelResponse
+
+    from karen.model.models import KarenPlannerModel
+
+    monkeypatch.delenv("KAREN_WEB_SEARCH_PROVIDER", raising=False)
+    if setting is not None:
+        monkeypatch.setenv("KAREN_WEB_SEARCH_PROVIDER", setting)
+    backend = FakeModelClient([ModelResponse({})])
+    request = ModelRequest("planner", "system", "task", {"goal": {}}, {})
+    await KarenPlannerModel(backend).generate(request)
+    instruction = backend.requests[0].system_instruction
+    assert f"Default to {preferred}" in instruction
+    assert f"If it is unavailable, use {alternate}" in instruction

@@ -109,3 +109,31 @@ async def test_read_search_results_accepts_empty_and_preserves_other_pages_after
     assert result["pages"][1]["error"] == "TOOL_HTTP_ERROR"
     assert result["pages"][1]["content"] == ""
     assert result["pages"][2]["content"] == f"Full text for {urls[2]}"
+
+
+async def test_followup_search_skips_sufficient_evidence_and_reports_failed_lookup():
+    from karen.tools.deepseek_web import deepseek_search_followup_tool
+
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(200, json={"results": []})
+        return httpx.Response(503)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        search, _ = deepseek_web_tools(client, "test-key")
+        tool = deepseek_search_followup_tool(search)
+        skip = {"query": "   "}
+        validate(skip, tool.input_schema)
+        assert await tool.handler(skip, context()) == {"query": "", "results": []}
+        assert not requests
+        query = {"query": "outage mitigation timeline"}
+        result = await tool.handler(query, context())
+        validate(result, tool.output_schema)
+        assert result == {**query, "results": []}
+        failed = await tool.handler(query, context())
+        validate(failed, tool.output_schema)
+        assert failed == {**query, "results": [], "search_error": "TOOL_HTTP_ERROR"}
+        assert len(requests) == 2

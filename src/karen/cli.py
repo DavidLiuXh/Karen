@@ -57,7 +57,11 @@ from .task.terminal_rendering import (
     render_notice,
     render_reply,
 )
-from .tools.deepseek_web import deepseek_fetch_search_results_tool, deepseek_web_tools
+from .tools.deepseek_web import (
+    deepseek_fetch_search_results_tool,
+    deepseek_search_followup_tool,
+    deepseek_web_tools,
+)
 from .tools.file_range import READ_RANGE_BYTES, file_read_text_range_tool
 from .tools.git import git_clone_tool
 from .tools.gmail import GmailClient, GmailCredentials
@@ -319,7 +323,10 @@ async def register_execution_tools(engine, resources, resources_guard):
     if api_key := os.environ.get("DEEPSEEK_API_KEY", "").strip():
         http = await resources.enter_async_context(httpx.AsyncClient(trust_env=False))
         search, fetch = deepseek_web_tools(http, api_key)
-        for definition in (search, fetch, deepseek_fetch_search_results_tool(search, fetch)):
+        for definition in (
+            search, fetch, deepseek_fetch_search_results_tool(search, fetch),
+            deepseek_search_followup_tool(search),
+        ):
             engine.register_tool(resources_guard.independent_read(definition))
     if os.environ.get("TAVILY_API_KEY", "").strip():
         engine.register_tool(resources_guard.independent_read(tavily_search_tool(trust_env=False)))

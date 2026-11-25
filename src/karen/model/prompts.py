@@ -19,6 +19,16 @@ interests, or a market reaction alone does not establish who drove a decision. F
 source text before synthesis. When URLs are discovered at runtime, bind the
 whole results array to deepseek.fetch_search_results if authorized. Avoid
 indexing a result that may be absent. For known URLs use a single-page reader.
+For in-depth research with material gaps that may only become clear after
+reading the first sources, plan one optional follow-up when deepseek.search_followup
+is authorized and compatible with the requested search provider. Have a model assess the initial
+source evidence against the requested deliverables. It should emit a required string
+query (maxLength 128), empty if the evidence is sufficient. Use a targeted query
+for the most consequential missing fact or conflict. Bind that query to
+deepseek.search_followup and bind its entire results array to
+deepseek.fetch_search_results. Give synthesis the first-pass evidence and the
+follow-up pages; require it to explain any material unresolved gap. Skip this
+sequence for straightforward lookups.
 Treat summaries as leads. Preserve relevant leads, supporting passages and
 attribution through extraction. Prefer dated event-specific sources over
 general profiles when resolving conflicting claims. If a page cannot be read,

@@ -239,3 +239,42 @@ def deepseek_fetch_search_results_tool(search, fetch):
         handler=read,
         read_only=True,
     )
+
+
+def deepseek_search_followup_tool(search):
+    """Allow a graph to skip a second search based on evidence from the first."""
+    input_schema = search.input_schema
+    output_schema = search.output_schema
+
+    async def follow_up(data, context):
+        query = data["query"].strip()
+        if not query:
+            return {"query": "", "results": []}
+        try:
+            return await search.handler({**data, "query": query}, context)
+        except ToolCallError as error:
+            return {"query": query, "results": [], "search_error": error.code}
+
+    return ToolDefinition(
+        name="deepseek.search_followup",
+        version="1.0.0",
+        description="Run one targeted follow-up search when initial sources leave a material "
+        "question unresolved. Bind query to a preceding evidence assessment node. That node "
+        "returns an empty string when evidence is sufficient; no HTTP request is then made. "
+        "Bind all results to deepseek.fetch_search_results to read the pages. An empty result "
+        "with search_error indicates a lookup failure. An empty query indicates a skipped search.",
+        input_schema={
+            **input_schema,
+            "properties": {
+                **input_schema["properties"], "query": {"type": "string", "maxLength": 128},
+            },
+        },
+        output_schema={
+            **output_schema,
+            "properties": {
+                **output_schema["properties"], "search_error": {"type": "string"},
+            },
+        },
+        handler=follow_up,
+        read_only=True,
+    )

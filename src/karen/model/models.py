@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import re
 from dataclasses import replace
 
@@ -108,6 +109,12 @@ class KarenPlannerModel:
 
     def __init__(self, model):
         self.model = model
+        provider = os.environ.get("KAREN_WEB_SEARCH_PROVIDER", "").strip().lower()
+        preferred, alternate = (
+            ("tavily.search", "deepseek.search") if provider == "tavily"
+            else ("deepseek.search", "tavily.search")
+        )
+        self.web_tool_selection = WEB_TOOL_SELECTION.format(preferred=preferred, alternate=alternate)
 
     @property
     def metadata(self):
@@ -169,7 +176,7 @@ class KarenPlannerModel:
             ]
         backend_request = replace(
             request,
-            system_instruction=(request.system_instruction + WEB_TOOL_SELECTION + FINAL_DELIVERY_PLANNING
+            system_instruction=(request.system_instruction + self.web_tool_selection + FINAL_DELIVERY_PLANNING
                                 + LOCAL_EDIT_PLANNING),
             input_data=data,
         )

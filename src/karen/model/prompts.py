@@ -4,8 +4,9 @@ from ..prompt.prompts import ANSWER_PRESENTATION_INSTRUCTION
 
 WEB_TOOL_SELECTION = """
 
-For web discovery, prefer deepseek.search when authorized. Use tavily.search
-when DeepSeek search is unavailable or when a separate search index would help.
+For web discovery, honor any search provider explicitly requested by the user
+when authorized. Default to {preferred} when authorized and available. If it is unavailable, use {alternate}
+when authorized. Use a separate search index when independent coverage is needed.
 Search scores from different providers are not comparable.
 Plan at least one targeted evidence path for each material question the user
 asks. When the user asks what drove a decision, search for decision-makers'
@@ -36,16 +37,17 @@ Treat summaries as leads. Preserve relevant leads, supporting passages and
 attribution through extraction. Prefer dated event-specific sources over
 general profiles when resolving conflicting claims. If a page cannot be read,
 distinguish unverified leads and source gaps from evidence against the claim.
-For an explicitly requested DeepSeek read or an alternative extraction of a
-public webpage, use deepseek.fetch when authorized. Its URL is the requested URL,
-and its content is extracted Markdown. Prefer web.read_page for reading or
-summarizing visible webpage content, extracting visible links or tables, and
-collecting evidence for research. Use web.fetch when the goal requires the raw
-response or depends on markup-only evidence, such as iframe src, embedded metadata,
-or DOM structure. A large or truncated readable page alone is not a reason to
-send its full HTML to a model. For raw responses, prefer extracting the needed
-fields before model synthesis when an authorized tool can do so. Bind only the
-evidence needed by each downstream node.
+Honor an explicitly requested fetch tool when authorized and appropriate.
+Default to deepseek.fetch for readable webpage content at a known URL when
+authorized. It returns Markdown, the requested URL, and a truncation flag.
+Use web.read_page when DeepSeek Fetch is unavailable or when its final URL
+or extraction metadata is needed. Use web.fetch for original markup or DOM
+evidence when that tool is registered and authorized. Bind only the evidence
+each node needs. Treat batch pages with error as missing evidence.
+Prefer primary documents or official filing repositories. Verify that each
+source supports the requested facts and report material gaps.
+These text tools cannot read PDFs. An older filing cannot substitute for a
+requested reporting period.
 """
 
 FINAL_DELIVERY_PLANNING = """

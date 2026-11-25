@@ -120,9 +120,10 @@ ollama pull bge-m3:latest
 ```dotenv
 DEEPSEEK_API_KEY=your_deepseek_api_key
 TAVILY_API_KEY=your_tavily_api_key
+KAREN_WEB_SEARCH_PROVIDER=deepseek
 ```
 
-`DEEPSEEK_API_KEY` 启用独立的 DeepSeek 网页搜索（`deepseek.search`）和 Markdown 抓取（`deepseek.fetch`）。Karen 优先使用 DeepSeek 搜索。Tavily 可选，提供独立的搜索索引。阅读网页时可用内置正文工具，需要原始标记时使用原始抓取工具。DeepSeek 对返回结果的独立 API 调用计费。[DeepSeek API 使用指南](https://api-docs.deepseek.com/zh-cn/guides/search/)
+终端与微信共用 `DEEPSEEK_API_KEY` 启用独立的 DeepSeek 网页搜索（`deepseek.search`）和 Markdown 抓取（`deepseek.fetch`）。设置 `KAREN_WEB_SEARCH_PROVIDER=deepseek`（默认）或 `tavily` 可选择优先搜索供应商。首选供应商不可用时，规划器可选择另一个已注册的供应商。Tavily 需要 `TAVILY_API_KEY`。只要 `deepseek.fetch` 可用，网页正文默认由它读取，抓取优先级独立于搜索偏好。需要重定向后的最终地址或提取元数据时可用 `web.read_page`，需要原始标记时使用获授权的原始抓取工具。DeepSeek 对返回结果的独立 API 调用计费。[DeepSeek API 使用指南](https://api-docs.deepseek.com/zh-cn/guides/search/)
 
 `.env` 已被 Git 忽略。更新配置后请重启 Karen。
 

@@ -478,3 +478,25 @@ async def test_planner_repairs_only_unambiguous_single_node_bindings(fallback):
         assert response.payload["graph"]["nodes"] == [
             original["graph"]["nodes"][0], {"id": "target", **patch},
         ]
+
+
+@pytest.mark.parametrize(("setting", "preferred", "alternate"), [
+    (None, "deepseek.search", "tavily.search"),
+    ("deepseek", "deepseek.search", "tavily.search"),
+    ("tavily", "tavily.search", "deepseek.search"),
+    ("unknown", "deepseek.search", "tavily.search"),
+])
+async def test_planner_uses_configured_web_search_preference(monkeypatch, setting, preferred, alternate):
+    from dynamic_graph import FakeModelClient, ModelResponse
+
+    from karen.model.models import KarenPlannerModel
+
+    monkeypatch.delenv("KAREN_WEB_SEARCH_PROVIDER", raising=False)
+    if setting is not None:
+        monkeypatch.setenv("KAREN_WEB_SEARCH_PROVIDER", setting)
+    backend = FakeModelClient([ModelResponse({})])
+    request = ModelRequest("planner", "system", "task", {"goal": {}}, {})
+    await KarenPlannerModel(backend).generate(request)
+    instruction = backend.requests[0].system_instruction
+    assert f"Default to {preferred}" in instruction
+    assert f"If it is unavailable, use {alternate}" in instruction

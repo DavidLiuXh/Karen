@@ -317,12 +317,12 @@ async def register_execution_tools(engine, resources, resources_guard):
         run_artifacts_tool(engine.config.runs_dir), root=engine.config.runs_dir,
     ))
     if api_key := os.environ.get("DEEPSEEK_API_KEY", "").strip():
-        http = await resources.enter_async_context(httpx.AsyncClient())
+        http = await resources.enter_async_context(httpx.AsyncClient(trust_env=False))
         search, fetch = deepseek_web_tools(http, api_key)
         for definition in (search, fetch, deepseek_fetch_search_results_tool(search, fetch)):
             engine.register_tool(resources_guard.independent_read(definition))
     if os.environ.get("TAVILY_API_KEY", "").strip():
-        engine.register_tool(resources_guard.independent_read(tavily_search_tool()))
+        engine.register_tool(resources_guard.independent_read(tavily_search_tool(trust_env=False)))
     await register_gmail_tools(engine, resources, resources_guard)
 
 

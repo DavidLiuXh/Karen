@@ -270,7 +270,7 @@ def test_live_search_is_explicit_and_fixture_profile_cannot_be_mixed(tmp_path, m
         engine = runner.create_engine(FakeModelClient(), directory, False, live_search=live)
         policy = all_capabilities_policy(engine)
         assert any("tavily" in item for item in policy.allowed_tools) is live
-    assert searches == [{}]
+    assert searches == [{"trust_env": False}]
     with pytest.raises(ValueError, match="either fixed or live"):
         runner.create_engine(FakeModelClient(), tmp_path / "mixed", True, live_search=True)
 

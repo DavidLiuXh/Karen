@@ -408,6 +408,7 @@ async def test_planner_repairs_closed_object_and_passthrough_replace_contracts()
                  "required": ["body"], "additionalProperties": False}
     candidate = {**canonical}
     candidate.pop("additionalProperties")
+    canonical["properties"] = {"body": {"type": "string", "maxLength": 100}}
     graph = {"state_fields": {"page": {
         "value_schema": candidate, "update_schema": {"type": "string"},
         "initial": {"literal": {"body": ""}}, "reducer": {"name": "builtin.replace", "version": "1.0.0"},
@@ -425,7 +426,7 @@ async def test_planner_repairs_closed_object_and_passthrough_replace_contracts()
     nodes = result.payload["graph"]["nodes"]
     assert fields["page"]["value_schema"] == fields["page"]["update_schema"] == canonical
     assert nodes[1]["input_schema"]["additionalProperties"] is False
-    assert nodes[1]["input_schema"]["properties"]["page"] == canonical
+    assert nodes[1]["input_schema"]["properties"]["page"] == {**candidate, "additionalProperties": False}
     assert "additionalProperties" not in candidate
 
 

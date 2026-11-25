@@ -6,7 +6,7 @@ import re
 from dataclasses import replace
 
 from dynamic_graph.execution.privacy import REDACTED
-from dynamic_graph.graph.schemas import SchemaError, strict_loads, validate_value
+from dynamic_graph.graph.schemas import SchemaError, compatible, strict_loads, validate_value
 from dynamic_graph.graph.spec import Binding
 from dynamic_graph.models.adapters import LangChainModelClient
 from dynamic_graph.models.client import ModelCallError, ModelResponse
@@ -320,12 +320,14 @@ def _repair_data_contracts(graph, nodes, registered):
         if index not in registered or pointer != "":
             continue
         source = nodes[index]["output_schema"]
-        if field.get("value_schema") == source and field.get("update_schema") != source:
-            try:
-                validate_value(source, initial["literal"])
-            except (SchemaError, ValueError, KeyError, TypeError):
+        try:
+            if not compatible(source, field["value_schema"]):
                 continue
-            field["update_schema"] = source
+            validate_value(source, initial["literal"])
+        except (SchemaError, ValueError, KeyError, TypeError):
+            continue
+        # The initial value and the only writer both satisfy the registered contract.
+        field["value_schema"] = field["update_schema"] = source
     return repaired
 
 

@@ -539,15 +539,18 @@ class RecallResult(Contract):
 def recall_decision_context(context: dict) -> dict:
     """Drop retrieval diagnostics and empty optional fields from decision inputs."""
     data = {key: value for key, value in context.items() if key != "snapshot_revision"}
-    data["coverage"] = {
-        key: value for key, value in context["coverage"].items()
-        if key not in {"index", "evidence_selection", "visibility", "search_text", "recall_reason"}
-    }
+    if "coverage" in context:
+        data["coverage"] = {
+            key: value for key, value in context["coverage"].items()
+            if key not in {"index", "evidence_selection", "visibility", "search_text", "recall_reason"}
+        }
     optional = {
         "valid_from", "valid_to", "supersedes", "corrects", "conflict_group_id",
         "related_memory_ids", "facts", "fact_key", "event_kind",
     }
     for layer in ("m1", "m2"):
+        if layer not in context:
+            continue
         data[layer] = [
             {
                 **hit,

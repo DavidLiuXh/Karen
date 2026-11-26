@@ -986,3 +986,31 @@ async def test_delete_workflow_version_preserves_history_and_blocks_reactivation
         server.server_close()
         thread.join(timeout=2)
         await workflows.close()
+
+
+async def test_matching_preserves_template_use_with_only_applicable_memory(tmp_path):
+    workflows, engine, model, *_ = await discover(tmp_path)
+    try:
+        preference = {"memory": {"text": "Prefer UTF-8"}, "relevance": "relevant"}
+        bulky = "UNRELATED_PAST_TASK_BODY" * 500
+        memory = {
+            "m1": [preference],
+            "m2": [{"memory": {"text": bulky}}],
+            "details": [{"text": bulky}],
+            "history": {"status": "none"},
+        }
+        resolution = await workflows.resolve(
+            request(engine).model_copy(update={"memory_context": memory})
+        )
+        assert resolution.status == "matched"
+        match_request = next(r for r in model.requests if r.role == "workflow_match")
+        assert match_request.input_data["memory"] == {"m1": [preference]}
+
+        linked = {**memory, "history": {"status": "selected"}}
+        resolution = await workflows.resolve(
+            request(engine).model_copy(update={"memory_context": linked})
+        )
+        assert resolution.status == "matched"
+        assert model.requests[-1].input_data["memory"] == linked
+    finally:
+        await workflows.close()

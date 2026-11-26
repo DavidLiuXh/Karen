@@ -280,7 +280,10 @@ async def test_question_handling_is_reconsidered_with_recalled_detail_evidence(
         assert len(encode(evidence).encode()) < len(encode(full).encode())
         downstream = next(r.input_data["memory"] for r in model.requests
                           if r.role in {"intent_response", "intent"})
-        assert downstream == full
+        if needs_external_data:
+            assert downstream == full
+        else:
+            assert downstream == evidence
         assert any("74元" in h["memory"]["text"] for h in evidence["m2"])
         assert turn.session.routing.handling == final_handling
         assert turn.session.routing.input_types == ["question"]

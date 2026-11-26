@@ -334,6 +334,7 @@ TRUNCATED_INTENT_REPAIR_INSTRUCTION = """
 
 EVIDENCE_COVERAGE_INSTRUCTION = """
 evidence_to_consider 是程序从已召回证据形成的检查清单，证据原文及时间/状态仍以 memory 为准。
+m1/m2 的 evidence_id 对应 memory_id；m3 的 ID 由 source.event_id、冒号和 source.pointer 组成。
 检查清单不是新要求，不授权继承旧任务，也不能把未实践的探索写成实践。
 对清单每个 evidence_id 恰好返回一个 evidence_coverage 条目，不得编造 ID。
 covered 表示回答/目标实际考虑了该事实或用途，output_quote 引用 answer 或目标的

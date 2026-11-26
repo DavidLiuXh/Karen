@@ -2828,3 +2828,95 @@ async def test_source_rejects_invalid_structured_references(memory, pointer, quo
     })
     with pytest.raises(ValueError, match=code):
         service.storage.source(Evidence(event_id=raw.event_id, pointer=pointer, quote=quote), {raw.event_id: raw})
+
+
+async def test_repeated_choices_learn_a_source_backed_default(memory, monkeypatch):
+    service, model = memory
+    generate = model.generate
+
+    async def learn(request):
+        response = await generate(request)
+        data = request.input_data
+        if request.role == "memory_extract" and "new_event_id" in data:
+            current = next(e for e in data["events"] if e["event_id"] == data["new_event_id"])
+            if current["event_type"] == "user_message":
+                response.payload["facts"] = [{
+                    "candidate_id": "layout",
+                    "fact_key": "preference.research.layout",
+                    "value": "comparison table",
+                    "text": "技术调研默认使用对照表",
+                    "inferred_preference": True,
+                    "evidence": response.payload["summaries"][0]["evidence"],
+                }]
+        if request.role == "memory_verify":
+            history = data["preference_history"]
+            assert len(history) == 1
+            old = history[0]
+            response.payload["decisions"][0]["supporting_choices"] = [{
+                "event_id": old["event_id"], "pointer": "/payload/content",
+                "quote": old["payload"]["content"],
+            }]
+        return response
+
+    monkeypatch.setattr(model, "generate", learn)
+    first = service.submit(event("这份技术调研用对照表", request="first"))
+    await service.flush(first)
+    echo = service.submit(event("这份技术调研用对照表", request="echo", kind="assistant_message"))
+    await service.flush(echo)
+    assert not (await service.recall(query("做一份技术调研"))).m1
+
+    second = service.submit(event("另一份技术调研也用对照表", request="second"))
+    await service.flush(second)
+    result = await service.recall(query("做一份技术调研"))
+    learned, = [hit.memory for hit in result.m1 if not hit.evidence_only]
+    assert learned.value == "comparison table"
+    assert learned.assertion_type == "inferred"
+    assert {s.event_id for s in learned.sources} == {first.event_id, second.event_id}
+
+
+async def test_memory_budgets_from_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("KAREN_MEMORY_DETAIL_MAX_EVENTS", "1")
+    monkeypatch.setenv("KAREN_MEMORY_DETAIL_MAX_SOURCES", "1")
+    monkeypatch.setenv("KAREN_MEMORY_DETAIL_MAX_TASKS", "1")
+    monkeypatch.setenv("KAREN_MEMORY_CONTEXT_BYTES", "1800")
+    model = MemoryModel()
+    model.kind = "detail"
+    service = ContextMemory(root_dir=tmp_path, model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        for request in ("first", "second", "third"):
+            for number in range(2):
+                receipt = service.submit(event(f"保存报告 /tmp/{request}-{number}.md", request=request))
+                await service.flush(receipt)
+        details = await service.search_details(DetailQuery(text="报告", request_id="first"))
+        assert details.status == "partial"
+        assert details.scanned_events == 1
+        result = await service.recall(query("保存过哪些报告"))
+        assert {"DETAIL_SOURCE_BUDGET_LIMIT", "DETAIL_SCOPE_BUDGET_LIMIT"} <= set(
+            result.degradations
+        )
+        assert "CONTEXT_BUDGET_LIMIT" in result.degradations
+        assert len(encode(result.context()).encode()) <= 1800
+    finally:
+        await service.close()
+
+
+async def test_recall_and_rerank_candidate_counts_are_configurable(tmp_path, monkeypatch):
+    monkeypatch.setenv("KAREN_MEMORY_VECTOR_CANDIDATES_PER_LAYER", "1")
+    monkeypatch.setenv("KAREN_MEMORY_BM25_CANDIDATES_PER_LAYER", "1")
+    monkeypatch.setenv("KAREN_MEMORY_RERANK_CANDIDATES_PER_LAYER", "1")
+    monkeypatch.setenv("KAREN_MEMORY_RERANK_INPUT_BYTES", "4096")
+    model = MemoryModel()
+    service = ContextMemory(root_dir=tmp_path, model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        for number in range(4):
+            receipt = service.submit(event(f"整理报告 {number}", request=f"report-{number}"))
+            await service.flush(receipt)
+        result = await service.recall(query("整理报告"))
+        request = next(r for r in model.requests if r.role == "memory_rerank")
+        assert len(request.input_data["primary_ids"]) == 1
+        assert len(encode(request.input_data).encode()) <= 4096
+        assert len(result.m2) == 1
+    finally:
+        await service.close()

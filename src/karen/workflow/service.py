@@ -862,12 +862,23 @@ class ReusableWorkflows:
                 },
             )
             return WorkflowResolution(status="no_match", reason="not_found")
+        memory = request.memory_context
+        history = memory.get("history") or {}
+        coverage = memory.get("coverage") or {}
+        if (
+            history.get("status") != "selected"
+            and coverage.get("dialogue_dependency") not in {"needed", "uncertain"}
+            and not coverage.get("requires_history")
+        ):
+            # Independent matching needs current preferences, rather than the
+            # sources that answer a historical question or support its deliverable.
+            memory = {"m1": memory["m1"]} if memory.get("m1") else {}
         match = await self._ask(
             "workflow_match",
             prompts.MATCH,
             {
                 "text": request.text,
-                "memory": request.memory_context,
+                "memory": memory,
                 "pending": pending,
                 "timezone": request.timezone,
                 "local_date": request.received_at.astimezone(ZoneInfo(request.timezone))

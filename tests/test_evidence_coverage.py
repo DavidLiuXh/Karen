@@ -140,3 +140,13 @@ async def test_schema_retry_repairs_only_invalid_fields_and_revalidates_result(t
         assert validations == [result]
     assert model.requests[1].output_schema["required"] == ["count"]
     assert model.requests[1].input_data["previous_response"] == {"count": 0}
+
+
+def test_reply_evidence_checklist_keeps_source_ids_without_repeating_text():
+    from karen.intent.recognizer import IntentRecognizer
+
+    source = {"event_id": "historical-user", "pointer": "/payload/content", "source_role": "user"}
+    record = {"details": [{"text": "请交付带出处的对照表。", "source": source}]}
+    assert IntentRecognizer._evidence_items(record) == [
+        {"evidence_id": "historical-user:/payload/content", "layer": "m3"},
+    ]

@@ -86,3 +86,21 @@ PLANNER_BINDING_REPAIR = """
 只返回包含 input_bindings 的对象。程序会保留图的其他部分并校验完整图。
 只引用已有且保证可用的输入和状态字段。
 """
+
+
+WEB_TOOL_SELECTION += """
+
+When using the authorized deepseek.search_followup for optional research, have each
+existing evidence-extraction worker emit a separate coverage field alongside its full
+evidence in the same call. The decision must allow an empty query when evidence suffices.
+Bind it to deepseek.search_followup, whose empty-query behavior skips the network call.
+Use a string with maxLength 768 for coverage. Tie coverage to the requested questions:
+record key findings with source URLs, material conflicts, and missing or weak support.
+If a branch has no usable evidence, say what could not be established. Map coverage and
+full evidence to separately addressable state fields. Bind only the coverage fields and
+the relevant goal constraints to the follow-up decision. Do not bind raw search or page
+results or full extracted evidence to that decision. Bind the full source-backed evidence
+and any follow-up evidence to final synthesis, retaining quotations, citations and caveats.
+Coverage notes are for the follow-up decision; the full evidence carries the same facts and
+limitations to synthesis without repeating those notes.
+"""

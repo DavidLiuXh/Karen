@@ -28,6 +28,7 @@ from pydantic import (
 )
 from tzlocal import get_localzone_name
 
+from ..context.contracts import recall_decision_context
 from ..message import messages
 from ..observability import Observer
 from ..prompt.prompts import RESPONSE_INSTRUCTION
@@ -1028,6 +1029,8 @@ class IntentRecognizer:
 
     async def _respond(self, state: IntentState) -> dict:
         inputs = self._model_inputs(state)
+        if "memory" in inputs:
+            inputs["memory"] = recall_decision_context(inputs["memory"])
         if state["session"].routing.capability_question and self.capabilities is not None:
             inputs["registered_tools"] = [
                 {"name": tool.name, "description": tool.to_dict().get("description")}
@@ -1126,13 +1129,12 @@ class IntentRecognizer:
                 if not any(s.get("source_role") == "user" and s.get("quote")
                            for s in record.get("sources", [])):
                     continue
-                items[mid] = {"evidence_id": mid, "text": record.get("text", ""),
-                              "layer": layer}
+                items[mid] = {"evidence_id": mid, "layer": layer}
         for hit in memory.get("details", []):
             source = hit.get("source", {})
             if source.get("event_id") and source.get("source_role") == "user":
                 key = f"{source['event_id']}:{source.get('pointer', '')}"
-                items[key] = {"evidence_id": key, "text": hit.get("text", ""), "layer": "m3"}
+                items[key] = {"evidence_id": key, "layer": "m3"}
         return list(items.values())
 
     async def _review_draft(self, review_request, original_request, draft, deadline):

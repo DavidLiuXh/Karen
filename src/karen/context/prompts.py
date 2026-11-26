@@ -150,16 +150,20 @@ bound_delivery 来自已明确绑定的当前任务，可用其中的目标和�
 如果后续只需读取或修改该交付物，判断为 current_task，且无需从全局记忆召回。
 文件正文、章节结构和已经交付过的路径由当前文件或 bound_delivery 提供，不列入 needed_fact_keys。
 有明确的其他任务引用、当前任务外的既有约定、个人事实或历史统计时，仍按实际需要召回。
-recall_needed=false：当前输入和 current_task_messages 已足以确定所需背景，后续只需常识、推导、
-外部实时资料或执行工具。独立且条件完整的研究/天气请求、当前任务中已经给清条件的澄清回复，
-不因可能有同主题旧对话就召回；不要为了猜测个性化而查记忆。此时 kind=relevance，
+先区分任务内容是否足以执行，以及用户是否留有可采用长期偏好的交付选择。任务足以执行不代表无需查偏好。
+本轮要求新建、另存或导出交付物时，从用户原话、当前任务消息及已绑定交付物中核对适用的选择是否已确定。
+若仍有会改变交付的常规选择，必须 recall_needed=true。文件交付重点核对格式和保存位置；
+也可包括语言、组织方式等本轮交付物实际涉及的选择。每项分别判断，用户已指定的维度不查默认值。
+仅为这些默认值召回时使用 kind=relevance、time_mode=current、requires_task_selection=false；
+无需定位旧任务。search_text 写交付物类型和未指定维度，needed_fact_keys 逐项写语义线索，
+不以研究主题本身为检索对象，不猜具体默认值。默认偏好只补充可选细节，不构成任务执行前置条件。
+只要求在聊天里回答时，不查文件交付偏好。读取或原位修改已有文件且无需新交付时，沿用已有文件信息。
+recall_needed=false：已核对本轮没有需要补充的交付选择或其他个人背景，后续只需常识、推导、
+外部实时资料或执行工具。独立研究、天气或澄清回复，不因可能有同主题旧对话就召回。此时 kind=relevance，
 needed_fact_keys 为空，不指定历史时间范围。recall_reason 说明当前上下文为什么足够。
 recall_needed=true：需要用户的长期属性/偏好、过去事实/经历、旧任务资料或约定、历史原话或统计；
 请求本身可以是独立的新请求，dialogue_dependency=none 不代表不需召回用户事实。
 用户明确要求结合个人背景，或缺少能影响当前交付的个人信息时，按需查找该信息。
-当用户让 Karen 产出或处理交付物，并留有能影响交付的常规选择时，查找同类场景中适用的长期默认做法。
-用 kind=relevance，search_text 表达本次任务的类型与尚可采用默认值的选择维度，
-例如交付格式、组织方式或语言等；不猜具体取值，不为已明确指定的维度查找默认值。
 search_text 描述要从记忆补充的具体信息及已明确的对象，不照抄无关的执行/排版步骤；
 needed_fact_keys 和 entities 限定需要的事实方面与对象，是语义线索而非精确字符串过滤。
 recall_reason 简述需要补充的信息，不能把猜测当作用户偏好。无法确认是否需要时保留召回。
@@ -205,6 +209,12 @@ few-shot：查询对象、当前任务和外部历史的边界。
 决策：kind=facts，time_mode=current，不要求任务起止日期。
 输入：查后天的航班。
 决策：目标日期不是筛选历史的 time_range。
+输入：核对两款设备的续航并形成文档。
+决策：任务主题已足够，交付仍有选择。recall_needed=true；查同类对比文档的默认格式和保存目录。
+输入：核对两款设备的续航并生成 PDF 文档。
+决策：recall_needed=true；仍查同类文档的默认保存目录，不查格式。
+输入：核对两款设备的续航，直接在聊天里回答。
+决策：没有文件交付，也没有所需的个人背景或历史，recall_needed=false。
 输入：列出前天我交给你的任务。
 决策：kind=collection，按用户时区前天全天筛选历史。
 """
@@ -307,7 +317,10 @@ UNVERIFIED_CANDIDATE_PREFIX = '尚未核验的候选陈述：'
 TIME_REFERENCE_REQUIRED = "{mode} 需要显式、带时区的 at；time_range 不能替代 at。"
 TIMEZONE_OFFSET_REQUIRED = "at 缺少时区偏移。"
 
-QUERY_RECALL_NEEDED_DESCRIPTION = "是否需要从存储记忆补充本轮缺失的信息；当前上下文已足够、仅需常识/外部资料/工具时为 false，不确定为 true。"
+QUERY_RECALL_NEEDED_DESCRIPTION = (
+    "是否从记忆补充本轮所需信息或尚未指定的交付默认值。任务可执行但仍有适用的交付选择时为 true。"
+    "当前上下文已确定相关选择、且无需其他历史时为 false。不确定为 true。"
+)
 QUERY_RECALL_REASON_DESCRIPTION = "一句话说明召回要补充哪方面信息，或为什么当前输入及当前任务上下文已经足够。"
 
 HISTORY_SELECTION_REPAIR = "上次历史选择包含候选表之外的事件 ID。请重新核对原始输入，只从 allowed_event_ids 对应的 history_candidates 选择；无法确认时返回 ambiguous/unavailable。重新返回完整 Ranking，不延续任何无效选择。"

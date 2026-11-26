@@ -530,7 +530,7 @@ class Storage:
             }
             return revision, memories, vectors
 
-    def keyword_ranks(self, query: str):
+    def keyword_ranks(self, query: str, *, limit: int = 100):
         words = terms(query)[:64]
         if not words:
             return {}
@@ -541,8 +541,8 @@ class Storage:
                     r[0]
                     for r in conn.execute(
                         "SELECT memory_id FROM memory_fts WHERE memory_fts MATCH ? AND layer=? "
-                        "ORDER BY bm25(memory_fts),memory_id LIMIT 100",
-                        (expression, layer),
+                        "ORDER BY bm25(memory_fts),memory_id LIMIT ?",
+                        (expression, layer, limit),
                     )
                 ]
                 for layer in ("m1", "m2")
@@ -654,14 +654,14 @@ class Storage:
                     "WHERE derived='committed'"
                 )
 
-    def retrieval_snapshot(self, query: str, known_at=None):
+    def retrieval_snapshot(self, query: str, known_at=None, bm25_limit: int = 100):
         # The directory has one owner and every connection uses this lock; keep both
         # reads together so a local writer cannot change FTS between them.
         with self.lock:
             revision, memories, vectors = self.snapshot(known_at=known_at)
             available = True
             try:
-                ranks = self.keyword_ranks(query)
+                ranks = self.keyword_ranks(query, limit=bm25_limit)
             except sqlite3.Error:
                 ranks, available = {}, False
             with self.connection() as conn:

@@ -2899,3 +2899,24 @@ async def test_memory_budgets_from_environment(tmp_path, monkeypatch):
         assert len(encode(result.context()).encode()) <= 1800
     finally:
         await service.close()
+
+
+async def test_recall_and_rerank_candidate_counts_are_configurable(tmp_path, monkeypatch):
+    monkeypatch.setenv("KAREN_MEMORY_VECTOR_CANDIDATES_PER_LAYER", "1")
+    monkeypatch.setenv("KAREN_MEMORY_BM25_CANDIDATES_PER_LAYER", "1")
+    monkeypatch.setenv("KAREN_MEMORY_RERANK_CANDIDATES_PER_LAYER", "1")
+    monkeypatch.setenv("KAREN_MEMORY_RERANK_INPUT_BYTES", "4096")
+    model = MemoryModel()
+    service = ContextMemory(root_dir=tmp_path, model=model, embeddings=LocalEmbeddings())
+    await service.start()
+    try:
+        for number in range(4):
+            receipt = service.submit(event(f"整理报告 {number}", request=f"report-{number}"))
+            await service.flush(receipt)
+        result = await service.recall(query("整理报告"))
+        request = next(r for r in model.requests if r.role == "memory_rerank")
+        assert len(request.input_data["primary_ids"]) == 1
+        assert len(encode(request.input_data).encode()) <= 4096
+        assert len(result.m2) == 1
+    finally:
+        await service.close()

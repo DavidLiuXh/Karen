@@ -16,11 +16,20 @@ uv run --env-file .env karen --timezone Asia/Shanghai
 Ollama 暂不可用时，已有记录可降级为 BM25；派生向量任务会报告失败并保留原文和已提交事实。
 目录锁冲突、存储初始化失败会明确结束启动，避免在用户不知情时停用记忆或启动第二个写入进程。
 
-### 原文回查与装包配置
+### 召回、精排与装包配置
 
 可将下列变量加入 `.env`，并用上面的启动命令加载。默认值如下。
 
 ```dotenv
+KAREN_MEMORY_VECTOR_CANDIDATES_PER_LAYER=100
+KAREN_MEMORY_BM25_CANDIDATES_PER_LAYER=100
+KAREN_MEMORY_RERANK_CANDIDATES_PER_LAYER=20
+KAREN_MEMORY_RERANK_MAX_RECORDS=80
+KAREN_MEMORY_RERANK_INPUT_BYTES=49152
+KAREN_MEMORY_CONTEXT_MAX_M1=5
+KAREN_MEMORY_CONTEXT_MAX_M2=8
+KAREN_MEMORY_FACTS_CONTEXT_MAX_M1=20
+KAREN_MEMORY_MEMORY_BYTES=10240
 KAREN_MEMORY_DETAIL_MAX_SOURCES=12
 KAREN_MEMORY_DETAIL_MAX_TASKS=3
 KAREN_MEMORY_DETAIL_MAX_EVENTS=200
@@ -31,6 +40,9 @@ KAREN_MEMORY_DETAIL_CONTEXT_BYTES=11264
 KAREN_MEMORY_CONTEXT_BYTES=12288
 ```
 
+- `VECTOR_CANDIDATES_PER_LAYER` 与 `BM25_CANDIDATES_PER_LAYER` 分别控制每层的向量与关键词候选量。
+- `RERANK_CANDIDATES_PER_LAYER` 限制每层融合后进入精排的主候选。补齐版本关系后，主候选及关联记录去重后共用 `RERANK_MAX_RECORDS`。精排的整份结构化输入另受 `RERANK_INPUT_BYTES` 限制，包含问题、候选、来源和历史定位线索。
+- `CONTEXT_MAX_M1` 和 `CONTEXT_MAX_M2` 分别限制装包的两层主条目数。事实查询用 `FACTS_CONTEXT_MAX_M1` 作为 m1 上限。`MEMORY_BYTES` 是非详情召回的记忆条目预算。
 - `DETAIL_MAX_SOURCES` 限制首轮原文回查的来源定位数，`DETAIL_MAX_TASKS` 限制追加回查的历史任务数。
 - `DETAIL_MAX_EVENTS`、`DETAIL_READ_BYTES`、`DETAIL_TIMEOUT_SECONDS` 限制每次原文回查的扫描事件数、读取字节数和扫描时间，时间按事件之间的检查执行。
 - `DETAIL_MEMORY_BYTES` 是详情召回的记忆条目预算，`DETAIL_CONTEXT_BYTES` 是该路径的记忆条目加原文摘录预算。最终装包会按 `CONTEXT_BYTES` 裁剪证据。希望增加可交给模型的详情时，按需同时调整这三项。

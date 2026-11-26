@@ -32,7 +32,6 @@ from .storage import digest, encode, terms
 RECALL_TIMEOUT_SECONDS = 600
 RERANK_TIMEOUT_SECONDS = 480
 RERANK_MAX_OUTPUT_TOKENS = 32768
-RERANK_INPUT_MAX_BYTES = 48 * 1024
 
 
 def fit_history_messages(messages, budget):
@@ -128,8 +127,8 @@ def evidence_only(memory, analysis, now=None):
     return memory.state != "active"
 
 
-def hybrid(memories, vectors, keyword, query_vector, tag, query):
-    """Cosine top-100 and BM25 top-100 per layer, fused by reciprocal rank."""
+def hybrid(memories, vectors, keyword, query_vector, tag, query, budgets):
+    """Fuse each layer's vector and BM25 candidates by reciprocal rank."""
     eligible = {
         mid: m
         for mid, m in memories.items()
@@ -162,8 +161,8 @@ def hybrid(memories, vectors, keyword, query_vector, tag, query):
         vector_order = sorted(
             (mid for mid in cosine if eligible[mid].layer == layer),
             key=lambda mid: (-cosine[mid], mid),
-        )[:100]
-        keyword_order = [mid for mid in keyword.get(layer, []) if mid in eligible][:100]
+        )[:budgets.vector_candidates_per_layer]
+        keyword_order = [mid for mid in keyword.get(layer, []) if mid in eligible]
         fused = {}
         for kind, order in (("vector", vector_order), ("bm25", keyword_order)):
             for rank, mid in enumerate(order, 1):
@@ -172,7 +171,7 @@ def hybrid(memories, vectors, keyword, query_vector, tag, query):
         order = sorted(fused, key=lambda mid: (-fused[mid], mid))
         for rank, mid in enumerate(order, 1):
             scores[mid].update(fusion_rank=rank, vector_score=cosine.get(mid))
-        roots.extend(order[:20])
+        roots.extend(order[:budgets.rerank_candidates_per_layer])
     return eligible, roots, scores
 
 
@@ -512,8 +511,10 @@ class Retriever:
         except Exception:
             degraded.append("VECTOR_RECALL_UNAVAILABLE")
         known_at = analysis.at if analysis.time_mode == "known_at" else None
+        budgets = self.service.budgets
         revision, memories, vectors, keyword, coverage = await self.service._io(
-            self.storage.retrieval_snapshot, analysis.search_text, known_at
+            self.storage.retrieval_snapshot, analysis.search_text, known_at,
+            budgets.bm25_candidates_per_layer,
         )
         if not coverage["bm25_available"]:
             degraded.append("BM25_RECALL_UNAVAILABLE")
@@ -527,13 +528,13 @@ class Retriever:
                 vectors = {}
         try:
             eligible, roots, scores = await self.service._io(
-                hybrid, memories, vectors, keyword, vector, tag, query
+                hybrid, memories, vectors, keyword, vector, tag, query, budgets
             )
         except ValueError:
             if not coverage["bm25_available"]:
                 raise RuntimeError("BOTH_RECALL_BRANCHES_UNAVAILABLE") from None
             eligible, roots, scores = await self.service._io(
-                hybrid, memories, vectors, keyword, None, None, query
+                hybrid, memories, vectors, keyword, None, None, query, budgets
             )
             degraded.append("INVALID_QUERY_EMBEDDING")
         if analysis.kind == "facts" and analysis.time_mode == "current":
@@ -555,7 +556,7 @@ class Retriever:
                 mid, eligible, reverse, timeline=analysis.time_mode == "timeline"
             )
             extra = set(bundle) - unique
-            if len(unique | extra) > 80:
+            if len(unique | extra) > budgets.rerank_max_records:
                 degraded.append("CANDIDATE_BUDGET_LIMIT")
                 continue
             primary.append(mid)
@@ -627,8 +628,9 @@ class Retriever:
             "history_candidates": anchors,
         }
         # Bound the whole request, including raw locating clues, not just memories.
+        input_budget = self.service.budgets.rerank_input_bytes
         primary = list(primary)
-        while len(encode(inputs).encode()) > RERANK_INPUT_MAX_BYTES and primary:
+        while len(encode(inputs).encode()) > input_budget and primary:
             # Preserve original fusion order among retained roots. Remove repeated
             # assistant background before a distinct new user observation.
             removed = next((mid for mid in reversed(primary)
@@ -639,7 +641,7 @@ class Retriever:
             inputs["primary_ids"] = primary
             inputs["memories"], inputs["sources"] = ranking_records(state["memories"], records)
             degraded.append("RERANK_INPUT_BUDGET_LIMIT")
-        while len(encode(inputs).encode()) > RERANK_INPUT_MAX_BYTES and inputs["history_candidates"]:
+        while len(encode(inputs).encode()) > input_budget and inputs["history_candidates"]:
             inputs["history_candidates"].pop()
             degraded.append("HISTORY_CANDIDATE_BUDGET_LIMIT")
         self.service.observer.emit("memory.rerank.input", data={
@@ -648,7 +650,7 @@ class Retriever:
         })
         allowed_event_ids = {item["event_id"] for item in inputs["history_candidates"]}
         try:
-            if len(encode(inputs).encode()) > RERANK_INPUT_MAX_BYTES:
+            if len(encode(inputs).encode()) > input_budget:
                 raise ValueError("RERANK_INPUT_TOO_LARGE")
             rank_state = {**state, "deadline": min(
                 state["deadline"], time.monotonic() + RERANK_TIMEOUT_SECONDS + 1.5,
@@ -711,7 +713,11 @@ class Retriever:
         m1, m2, included, used = [], [], set(), 0
         memory_groups = []
         root_counts = {"m1": 0, "m2": 0}
-        memory_budget = budgets.detail_memory_bytes if analysis.kind == "detail" else 10 * 1024
+        memory_budget = budgets.detail_memory_bytes if analysis.kind == "detail" else budgets.memory_bytes
+        root_limits = {
+            "m1": budgets.facts_context_max_m1 if analysis.kind == "facts" else budgets.context_max_m1,
+            "m2": budgets.context_max_m2,
+        }
         if "RERANK_FAILED_FUSION_ORDER" not in degraded:
             # Rank relevance, then pack distinct user evidence before verbose
             # assistant guidance. Sorting is stable within each category. Do not
@@ -722,10 +728,7 @@ class Retriever:
             ))
         for mid, relevance, rank in ranked:
             layer = memories[mid].layer
-            root_limit = (
-                20 if analysis.kind == "facts" and layer == "m1" else (5 if layer == "m1" else 8)
-            )
-            if root_counts[layer] >= root_limit:
+            if root_counts[layer] >= root_limits[layer]:
                 degraded.append("CONTEXT_BUDGET_LIMIT")
                 continue
             extra = [related for related in state["bundles"][mid] if related not in included]
